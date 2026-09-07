@@ -1,7 +1,9 @@
 # Environment variables and secrets
 .env
 *.env
+week1/*/.env
 !.env.example
+!.env.exapmle
 
 # Python
 __pycache__/
