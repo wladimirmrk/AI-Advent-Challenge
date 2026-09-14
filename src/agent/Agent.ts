@@ -24,6 +24,7 @@ import {
   TrimInfo,
   CustomModel,
   StateListener,
+  ConversationSummary,
 } from './types';
 import {
   loadMessages,
@@ -33,6 +34,11 @@ import {
   saveConfig,
   loadCustomModels,
   saveCustomModels,
+  loadSummary,
+  saveSummary,
+  clearSummary,
+  migrateStorage,
+  DEFAULT_SUMMARY,
 } from './storage';
 import {
   estimateTokens,
@@ -45,14 +51,20 @@ import { sendOllamaChat, fetchOllamaModelInfo } from './ollama';
 export class Agent {
   private config: AgentConfig;
   private messages: Message[] = [];
+  private summary: ConversationSummary;
   private tokenStats: TokenStats;
   private customModels: CustomModel[] = [];
   private isLoading = false;
+  private isSummarizing = false;
   private error: string | null = null;
   private lastTrimInfo: TrimInfo | null = null;
   private listeners: Set<StateListener> = new Set();
+  private executionQueue: Promise<unknown> = Promise.resolve();
 
   constructor(initialConfig?: Partial<AgentConfig>) {
+    // 0. Ensure schema migrations have run
+    migrateStorage();
+
     // 1. Load saved configuration from localStorage (or fallback to defaults and .env)
     const storedConfig = loadConfig();
     this.config = {
@@ -68,10 +80,13 @@ export class Agent {
     // 2. Load conversation history from localStorage
     this.messages = loadMessages();
 
-    // 3. Load user-added custom models from localStorage
+    // 3. Load summary from localStorage
+    this.summary = loadSummary();
+
+    // 4. Load user-added custom models from localStorage
     this.customModels = loadCustomModels();
 
-    // 4. Initialize token statistics based on restored history
+    // 5. Initialize token statistics based on restored history and summary
     this.tokenStats = this.calculateInitialTokenStats();
   }
 
@@ -102,8 +117,10 @@ export class Agent {
       config: { ...this.config },
       customModels: [...this.customModels],
       isLoading: this.isLoading,
+      isSummarizing: this.isSummarizing,
       error: this.error,
       lastTrimInfo: this.lastTrimInfo ? { ...this.lastTrimInfo } : null,
+      summary: { ...this.summary },
     };
   }
 
@@ -233,6 +250,37 @@ export class Agent {
     this.notify();
   }
 
+  /**
+   * Configure recent messages count to keep in context as-is (N).
+   */
+  public setRecentMessagesCount(n: number): void {
+    if (n > 0) {
+      this.config.recentMessagesCount = Math.floor(n);
+      saveConfig(this.config);
+      this.recalculateCurrentStats();
+      this.notify();
+    }
+  }
+
+  /**
+   * Configure the threshold of unsummarized older messages needed to trigger incremental summary.
+   */
+  public setSummaryThreshold(threshold: number): void {
+    if (threshold > 0) {
+      this.config.summaryThreshold = Math.floor(threshold);
+      saveConfig(this.config);
+      this.notify();
+    }
+  }
+
+  // ==========================================
+  // Summary Access & Management
+  // ==========================================
+
+  public getSummary(): ConversationSummary {
+    return { ...this.summary };
+  }
+
   // ==========================================
   // History & Persistence
   // ==========================================
@@ -247,6 +295,7 @@ export class Agent {
 
   public loadHistory(): void {
     this.messages = loadMessages();
+    this.summary = loadSummary();
     this.tokenStats = this.calculateInitialTokenStats();
     this.lastTrimInfo = null;
     this.error = null;
@@ -255,11 +304,14 @@ export class Agent {
 
   public saveHistory(): void {
     saveMessages(this.messages);
+    saveSummary(this.summary);
   }
 
   public clearHistory(): void {
     this.messages = [];
     clearMessages();
+    this.summary = { ...DEFAULT_SUMMARY };
+    clearSummary();
     this.tokenStats = this.calculateInitialTokenStats();
     this.lastTrimInfo = null;
     this.error = null;
@@ -304,40 +356,59 @@ export class Agent {
   }
 
   /**
-   * Prepares the messages array for LLM submission, prepending the system prompt
-   * if one is configured.
+   * Prepares the messages array for LLM context.
+   * Transmits:
+   * 1. system prompt
+   * 2. summary of previous conversation history (if present)
+   * 3. last N messages without changes
+   * 4. new user message (if provided)
    */
-  private getPreparedMessages(messagesList: Message[]): Array<{ role: string; content: string }> {
+  public getPreparedMessages(
+    messagesList: Message[],
+    newUserMessage?: { role: string; content: string }
+  ): Array<{ role: string; content: string }> {
     const prepared: Array<{ role: string; content: string }> = [];
+
+    // 1. system prompt
     if (this.config.systemPrompt && this.config.systemPrompt.trim()) {
       prepared.push({
         role: 'system',
         content: this.config.systemPrompt.trim(),
       });
     }
-    for (const msg of messagesList) {
+
+    // 2. summary of old conversation (if available)
+    if (this.summary && this.summary.summary && this.summary.summary.trim()) {
+      prepared.push({
+        role: 'system',
+        content: `Summary of previous conversation:\n${this.summary.summary.trim()}`,
+      });
+    }
+
+    // 3. last N messages without changes
+    const recent = messagesList.slice(-this.config.recentMessagesCount);
+    for (const msg of recent) {
       prepared.push({
         role: msg.role,
         content: msg.content,
       });
     }
+
+    // 4. new user message (if provided)
+    if (newUserMessage) {
+      prepared.push({
+        role: newUserMessage.role,
+        content: newUserMessage.content,
+      });
+    }
+
     return prepared;
   }
 
   // ==========================================
-  // Context Trimming Logic (Production Mode)
+  // Context Trimming Logic (Fallback for tight context limits)
   // ==========================================
 
-  /**
-   * In Production mode, trims older user/assistant messages to ensure total
-   * tokens fit within the model's context window (leaving a safety headroom
-   * of 500 tokens for the completion).
-   *
-   * Rules:
-   * 1. Preserves the system message.
-   * 2. Preserves the newest messages.
-   * 3. Trims the oldest conversation messages until token count <= limit.
-   */
   private trimHistoryForContext(
     messagesList: Message[],
     newRequestTokens: number,
@@ -387,22 +458,207 @@ export class Agent {
   }
 
   // ==========================================
+  // LLM Communication Layer
+  // ==========================================
+
+  private async callLLM(
+    messages: Array<{ role: string; content: string }>,
+    modelToUse?: string
+  ): Promise<{
+    content: string;
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    isEstimated: boolean;
+  }> {
+    const model = modelToUse || this.config.model;
+
+    if (this.config.provider === 'ollama') {
+      const ollamaRes = await sendOllamaChat(this.config.ollamaUrl, {
+        model,
+        messages,
+      });
+
+      const promptTokens = ollamaRes.promptTokens || estimateConversationTokens(messages);
+      const completionTokens = ollamaRes.responseTokens || estimateTokens(ollamaRes.content);
+      return {
+        content: ollamaRes.content,
+        promptTokens,
+        completionTokens,
+        totalTokens: ollamaRes.totalTokens || (promptTokens + completionTokens),
+        isEstimated: ollamaRes.promptTokens === 0 && ollamaRes.responseTokens === 0,
+      };
+    } else {
+      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.config.apiKey}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173',
+          'X-Title': 'Educational AI Agent Chat',
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+        }),
+      });
+
+      if (!response.ok) {
+        let errorMessage = `HTTP Error ${response.status}: ${response.statusText}`;
+        try {
+          const errorData = await response.json();
+          if (errorData.error?.message) {
+            errorMessage = errorData.error.message;
+          }
+        } catch {}
+
+        if (response.status === 401) {
+          errorMessage = 'Invalid API key. Please verify your OpenRouter API key in Settings.';
+        } else if (response.status === 402) {
+          errorMessage = 'Insufficient credits. Please check your OpenRouter account balance or switch to a free model.';
+        } else if (response.status === 429) {
+          errorMessage = 'Rate limit exceeded. Please wait a moment before sending another message.';
+        } else if (response.status === 400 && errorMessage.toLowerCase().includes('context')) {
+          errorMessage = `Context limit exceeded by API.\n\n${errorMessage}`;
+        }
+
+        throw new Error(errorMessage);
+      }
+
+      const data = await response.json();
+      if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+        throw new Error('Received malformed response from OpenRouter API.');
+      }
+
+      const assistantContent = data.choices[0].message.content || '';
+      const usage = data.usage;
+      const promptTokens = usage?.prompt_tokens ?? estimateConversationTokens(messages);
+      const completionTokens = usage?.completion_tokens ?? estimateTokens(assistantContent);
+      const totalTokens = usage?.total_tokens ?? (promptTokens + completionTokens);
+
+      return {
+        content: assistantContent,
+        promptTokens,
+        completionTokens,
+        totalTokens,
+        isEstimated: !usage,
+      };
+    }
+  }
+
+  // ==========================================
+  // Incremental Summary Generation
+  // ==========================================
+
+  /**
+   * Periodically updates the conversation summary when messages older than
+   * the recent N window accumulate beyond summaryThreshold.
+   *
+   * Incremental approach:
+   * Takes existing summary + new unsummarized messages older than N,
+   * calls LLM to produce an updated summary, and updates the lastSummarizedMessageId pointer.
+   *
+   * Error handling:
+   * If summary generation fails, existing summary, pointer, and history remain untouched.
+   */
+  private async updateSummaryIfNeeded(olderMessages: Message[]): Promise<void> {
+    if (olderMessages.length === 0) return;
+
+    let unsummarized: Message[] = [];
+    if (this.summary.lastSummarizedMessageId) {
+      const lastIdx = olderMessages.findIndex((m) => m.id === this.summary.lastSummarizedMessageId);
+      if (lastIdx >= 0) {
+        unsummarized = olderMessages.slice(lastIdx + 1);
+      } else {
+        const allIdx = this.messages.findIndex((m) => m.id === this.summary.lastSummarizedMessageId);
+        if (allIdx >= olderMessages.length) {
+          unsummarized = [];
+        } else {
+          unsummarized = olderMessages;
+        }
+      }
+    } else {
+      unsummarized = olderMessages;
+    }
+
+    // Only update if accumulated unsummarized count reaches threshold
+    if (unsummarized.length < this.config.summaryThreshold) {
+      return;
+    }
+
+    this.isSummarizing = true;
+    this.notify();
+
+    try {
+      const formattedBatch = unsummarized
+        .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+        .join('\n\n');
+
+      const promptMessages: Array<{ role: string; content: string }> = [
+        {
+          role: 'system',
+          content:
+            'You are an expert conversation summarizer. Your task is to maintain a concise, factual summary of the ongoing conversation. Retain all critical facts, user requirements, decisions, names, and context accurately in concise bullet points or short paragraphs.',
+        },
+      ];
+
+      if (this.summary.summary && this.summary.summary.trim()) {
+        promptMessages.push({
+          role: 'user',
+          content: `Existing conversation summary:\n${this.summary.summary.trim()}\n\nNew messages to append and incorporate into the summary:\n${formattedBatch}\n\nProvide an updated, cohesive summary incorporating both the existing summary and the new messages:`,
+        });
+      } else {
+        promptMessages.push({
+          role: 'user',
+          content: `Summarize the following conversation messages:\n\n${formattedBatch}\n\nProvide a concise summary:`,
+        });
+      }
+
+      const res = await this.callLLM(promptMessages);
+      const newSummaryText = res.content.trim();
+
+      if (newSummaryText) {
+        const lastMsg = unsummarized[unsummarized.length - 1];
+        const lastMsgIdx = this.messages.findIndex((m) => m.id === lastMsg.id);
+
+        this.summary = {
+          summary: newSummaryText,
+          lastSummarizedMessageId: lastMsg.id,
+          lastSummarizedIndex: lastMsgIdx,
+          updatedAt: Date.now(),
+          version: (this.summary.version || 1) + 1,
+        };
+
+        saveSummary(this.summary);
+      }
+    } catch (err) {
+      // Graceful degradation: do NOT fail chat, do NOT modify history or existing summary
+      console.warn('[Agent] Incremental summary update failed (graceful degradation):', err);
+    } finally {
+      this.isSummarizing = false;
+      this.notify();
+    }
+  }
+
+  // ==========================================
   // Core Message Sending Flow
   // ==========================================
 
   /**
    * Sends a user message to the LLM agent.
    *
-   * Flow:
-   * 1. Validate input & API key (for OpenRouter).
-   * 2. Append user message to history.
-   * 3. Apply context strategy (Demo Overflow vs Production Trimming).
-   * 4. Call provider API (OpenRouter HTTP API or native Ollama /api/chat).
-   * 5. Parse response & usage tokens.
-   * 6. Append assistant message to history.
-   * 7. Persist updated history to localStorage.
+   * Sequential execution queue ensures full protection against race conditions
+   * during concurrent calls.
    */
-  public async sendMessage(content: string): Promise<string> {
+  public sendMessage(content: string): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      this.executionQueue = this.executionQueue
+        .then(() => this._executeSendMessage(content))
+        .then(resolve, reject);
+    });
+  }
+
+  private async _executeSendMessage(content: string): Promise<string> {
     const trimmedInput = content.trim();
     if (!trimmedInput) {
       throw new Error('Message cannot be empty.');
@@ -423,7 +679,14 @@ export class Agent {
     this.error = null;
     this.lastTrimInfo = null;
 
-    // 1. Create and add user message
+    // 1. Check if unsummarized older messages need to be summarized before sending
+    const olderCutoff = Math.max(0, this.messages.length - this.config.recentMessagesCount);
+    if (olderCutoff > 0) {
+      const olderMessages = this.messages.slice(0, olderCutoff);
+      await this.updateSummaryIfNeeded(olderMessages);
+    }
+
+    // 2. Create user message
     const userMessageTokens = estimateTokens(trimmedInput);
     const userMessage: Message = {
       id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
@@ -433,30 +696,29 @@ export class Agent {
       tokens: userMessageTokens,
     };
 
-    this.messages.push(userMessage);
+    // Past messages before this new message
+    const pastMessages = [...this.messages];
 
-    // 2. Determine message list to send based on mode
-    let messagesToSend = [...this.messages];
+    // 3. Prepare messages to send to LLM:
+    // system prompt + summary (if present) + last N past messages + new user message
+    let messagesToSend = this.getPreparedMessages(pastMessages, userMessage);
 
+    // 4. Handle Context Window limits (Production Trimming vs Demo Overflow)
     if (this.config.mode === 'production' && this.config.contextWindow !== null) {
-      // Production mode: proactively trim to prevent context overflow
       const { trimmedList, info } = this.trimHistoryForContext(
-        this.messages,
+        pastMessages,
         userMessageTokens,
         this.config.contextWindow
       );
       if (info.wasTrimmed) {
-        this.messages = trimmedList;
-        messagesToSend = trimmedList;
+        messagesToSend = this.getPreparedMessages(trimmedList, userMessage);
         this.lastTrimInfo = info;
       }
     } else if (this.config.mode === 'demo' && this.config.contextWindow !== null) {
-      // Demo Overflow mode: do NOT trim.
-      // Check if current context already exceeds the configured limit to clearly inform student
-      const totalEstimatedContext = estimateConversationTokens(this.getPreparedMessages(messagesToSend));
+      const totalEstimatedContext = estimateConversationTokens(messagesToSend);
       if (totalEstimatedContext > this.config.contextWindow) {
         this.error = `Context limit exceeded.\n\nConversation: ${totalEstimatedContext.toLocaleString()} tokens\nModel limit: ${this.config.contextWindow.toLocaleString()} tokens`;
-        // Save user message so student sees it in history, but do not call API
+        this.messages.push(userMessage);
         saveMessages(this.messages);
         this.recalculateCurrentStats();
         this.notify();
@@ -464,9 +726,12 @@ export class Agent {
       }
     }
 
+    // 5. Add user message immediately so it renders in the UI before network call
+    this.messages.push(userMessage);
+    saveMessages(this.messages);
+
     // Update token stats for pre-request stage
-    const preparedMessages = this.getPreparedMessages(messagesToSend);
-    const preRequestConvTokens = estimateConversationTokens(preparedMessages);
+    const preRequestConvTokens = estimateConversationTokens(messagesToSend);
     this.tokenStats = {
       currentRequest: userMessageTokens,
       conversation: preRequestConvTokens,
@@ -482,96 +747,16 @@ export class Agent {
     this.notify();
 
     try {
-      let assistantContent = '';
-      let promptTokens = preRequestConvTokens;
-      let responseTokens = 0;
-      let totalTokens = preRequestConvTokens;
-      let isEstimated = true;
-
-      if (this.config.provider === 'ollama') {
-        // 3a. Call native Ollama HTTP API
-        const ollamaRes = await sendOllamaChat(this.config.ollamaUrl, {
-          model: this.config.model,
-          messages: preparedMessages,
-        });
-
-        assistantContent = ollamaRes.content;
-        promptTokens = ollamaRes.promptTokens || preRequestConvTokens;
-        responseTokens = ollamaRes.responseTokens || estimateTokens(assistantContent);
-        totalTokens = ollamaRes.totalTokens || (promptTokens + responseTokens);
-        isEstimated = ollamaRes.promptTokens === 0 && ollamaRes.responseTokens === 0;
-      } else {
-        // 3b. Call OpenRouter HTTP API
-        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${this.config.apiKey}`,
-            'Content-Type': 'application/json',
-            'HTTP-Referer': window.location.origin,
-            'X-Title': 'Educational AI Agent Chat',
-          },
-          body: JSON.stringify({
-            model: this.config.model,
-            messages: preparedMessages,
-          }),
-        });
-
-        // 4. Handle HTTP / API errors
-        if (!response.ok) {
-          let errorMessage = `HTTP Error ${response.status}: ${response.statusText}`;
-          try {
-            const errorData = await response.json();
-            if (errorData.error?.message) {
-              errorMessage = errorData.error.message;
-            }
-          } catch {
-            // If response body is not JSON, use default status text
-          }
-
-          // Format user-friendly error messages
-          if (response.status === 401) {
-            errorMessage = 'Invalid API key. Please verify your OpenRouter API key in Settings.';
-          } else if (response.status === 402) {
-            errorMessage = 'Insufficient credits. Please check your OpenRouter account balance or switch to a free model.';
-          } else if (response.status === 429) {
-            errorMessage = 'Rate limit exceeded. Please wait a moment before sending another message.';
-          } else if (response.status === 400 && errorMessage.toLowerCase().includes('context')) {
-            // Real OpenRouter context limit exceeded error!
-            errorMessage = `Context limit exceeded by API.\n\n${errorMessage}`;
-          }
-
-          console.error('[Agent] OpenRouter API call failed:', {
-            status: response.status,
-            message: errorMessage,
-          });
-
-          throw new Error(errorMessage);
-        }
-
-        // 5. Parse successful response
-        const data = await response.json();
-
-        if (!data.choices || !data.choices[0] || !data.choices[0].message) {
-          throw new Error('Received malformed response from OpenRouter API.');
-        }
-
-        assistantContent = data.choices[0].message.content || '';
-
-        // 6. Extract token usage statistics
-        const usage = data.usage;
-        responseTokens = usage?.completion_tokens ?? estimateTokens(assistantContent);
-        promptTokens = usage?.prompt_tokens ?? preRequestConvTokens;
-        totalTokens = usage?.total_tokens ?? (promptTokens + responseTokens);
-        isEstimated = !usage;
-      }
+      // 6. Call LLM
+      const res = await this.callLLM(messagesToSend);
 
       // 7. Create and append assistant message
       const assistantMessage: Message = {
         id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
         role: 'assistant',
-        content: assistantContent,
+        content: res.content,
         timestamp: Date.now(),
-        tokens: responseTokens,
+        tokens: res.completionTokens,
       };
 
       this.messages.push(assistantMessage);
@@ -579,12 +764,12 @@ export class Agent {
       // 8. Update exact token stats
       this.tokenStats = {
         currentRequest: userMessageTokens,
-        conversation: promptTokens,
-        response: responseTokens,
-        total: totalTokens,
+        conversation: res.promptTokens,
+        response: res.completionTokens,
+        total: res.totalTokens,
         contextWindow: this.config.contextWindow,
-        isEstimated,
-        estimatedCost: calculateEstimatedCost(promptTokens, responseTokens, this.config.model, this.config.provider),
+        isEstimated: res.isEstimated,
+        estimatedCost: calculateEstimatedCost(res.promptTokens, res.completionTokens, this.config.model, this.config.provider),
         isLocal: this.config.provider === 'ollama',
       };
 
@@ -594,14 +779,16 @@ export class Agent {
       this.isLoading = false;
       this.notify();
 
-      return assistantContent;
+      return res.content;
     } catch (err: unknown) {
       this.isLoading = false;
       const errorText = err instanceof Error ? err.message : 'An unexpected error occurred.';
       this.error = errorText;
 
-      // Persist user message even if API call failed, so history is preserved
+      // Roll back user message from history on LLM call error
+      this.messages = this.messages.filter((m) => m.id !== userMessage.id);
       saveMessages(this.messages);
+      this.recalculateCurrentStats();
       this.notify();
       throw err;
     }

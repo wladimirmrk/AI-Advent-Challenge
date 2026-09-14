@@ -74,6 +74,12 @@ export const Settings: React.FC<SettingsProps> = ({
   );
   const [mode, setMode] = useState<AgentMode>(config.mode);
   const [systemPrompt, setSystemPrompt] = useState(config.systemPrompt);
+  const [recentMessagesCount, setRecentMessagesCount] = useState<string>(
+    String(config.recentMessagesCount ?? 10)
+  );
+  const [summaryThreshold, setSummaryThreshold] = useState<string>(
+    String(config.summaryThreshold ?? 10)
+  );
   const [showKey, setShowKey] = useState(false);
   const [savedFeedback, setSavedFeedback] = useState(false);
 
@@ -267,6 +273,8 @@ export const Settings: React.FC<SettingsProps> = ({
     e.preventDefault();
     const parsedLimit = contextWindow.trim() === '' ? null : parseInt(contextWindow.trim(), 10);
     const validatedLimit = isNaN(parsedLimit as number) ? null : parsedLimit;
+    const parsedN = parseInt(recentMessagesCount.trim(), 10);
+    const parsedThreshold = parseInt(summaryThreshold.trim(), 10);
 
     onSave({
       provider,
@@ -276,6 +284,8 @@ export const Settings: React.FC<SettingsProps> = ({
       contextWindow: validatedLimit,
       mode,
       systemPrompt: systemPrompt.trim(),
+      recentMessagesCount: isNaN(parsedN) || parsedN <= 0 ? 10 : parsedN,
+      summaryThreshold: isNaN(parsedThreshold) || parsedThreshold <= 0 ? 10 : parsedThreshold,
     });
 
     setSavedFeedback(true);
@@ -831,6 +841,76 @@ export const Settings: React.FC<SettingsProps> = ({
                   </div>
                 </div>
               </label>
+            </div>
+          </div>
+
+          {/* Context Optimization (Recent N Messages & Summary) */}
+          <div className="active-config-panel">
+            <div className="active-config-header">
+              <Layers size={16} />
+              <span>Context Optimization (Summary & History Window)</span>
+            </div>
+            <div className="active-config-fields">
+              <div className="form-group compact">
+                <div className="form-label-row">
+                  <label htmlFor="recentMessagesCount">
+                    Recent Messages Window (N)
+                  </label>
+                  <div className="quick-limits">
+                    <button
+                      type="button"
+                      className="micro-pill"
+                      onClick={() => setRecentMessagesCount('5')}
+                    >
+                      5
+                    </button>
+                    <button
+                      type="button"
+                      className="micro-pill"
+                      onClick={() => setRecentMessagesCount('10')}
+                    >
+                      10
+                    </button>
+                    <button
+                      type="button"
+                      className="micro-pill"
+                      onClick={() => setRecentMessagesCount('20')}
+                    >
+                      20
+                    </button>
+                  </div>
+                </div>
+                <input
+                  id="recentMessagesCount"
+                  type="number"
+                  value={recentMessagesCount}
+                  onChange={(e) => setRecentMessagesCount(e.target.value)}
+                  placeholder="10"
+                  className="form-input"
+                  min="1"
+                />
+                <span className="field-hint">
+                  The latest N messages are sent as-is. Older messages are compressed into an incremental summary.
+                </span>
+              </div>
+
+              <div className="form-group compact">
+                <label htmlFor="summaryThreshold">
+                  Summary Trigger Threshold
+                </label>
+                <input
+                  id="summaryThreshold"
+                  type="number"
+                  value={summaryThreshold}
+                  onChange={(e) => setSummaryThreshold(e.target.value)}
+                  placeholder="10"
+                  className="form-input"
+                  min="1"
+                />
+                <span className="field-hint">
+                  Updates summary when this many messages older than the N window accumulate.
+                </span>
+              </div>
             </div>
           </div>
 

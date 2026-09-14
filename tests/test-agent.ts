@@ -35,6 +35,12 @@ import {
   loadApiKey,
   loadCustomModels,
   saveCustomModels,
+  loadSummary,
+  saveSummary,
+  clearSummary,
+  migrateStorage,
+  DEFAULT_SUMMARY,
+  CURRENT_SCHEMA_VERSION,
 } from '../src/agent/storage';
 
 async function runTests() {
@@ -447,10 +453,503 @@ async function runTests() {
 
   console.log('  PASSED: Ollama provider, connection, context extraction, and chat tests.\n');
 
-  console.log('🎉 ALL 10 TESTS PASSED SUCCESSFULLY! 100% SPEC COMPLIANCE.\n');
+  // ----------------------------------------------------
+  // Test 11: Storage Migration & Separate Summary Storage
+  // ----------------------------------------------------
+  console.log('Test 11: Storage Migration & Separate Summary Storage');
+  mockStorage.clear();
+
+  // Simulate existing v1 storage with messages but no summary key or version key
+  saveMessages([
+    { id: 'v1-msg-1', role: 'user', content: 'Message from v1', timestamp: 1000 },
+    { id: 'v1-msg-2', role: 'assistant', content: 'Reply from v1', timestamp: 2000 },
+  ]);
+  assert.equal(localStorage.getItem('agent_storage_version'), null, 'Version should initially be null');
+  assert.equal(localStorage.getItem('agent_summary'), null, 'Summary should initially be null');
+
+  // Run migration
+  migrateStorage();
+
+  assert.equal(
+    localStorage.getItem('agent_storage_version'),
+    String(CURRENT_SCHEMA_VERSION),
+    'Schema version must be updated to current version'
+  );
+  assert(mockStorage.has('agent_summary'), 'Summary key must be initialized');
+
+  // Verify existing messages were NOT modified or deleted
+  const preservedMessages = loadMessages();
+  assert.equal(preservedMessages.length, 2, 'Existing messages must be preserved');
+  assert.equal(preservedMessages[0].content, 'Message from v1');
+
+  // Verify separate summary operations
+  saveSummary({
+    summary: 'Test summary content',
+    lastSummarizedMessageId: 'v1-msg-2',
+    lastSummarizedIndex: 1,
+    updatedAt: 12345,
+    version: 2,
+  });
+  const loadedSummary = loadSummary();
+  assert.equal(loadedSummary.summary, 'Test summary content');
+  assert.equal(loadedSummary.lastSummarizedMessageId, 'v1-msg-2');
+
+  // Clear summary should only remove summary, not messages
+  clearSummary();
+  assert.equal(loadSummary().summary, '');
+  assert.equal(loadMessages().length, 2, 'Clearing summary must not delete messages');
+  console.log('  PASSED: Storage Migration & Separate Summary Storage.\n');
+
+  // ----------------------------------------------------
+  // Test 12: Configurable History Window N & Summary Threshold
+  // ----------------------------------------------------
+  console.log('Test 12: Configurable History Window N & Summary Threshold');
+  const configAgent = new Agent({
+    apiKey: 'sk-test',
+    model: 'openai/gpt-4o-mini',
+    recentMessagesCount: 10,
+    summaryThreshold: 10,
+  });
+
+  assert.equal(configAgent.getState().config.recentMessagesCount, 10, 'Default N should be 10');
+  assert.equal(configAgent.getState().config.summaryThreshold, 10, 'Default threshold should be 10');
+
+  // Reconfigure N and threshold
+  configAgent.setRecentMessagesCount(5);
+  configAgent.setSummaryThreshold(4);
+
+  assert.equal(configAgent.getState().config.recentMessagesCount, 5);
+  assert.equal(configAgent.getState().config.summaryThreshold, 4);
+
+  // Verify persistence of config
+  const reloadedAgent = new Agent();
+  assert.equal(reloadedAgent.getState().config.recentMessagesCount, 5, 'Recent messages count N must persist');
+  assert.equal(reloadedAgent.getState().config.summaryThreshold, 4, 'Summary threshold must persist');
+  console.log('  PASSED: Configurable History Window N & Summary Threshold.\n');
+
+  // ----------------------------------------------------
+  // Test 13: Context Structure Transmitted to LLM (Prompt + Summary + Last N + New user)
+  // ----------------------------------------------------
+  console.log('Test 13: Context Structure Transmitted to LLM');
+  mockStorage.clear();
+  const contextAgent = new Agent({
+    apiKey: 'sk-test',
+    model: 'openai/gpt-4o-mini',
+    recentMessagesCount: 3,
+    summaryThreshold: 10,
+    systemPrompt: 'You are an AI assistant.',
+  });
+
+  // Seed history with 5 messages
+  const initialFiveMessages = [
+    { id: 'm1', role: 'user' as const, content: 'One', timestamp: 1 },
+    { id: 'm2', role: 'assistant' as const, content: 'Two', timestamp: 2 },
+    { id: 'm3', role: 'user' as const, content: 'Three', timestamp: 3 },
+    { id: 'm4', role: 'assistant' as const, content: 'Four', timestamp: 4 },
+    { id: 'm5', role: 'user' as const, content: 'Five', timestamp: 5 },
+  ];
+  saveMessages(initialFiveMessages);
+  contextAgent.loadHistory();
+
+  // Case 1: Without summary, transmitted context should be: system prompt + last 3 messages + new user message
+  const preparedNoSummary = contextAgent.getPreparedMessages(
+    contextAgent.getHistory(),
+    { role: 'user', content: 'Six' }
+  );
+  assert.equal(preparedNoSummary.length, 5, 'Should contain: 1 system + 3 recent + 1 new user');
+  assert.equal(preparedNoSummary[0].role, 'system');
+  assert.equal(preparedNoSummary[0].content, 'You are an AI assistant.');
+  assert.equal(preparedNoSummary[1].content, 'Three');
+  assert.equal(preparedNoSummary[2].content, 'Four');
+  assert.equal(preparedNoSummary[3].content, 'Five');
+  assert.equal(preparedNoSummary[4].content, 'Six');
+
+  // Case 2: With summary present, transmitted context should be:
+  // system prompt + summary message + last 3 messages + new user message
+  saveSummary({
+    summary: 'The conversation discussed numbers One and Two.',
+    lastSummarizedMessageId: 'm2',
+    lastSummarizedIndex: 1,
+    updatedAt: 100,
+    version: 1,
+  });
+  contextAgent.loadHistory();
+
+  const preparedWithSummary = contextAgent.getPreparedMessages(
+    contextAgent.getHistory(),
+    { role: 'user', content: 'Six' }
+  );
+  assert.equal(preparedWithSummary.length, 6, 'Should contain: 1 system + 1 summary + 3 recent + 1 new user');
+  assert.equal(preparedWithSummary[0].role, 'system');
+  assert.equal(preparedWithSummary[0].content, 'You are an AI assistant.');
+  assert.equal(preparedWithSummary[1].role, 'system');
+  assert(preparedWithSummary[1].content.includes('Summary of previous conversation:'));
+  assert(preparedWithSummary[1].content.includes('One and Two'));
+  assert.equal(preparedWithSummary[2].content, 'Three');
+  assert.equal(preparedWithSummary[3].content, 'Four');
+  assert.equal(preparedWithSummary[4].content, 'Five');
+  assert.equal(preparedWithSummary[5].content, 'Six');
+  console.log('  PASSED: Context Structure Transmitted to LLM.\n');
+
+  // ----------------------------------------------------
+  // Test 14: Incremental Summary Generation & Pointer Tracking
+  // ----------------------------------------------------
+  console.log('Test 14: Incremental Summary Generation & Pointer Tracking');
+  mockStorage.clear();
+
+  // Configure agent: N=2, summaryThreshold=2
+  const incrementalAgent = new Agent({
+    apiKey: 'sk-incremental',
+    model: 'openai/gpt-4o-mini',
+    recentMessagesCount: 2,
+    summaryThreshold: 2,
+  });
+
+  const capturedCalls: Array<{ url: string; messages: any[] }> = [];
+  (globalThis as any).fetch = async (url: string, options: any) => {
+    const body = JSON.parse(options.body);
+    capturedCalls.push({ url, messages: body.messages });
+
+    // Check if this is a summary call or a chat call
+    const isSummaryPrompt = body.messages.some((m: any) =>
+      m.content?.includes('conversation summarizer')
+    );
+
+    if (isSummaryPrompt) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: 'gen-summary-1',
+          choices: [{ message: { role: 'assistant', content: 'Summary of initial topic.' } }],
+          usage: { prompt_tokens: 50, completion_tokens: 15, total_tokens: 65 },
+        }),
+      };
+    } else {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: 'gen-reply',
+          choices: [{ message: { role: 'assistant', content: 'Assistant reply.' } }],
+          usage: { prompt_tokens: 40, completion_tokens: 10, total_tokens: 50 },
+        }),
+      };
+    }
+  };
+
+  // Turn 1: sends Message 1. History has 2 messages (Msg 1, Reply 1).
+  await incrementalAgent.sendMessage('Message 1');
+  assert.equal(incrementalAgent.getHistory().length, 2);
+  assert.equal(incrementalAgent.getSummary().summary, '', 'Summary should not trigger yet');
+
+  // Turn 2: sends Message 2. History before Turn 2 had 2 messages (both inside recent N=2 window).
+  // History after Turn 2 has 4 messages: [Msg 1, Reply 1, Msg 2, Reply 2].
+  capturedCalls.length = 0;
+  await incrementalAgent.sendMessage('Message 2');
+  assert.equal(capturedCalls.length, 1, 'Turn 2 is a single chat call (no messages older than N=2 before send)');
+  assert.equal(incrementalAgent.getHistory().length, 4);
+
+  // Turn 3: sends Message 3.
+  // History before Turn 3 has 4 messages. Recent N=2 window holds [Msg 2, Reply 2].
+  // Older messages are [Msg 1, Reply 1] (count 2 >= summaryThreshold 2).
+  // This must trigger incremental summary before the chat call!
+  capturedCalls.length = 0;
+  await incrementalAgent.sendMessage('Message 3');
+
+  assert.equal(capturedCalls.length, 2, 'Turn 3 must trigger 1 summary call + 1 chat call');
+  assert(
+    capturedCalls[0].messages.some((m) => m.content?.includes('summarizer') || m.content?.includes('summary')),
+    'First call in Turn 3 must be summary generation'
+  );
+
+  const updatedSummary = incrementalAgent.getSummary();
+  assert.equal(updatedSummary.summary, 'Summary of initial topic.');
+  assert(updatedSummary.lastSummarizedMessageId !== null, 'lastSummarizedMessageId must be set');
+  assert(updatedSummary.lastSummarizedIndex >= 0, 'lastSummarizedIndex must be tracked');
+
+  // Turn 4: sends Message 4.
+  // History before Turn 4 has 6 messages. Recent N=2 window holds [Msg 3, Reply 3].
+  // Older messages are [Msg 1, Reply 1, Msg 2, Reply 2].
+  // Msg 1 and Reply 1 are already summarized!
+  // Unsummarized older messages are [Msg 2, Reply 2] (count 2 >= summaryThreshold 2).
+  // This must trigger the NEXT incremental summary!
+  (globalThis as any).fetch = async (url: string, options: any) => {
+    const body = JSON.parse(options.body);
+    capturedCalls.push({ url, messages: body.messages });
+
+    const isSummaryPrompt = body.messages.some((m: any) =>
+      m.content?.includes('conversation summarizer')
+    );
+
+    if (isSummaryPrompt) {
+      // Must receive existing summary in prompt!
+      assert(
+        body.messages.some((m: any) => m.content?.includes('Existing summary:') || m.content?.includes('Existing conversation summary:')),
+        'Incremental summary call must include existing summary'
+      );
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: 'gen-summary-2',
+          choices: [{ message: { role: 'assistant', content: 'Updated summary of initial topic plus new events.' } }],
+          usage: { prompt_tokens: 60, completion_tokens: 20, total_tokens: 80 },
+        }),
+      };
+    } else {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: 'gen-reply-4',
+          choices: [{ message: { role: 'assistant', content: 'Fourth reply.' } }],
+          usage: { prompt_tokens: 45, completion_tokens: 10, total_tokens: 55 },
+        }),
+      };
+    }
+  };
+
+  capturedCalls.length = 0;
+  await incrementalAgent.sendMessage('Message 4');
+
+  assert.equal(capturedCalls.length, 2, 'Turn 4 must trigger incremental summary + chat call');
+  const secondSummary = incrementalAgent.getSummary();
+  assert.equal(secondSummary.summary, 'Updated summary of initial topic plus new events.');
+  assert.equal(secondSummary.version, 3, 'Summary version must increment to 3');
+
+  // Verify all raw messages remain in full history (never deleted from DB)
+  assert.equal(incrementalAgent.getHistory().length, 8, 'All 8 raw messages must remain in history');
+  console.log('  PASSED: Incremental Summary Generation & Pointer Tracking.\n');
+
+  // ----------------------------------------------------
+  // Test 15: Error Handling during Summary Generation (Graceful Degradation)
+  // ----------------------------------------------------
+  console.log('Test 15: Error Handling during Summary Generation (Graceful Degradation)');
+  mockStorage.clear();
+
+  const gracefulAgent = new Agent({
+    apiKey: 'sk-graceful',
+    model: 'openai/gpt-4o-mini',
+    recentMessagesCount: 2,
+    summaryThreshold: 2,
+  });
+
+  // Pre-seed an existing summary
+  saveSummary({
+    summary: 'Original stable summary.',
+    lastSummarizedMessageId: 'old-1',
+    lastSummarizedIndex: 0,
+    updatedAt: 50,
+    version: 1,
+  });
+  saveMessages([
+    { id: 'old-1', role: 'user', content: 'Old 1', timestamp: 10 },
+    { id: 'old-2', role: 'assistant', content: 'Old 2', timestamp: 20 },
+    { id: 'old-3', role: 'user', content: 'Old 3', timestamp: 30 },
+    { id: 'old-4', role: 'assistant', content: 'Old 4', timestamp: 40 },
+  ]);
+  gracefulAgent.loadHistory();
+
+  // Mock fetch to fail when summarization is called, but succeed for normal chat
+  (globalThis as any).fetch = async (_url: string, options: any) => {
+    const body = JSON.parse(options.body);
+    const isSummaryPrompt = body.messages.some((m: any) =>
+      m.content?.includes('conversation summarizer')
+    );
+
+    if (isSummaryPrompt) {
+      // Simulate LLM error for summary
+      return {
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error on summarizer',
+      };
+    }
+
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        id: 'gen-reply-ok',
+        choices: [{ message: { role: 'assistant', content: 'Chat succeeded despite summary error.' } }],
+        usage: { prompt_tokens: 30, completion_tokens: 10, total_tokens: 40 },
+      }),
+    };
+  };
+
+  // sendMessage should succeed despite summary failure
+  const reply = await gracefulAgent.sendMessage('New question');
+  assert.equal(reply, 'Chat succeeded despite summary error.');
+
+  // Verify existing summary was NOT deleted or corrupted
+  const summaryAfterError = gracefulAgent.getSummary();
+  assert.equal(summaryAfterError.summary, 'Original stable summary.');
+  assert.equal(summaryAfterError.lastSummarizedMessageId, 'old-1');
+
+  // Verify history contains the new question and reply
+  const histAfterError = gracefulAgent.getHistory();
+  assert.equal(histAfterError[histAfterError.length - 2].content, 'New question');
+  assert.equal(histAfterError[histAfterError.length - 1].content, 'Chat succeeded despite summary error.');
+  console.log('  PASSED: Error Handling during Summary Generation (Graceful Degradation).\n');
+
+  // ----------------------------------------------------
+  // Test 16: Race Condition Protection during Concurrent Requests
+  // ----------------------------------------------------
+  console.log('Test 16: Race Condition Protection during Concurrent Requests');
+  mockStorage.clear();
+
+  const concurrencyAgent = new Agent({
+    apiKey: 'sk-concurrent',
+    model: 'openai/gpt-4o-mini',
+    recentMessagesCount: 4,
+    summaryThreshold: 2,
+  });
+
+  let activeRequests = 0;
+  let maxConcurrent = 0;
+
+  (globalThis as any).fetch = async (_url: string, options: any) => {
+    activeRequests++;
+    if (activeRequests > maxConcurrent) {
+      maxConcurrent = activeRequests;
+    }
+
+    // Simulate async network delay
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    activeRequests--;
+
+    const body = JSON.parse(options.body);
+    const lastUserMsg = body.messages[body.messages.length - 1]?.content || 'reply';
+
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        id: `gen-${Math.random()}`,
+        choices: [{ message: { role: 'assistant', content: `Echo: ${lastUserMsg}` } }],
+        usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 },
+      }),
+    };
+  };
+
+  // Trigger 3 parallel sendMessage calls simultaneously
+  const results = await Promise.all([
+    concurrencyAgent.sendMessage('Concurrent message A'),
+    concurrencyAgent.sendMessage('Concurrent message B'),
+    concurrencyAgent.sendMessage('Concurrent message C'),
+  ]);
+
+  assert.equal(results[0], 'Echo: Concurrent message A');
+  assert.equal(results[1], 'Echo: Concurrent message B');
+  assert.equal(results[2], 'Echo: Concurrent message C');
+
+  // Verify that execution was serialized by mutex queue (max concurrent was 1)
+  assert.equal(maxConcurrent, 1, 'Requests must be serialized sequentially through mutex');
+
+  // Verify history has all 6 messages in exact sequential order
+  const finalHist = concurrencyAgent.getHistory();
+  assert.equal(finalHist.length, 6);
+  assert.equal(finalHist[0].content, 'Concurrent message A');
+  assert.equal(finalHist[1].content, 'Echo: Concurrent message A');
+  assert.equal(finalHist[2].content, 'Concurrent message B');
+  assert.equal(finalHist[3].content, 'Echo: Concurrent message B');
+  assert.equal(finalHist[4].content, 'Concurrent message C');
+  assert.equal(finalHist[5].content, 'Echo: Concurrent message C');
+  console.log('  PASSED: Race Condition Protection during Concurrent Requests.\n');
+
+  // ----------------------------------------------------
+  // Test 17: Immediate User Message Rendering & Rollback on Error
+  // ----------------------------------------------------
+  console.log('Test 17: Immediate User Message Rendering & Rollback on Error');
+  mockStorage.clear();
+
+  const immediateAgent = new Agent({
+    apiKey: 'sk-immediate',
+    model: 'openai/gpt-4o-mini',
+  });
+
+  let inspectedStateDuringLoading: any = null;
+
+  (globalThis as any).fetch = async () => {
+    // While server request is running, inspect agent state
+    inspectedStateDuringLoading = immediateAgent.getState();
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { role: 'assistant', content: 'Ответ на первый вопрос' } }],
+        usage: { prompt_tokens: 15, completion_tokens: 10, total_tokens: 25 },
+      }),
+    };
+  };
+
+  // Send first question
+  const replyPromise = immediateAgent.sendMessage('Первый вопрос');
+
+  // Await the completion
+  await replyPromise;
+
+  // 1. Verify that while waiting for the server, the user message was ALREADY in state and visible
+  assert(inspectedStateDuringLoading !== null, 'Should have captured state during request');
+  assert.equal(
+    inspectedStateDuringLoading.messages.length,
+    1,
+    'User message must appear immediately in state before server responds'
+  );
+  assert.equal(inspectedStateDuringLoading.messages[0].content, 'Первый вопрос');
+  assert.equal(inspectedStateDuringLoading.isLoading, true, 'Agent must be marked as loading');
+  console.log('  ✓ User message rendered immediately before server response');
+
+  // After completion, history should have 2 messages
+  assert.equal(immediateAgent.getHistory().length, 2);
+  assert.equal(immediateAgent.getHistory()[1].content, 'Ответ на первый вопрос');
+
+  // 2. Verify rollback on error
+  (globalThis as any).fetch = async () => {
+    return {
+      ok: false,
+      status: 500,
+      statusText: 'Server Error on LLM call',
+    };
+  };
+
+  let errorThrown = false;
+  try {
+    await immediateAgent.sendMessage('Ошибочный вопрос');
+  } catch (err: any) {
+    errorThrown = true;
+    assert(err.message.includes('500'));
+  }
+  assert(errorThrown, 'Should throw on 500 error');
+
+  // Verify that 'Ошибочный вопрос' was rolled back and is NOT in history
+  const historyAfterFailure = immediateAgent.getHistory();
+  assert.equal(
+    historyAfterFailure.length,
+    2,
+    'Failed user message must be rolled back from history'
+  );
+  assert(
+    !historyAfterFailure.some((m) => m.content === 'Ошибочный вопрос'),
+    'Failed user message must not remain in history'
+  );
+  assert.equal(
+    loadMessages().length,
+    2,
+    'Failed user message must be removed from localStorage'
+  );
+  console.log('  ✓ User message rolled back from state and storage upon LLM error');
+  console.log('  PASSED: Immediate User Message Rendering & Rollback on Error.\n');
+
+  console.log('🎉 ALL 17 TESTS PASSED SUCCESSFULLY! 100% SPEC COMPLIANCE.\n');
 }
 
 runTests().catch((err) => {
   console.error('❌ Test failed:', err);
   process.exit(1);
 });
+

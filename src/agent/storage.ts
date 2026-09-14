@@ -5,7 +5,7 @@
  * it delegates all persistence operations to this module.
  */
 
-import { Message, AgentConfig, AgentMode, CustomModel, ModelProvider } from './types';
+import { Message, AgentConfig, AgentMode, CustomModel, ModelProvider, ConversationSummary } from './types';
 import { resolveContextLimit } from './tokenizer';
 
 const STORAGE_KEYS = {
@@ -15,6 +15,8 @@ const STORAGE_KEYS = {
   CONFIG: 'agent_config',
   CUSTOM_MODELS: 'agent_custom_models',
   OLLAMA_MODELS: 'agent_ollama_models',
+  SUMMARY: 'agent_summary',
+  STORAGE_VERSION: 'agent_storage_version',
 } as const;
 
 export const DEFAULT_CONFIG: AgentConfig = {
@@ -25,7 +27,44 @@ export const DEFAULT_CONFIG: AgentConfig = {
   contextWindow: 128000,
   mode: 'production',
   systemPrompt: 'You are a helpful, concise AI assistant.',
+  recentMessagesCount: 10,
+  summaryThreshold: 10,
 };
+
+export const DEFAULT_SUMMARY: ConversationSummary = {
+  summary: '',
+  lastSummarizedMessageId: null,
+  lastSummarizedIndex: -1,
+  updatedAt: 0,
+  version: 1,
+};
+
+export const CURRENT_SCHEMA_VERSION = 2;
+
+/**
+ * Migration helper: safely migrates localStorage schema across versions.
+ */
+export function migrateStorage(): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    const currentVersionStr = localStorage.getItem(STORAGE_KEYS.STORAGE_VERSION);
+    const currentVersion = currentVersionStr ? parseInt(currentVersionStr, 10) : 1;
+
+    if (currentVersion < CURRENT_SCHEMA_VERSION) {
+      // Version 1 -> 2 migration:
+      // Ensure summary key exists separately without touching messages
+      const existingSummary = localStorage.getItem(STORAGE_KEYS.SUMMARY);
+      if (!existingSummary) {
+        saveSummary(DEFAULT_SUMMARY);
+      }
+
+      localStorage.setItem(STORAGE_KEYS.STORAGE_VERSION, String(CURRENT_SCHEMA_VERSION));
+    }
+  } catch (err) {
+    console.error('[Storage] Migration failed:', err);
+  }
+}
+
 
 /**
  * Load saved messages from localStorage.
@@ -70,6 +109,59 @@ export function clearMessages(): void {
     console.error('[Storage] Failed to clear messages from localStorage:', err);
   }
 }
+
+/**
+ * Load saved summary from localStorage.
+ * Returns DEFAULT_SUMMARY if not present or on error.
+ */
+export function loadSummary(): ConversationSummary {
+  try {
+    if (typeof localStorage === 'undefined') return { ...DEFAULT_SUMMARY };
+    const raw = localStorage.getItem(STORAGE_KEYS.SUMMARY);
+    if (!raw) return { ...DEFAULT_SUMMARY };
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      return {
+        summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+        lastSummarizedMessageId:
+          typeof parsed.lastSummarizedMessageId === 'string' ? parsed.lastSummarizedMessageId : null,
+        lastSummarizedIndex:
+          typeof parsed.lastSummarizedIndex === 'number' ? parsed.lastSummarizedIndex : -1,
+        updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : 0,
+        version: typeof parsed.version === 'number' ? parsed.version : 1,
+      };
+    }
+    return { ...DEFAULT_SUMMARY };
+  } catch (err) {
+    console.error('[Storage] Failed to load summary from localStorage:', err);
+    return { ...DEFAULT_SUMMARY };
+  }
+}
+
+/**
+ * Save summary to localStorage under a dedicated key separate from messages.
+ */
+export function saveSummary(summary: ConversationSummary): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(STORAGE_KEYS.SUMMARY, JSON.stringify(summary));
+  } catch (err) {
+    console.error('[Storage] Failed to save summary to localStorage:', err);
+  }
+}
+
+/**
+ * Remove saved summary from localStorage.
+ */
+export function clearSummary(): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.removeItem(STORAGE_KEYS.SUMMARY);
+  } catch (err) {
+    console.error('[Storage] Failed to clear summary from localStorage:', err);
+  }
+}
+
 
 /**
  * Load API key from localStorage.
@@ -183,6 +275,14 @@ export function loadConfig(): AgentConfig {
           systemPrompt: typeof parsed.systemPrompt === 'string'
             ? parsed.systemPrompt
             : DEFAULT_CONFIG.systemPrompt,
+          recentMessagesCount:
+            typeof parsed.recentMessagesCount === 'number' && parsed.recentMessagesCount > 0
+              ? parsed.recentMessagesCount
+              : DEFAULT_CONFIG.recentMessagesCount,
+          summaryThreshold:
+            typeof parsed.summaryThreshold === 'number' && parsed.summaryThreshold > 0
+              ? parsed.summaryThreshold
+              : DEFAULT_CONFIG.summaryThreshold,
         };
       }
     }

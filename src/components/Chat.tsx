@@ -42,6 +42,8 @@ export const Chat: React.FC = () => {
     agentInstance.setModel(newConfig.model, newConfig.contextWindow, newConfig.provider);
     agentInstance.setMode(newConfig.mode);
     agentInstance.setSystemPrompt(newConfig.systemPrompt);
+    agentInstance.setRecentMessagesCount(newConfig.recentMessagesCount);
+    agentInstance.setSummaryThreshold(newConfig.summaryThreshold);
   };
 
   const handleSelectModel = (val: string) => {

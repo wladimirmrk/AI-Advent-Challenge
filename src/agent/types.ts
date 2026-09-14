@@ -34,6 +34,14 @@ export interface TokenStats {
   isLocal?: boolean;
 }
 
+export interface ConversationSummary {
+  summary: string;
+  lastSummarizedMessageId: string | null;
+  lastSummarizedIndex: number;
+  updatedAt: number;
+  version: number;
+}
+
 export interface AgentConfig {
   provider: ModelProvider;
   apiKey: string;
@@ -42,6 +50,10 @@ export interface AgentConfig {
   contextWindow: number | null;
   mode: AgentMode;
   systemPrompt: string;
+  /** Number of recent messages to send as-is (N). Defaults to 10. */
+  recentMessagesCount: number;
+  /** Number of unsummarized messages older than the N window needed to trigger incremental summary. Defaults to 10. */
+  summaryThreshold: number;
 }
 
 export interface TrimInfo {
@@ -64,8 +76,11 @@ export interface AgentState {
   config: AgentConfig;
   customModels: CustomModel[];
   isLoading: boolean;
+  isSummarizing: boolean;
   error: string | null;
   lastTrimInfo: TrimInfo | null;
+  summary: ConversationSummary | null;
 }
 
 export type StateListener = (state: AgentState) => void;
+
