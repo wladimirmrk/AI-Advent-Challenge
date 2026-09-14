@@ -50,6 +50,7 @@ export interface AgentState {
   messages: Message[];
   tokenStats: TokenStats;
   config: AgentConfig;
+  customModels: string[];
   isLoading: boolean;
   error: string | null;
   lastTrimInfo: TrimInfo | null;

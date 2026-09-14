@@ -29,6 +29,8 @@ import {
   clearMessages,
   loadConfig,
   saveConfig,
+  loadCustomModels,
+  saveCustomModels,
 } from './storage';
 import {
   estimateTokens,
@@ -41,6 +43,7 @@ export class Agent {
   private config: AgentConfig;
   private messages: Message[] = [];
   private tokenStats: TokenStats;
+  private customModels: string[] = [];
   private isLoading = false;
   private error: string | null = null;
   private lastTrimInfo: TrimInfo | null = null;
@@ -62,7 +65,10 @@ export class Agent {
     // 2. Load conversation history from localStorage
     this.messages = loadMessages();
 
-    // 3. Initialize token statistics based on restored history
+    // 3. Load user-added custom models from localStorage
+    this.customModels = loadCustomModels();
+
+    // 4. Initialize token statistics based on restored history
     this.tokenStats = this.calculateInitialTokenStats();
   }
 
@@ -91,6 +97,7 @@ export class Agent {
       messages: [...this.messages],
       tokenStats: { ...this.tokenStats },
       config: { ...this.config },
+      customModels: [...this.customModels],
       isLoading: this.isLoading,
       error: this.error,
       lastTrimInfo: this.lastTrimInfo ? { ...this.lastTrimInfo } : null,
@@ -119,6 +126,33 @@ export class Agent {
     this.recalculateCurrentStats();
     saveConfig(this.config);
     this.notify();
+  }
+
+  public getCustomModels(): string[] {
+    return [...this.customModels];
+  }
+
+  public addCustomModel(modelId: string): void {
+    const trimmed = modelId.trim();
+    if (!trimmed) return;
+    if (!this.customModels.includes(trimmed)) {
+      this.customModels.push(trimmed);
+      saveCustomModels(this.customModels);
+      this.notify();
+    }
+  }
+
+  public removeCustomModel(modelId: string): void {
+    const trimmed = modelId.trim();
+    this.customModels = this.customModels.filter((m) => m !== trimmed);
+    saveCustomModels(this.customModels);
+
+    // If the removed model was active, fall back to default model
+    if (this.config.model === trimmed) {
+      this.setModel('openai/gpt-4o-mini');
+    } else {
+      this.notify();
+    }
   }
 
   public setContextWindow(limit: number | null): void {

@@ -11,6 +11,7 @@ const STORAGE_KEYS = {
   MESSAGES: 'agent_messages',
   API_KEY: 'openrouter_api_key',
   CONFIG: 'agent_config',
+  CUSTOM_MODELS: 'agent_custom_models',
 } as const;
 
 export const DEFAULT_CONFIG: AgentConfig = {
@@ -162,5 +163,36 @@ export function saveConfig(config: AgentConfig): void {
     localStorage.setItem(STORAGE_KEYS.CONFIG, JSON.stringify(settingsWithoutKey));
   } catch (err) {
     console.error('[Storage] Failed to save config to localStorage:', err);
+  }
+}
+
+/**
+ * Load user-added custom models from localStorage.
+ */
+export function loadCustomModels(): string[] {
+  try {
+    if (typeof localStorage === 'undefined') return [];
+    const raw = localStorage.getItem(STORAGE_KEYS.CUSTOM_MODELS);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+    }
+    return [];
+  } catch (err) {
+    console.error('[Storage] Failed to load custom models from localStorage:', err);
+    return [];
+  }
+}
+
+/**
+ * Save user-added custom models array to localStorage.
+ */
+export function saveCustomModels(models: string[]): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(STORAGE_KEYS.CUSTOM_MODELS, JSON.stringify(models));
+  } catch (err) {
+    console.error('[Storage] Failed to save custom models to localStorage:', err);
   }
 }

@@ -14,16 +14,20 @@ import {
   EyeOff,
   Sliders,
   Sparkles,
+  Plus,
 } from 'lucide-react';
 
 interface SettingsProps {
   isOpen: boolean;
   onClose: () => void;
   config: AgentConfig;
+  customModels: string[];
   onSave: (newConfig: AgentConfig) => void;
+  onAddCustomModel: (modelId: string) => void;
+  onRemoveCustomModel: (modelId: string) => void;
 }
 
-const MODEL_PRESETS = [
+export const MODEL_PRESETS = [
   { id: 'openai/gpt-4o-mini', label: 'GPT-4o Mini (OpenAI)', defaultLimit: 128000 },
   { id: 'google/gemini-2.0-flash-001', label: 'Gemini 2.0 Flash (Google)', defaultLimit: 1048576 },
   { id: 'meta-llama/llama-3.3-70b-instruct', label: 'Llama 3.3 70B (Meta)', defaultLimit: 131072 },
@@ -35,10 +39,14 @@ export const Settings: React.FC<SettingsProps> = ({
   isOpen,
   onClose,
   config,
+  customModels,
   onSave,
+  onAddCustomModel,
+  onRemoveCustomModel,
 }) => {
   const [apiKey, setApiKey] = useState(config.apiKey);
   const [model, setModel] = useState(config.model);
+  const [newModelInput, setNewModelInput] = useState('');
   const [contextWindow, setContextWindow] = useState<string>(
     config.contextWindow !== null ? String(config.contextWindow) : ''
   );
@@ -55,6 +63,15 @@ export const Settings: React.FC<SettingsProps> = ({
     if (limit) {
       setContextWindow(String(limit));
     }
+  };
+
+  const handleAddCustomModel = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = newModelInput.trim();
+    if (!trimmed) return;
+    onAddCustomModel(trimmed);
+    setModel(trimmed);
+    setNewModelInput('');
   };
 
   const handleSave = (e: React.FormEvent) => {
@@ -159,6 +176,8 @@ export const Settings: React.FC<SettingsProps> = ({
             <label htmlFor="model">
               <Cpu size={14} /> Model Identifier
             </label>
+
+            <div className="models-subheading">Built-in Presets:</div>
             <div className="preset-buttons">
               {MODEL_PRESETS.map((p) => (
                 <button
@@ -171,16 +190,83 @@ export const Settings: React.FC<SettingsProps> = ({
                 </button>
               ))}
             </div>
-            <input
-              id="model"
-              type="text"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder="e.g. openai/gpt-4o-mini"
-              className="form-input"
-            />
+
+            {/* Custom Models List */}
+            {customModels.length > 0 && (
+              <div className="custom-models-section">
+                <div className="models-subheading">Saved Custom Models:</div>
+                <div className="custom-models-list">
+                  {customModels.map((m) => (
+                    <div
+                      key={m}
+                      className={`custom-model-chip ${model === m ? 'selected' : ''}`}
+                      onClick={() => setModel(m)}
+                      title={`Select ${m}`}
+                    >
+                      <span className="custom-model-id">{m}</span>
+                      <button
+                        type="button"
+                        className="delete-model-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onRemoveCustomModel(m);
+                          if (model === m) {
+                            setModel('openai/gpt-4o-mini');
+                          }
+                        }}
+                        title={`Delete ${m} from saved models`}
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Add New Custom Model */}
+            <div className="add-model-container">
+              <div className="models-subheading">Add New Model:</div>
+              <div className="add-model-row">
+                <input
+                  type="text"
+                  value={newModelInput}
+                  onChange={(e) => setNewModelInput(e.target.value)}
+                  placeholder="e.g. qwen/qwen-2.5-72b-instruct"
+                  className="form-input add-model-input"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleAddCustomModel(e);
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="add-model-btn"
+                  onClick={handleAddCustomModel}
+                  disabled={!newModelInput.trim()}
+                  title="Save model to local storage"
+                >
+                  <Plus size={14} />
+                  <span>Add</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="active-model-display">
+              <div className="models-subheading">Active Model:</div>
+              <input
+                id="model"
+                type="text"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder="e.g. openai/gpt-4o-mini"
+                className="form-input"
+              />
+            </div>
             <div className="field-hint">
-              Any valid OpenRouter model slug (e.g. <code>openai/gpt-4o-mini</code>, <code>anthropic/claude-3.5-sonnet</code>).
+              Selected model used by the Agent. Custom models are saved in <code>localStorage</code>.
             </div>
           </div>
 

@@ -32,6 +32,8 @@ import {
   clearMessages,
   saveApiKey,
   loadApiKey,
+  loadCustomModels,
+  saveCustomModels,
 } from '../src/agent/storage';
 
 async function runTests() {
@@ -229,7 +231,44 @@ async function runTests() {
   assert.equal(loadMessages().length, 0, 'LocalStorage must be cleared');
   console.log('  PASSED: Clear conversation.\n');
 
-  console.log('🎉 ALL 8 TESTS PASSED SUCCESSFULLY! 100% SPEC COMPLIANCE.\n');
+  // ----------------------------------------------------
+  // Test 9: Custom Models Persistence and Switching
+  // ----------------------------------------------------
+  console.log('Test 9: Custom models persistence and switching');
+  const customModelId = 'qwen/qwen-2.5-72b-instruct';
+  restartedAgent.addCustomModel(customModelId);
+
+  // Verify in memory and in localStorage
+  assert(restartedAgent.getCustomModels().includes(customModelId), 'Custom model should be in agent list');
+  const storedModels = loadCustomModels();
+  assert(storedModels.includes(customModelId), 'Custom model must be saved in localStorage');
+
+  // Duplicate prevention
+  restartedAgent.addCustomModel(customModelId);
+  assert.equal(
+    restartedAgent.getCustomModels().filter((m) => m === customModelId).length,
+    1,
+    'Duplicates must not be added'
+  );
+
+  // Model switching
+  restartedAgent.setModel(customModelId);
+  assert.equal(restartedAgent.getState().config.model, customModelId, 'Active model must switch to custom model');
+
+  // Persistence across restart
+  const thirdAgent = new Agent();
+  assert(thirdAgent.getCustomModels().includes(customModelId), 'New agent must restore custom models from localStorage');
+  assert.equal(thirdAgent.getState().config.model, customModelId, 'New agent must restore active model from localStorage');
+
+  // Deletion and fallback
+  thirdAgent.removeCustomModel(customModelId);
+  assert(!thirdAgent.getCustomModels().includes(customModelId), 'Custom model must be removed from agent');
+  assert(!loadCustomModels().includes(customModelId), 'Custom model must be removed from localStorage');
+  assert.equal(thirdAgent.getState().config.model, 'openai/gpt-4o-mini', 'Active model must fall back to default upon deletion');
+  console.log('  ✓ Successfully added, persisted, switched, and deleted custom models with fallback');
+  console.log('  PASSED: Custom models persistence and switching.\n');
+
+  console.log('🎉 ALL 9 TESTS PASSED SUCCESSFULLY! 100% SPEC COMPLIANCE.\n');
 }
 
 runTests().catch((err) => {

@@ -4,9 +4,9 @@ import { AgentState, AgentConfig, AgentMode } from '../agent/types';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
 import { TokenStats } from './TokenStats';
-import { Settings } from './Settings';
+import { Settings, MODEL_PRESETS } from './Settings';
 import { ModeToggle } from './ModeToggle';
-import { Bot, Settings as SettingsIcon, Trash2 } from 'lucide-react';
+import { Bot, Settings as SettingsIcon, Trash2, Cpu } from 'lucide-react';
 
 export const Chat: React.FC = () => {
   const [agentState, setAgentState] = useState<AgentState>(() => agentInstance.getState());
@@ -57,8 +57,38 @@ export const Chat: React.FC = () => {
             </div>
           </div>
 
-          <div className="model-indicator" title={`Current model: ${agentState.config.model}`}>
-            <span className="model-name-text">{agentState.config.model}</span>
+          <div className="model-selector-wrapper" title="Switch active model">
+            <Cpu size={14} className="model-select-icon" />
+            <select
+              className="model-select-dropdown"
+              value={agentState.config.model}
+              onChange={(e) => agentInstance.setModel(e.target.value)}
+              disabled={agentState.isLoading}
+              title="Select active model"
+            >
+              <optgroup label="Default Presets">
+                {MODEL_PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
+              </optgroup>
+              {agentState.customModels.length > 0 && (
+                <optgroup label="Saved Custom Models">
+                  {agentState.customModels.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {!MODEL_PRESETS.some((p) => p.id === agentState.config.model) &&
+                !agentState.customModels.includes(agentState.config.model) && (
+                  <optgroup label="Active Custom">
+                    <option value={agentState.config.model}>{agentState.config.model}</option>
+                  </optgroup>
+                )}
+            </select>
           </div>
         </div>
 
@@ -129,7 +159,10 @@ export const Chat: React.FC = () => {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         config={agentState.config}
+        customModels={agentState.customModels}
         onSave={handleSaveSettings}
+        onAddCustomModel={(modelId) => agentInstance.addCustomModel(modelId)}
+        onRemoveCustomModel={(modelId) => agentInstance.removeCustomModel(modelId)}
       />
     </div>
   );
