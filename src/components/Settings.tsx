@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { AgentConfig, AgentMode } from '../agent/types';
-import { MODEL_CONTEXT_LIMITS } from '../agent/tokenizer';
+import { AgentConfig, AgentMode, CustomModel } from '../agent/types';
+import { MODEL_CONTEXT_LIMITS, fetchModelInfo } from '../agent/tokenizer';
 import { clearApiKey } from '../agent/storage';
 import {
   X,
@@ -15,15 +15,17 @@ import {
   Sliders,
   Sparkles,
   Plus,
+  Loader2,
+  AlertCircle,
 } from 'lucide-react';
 
 interface SettingsProps {
   isOpen: boolean;
   onClose: () => void;
   config: AgentConfig;
-  customModels: string[];
+  customModels: CustomModel[];
   onSave: (newConfig: AgentConfig) => void;
-  onAddCustomModel: (modelId: string) => void;
+  onAddCustomModel: (model: CustomModel) => void;
   onRemoveCustomModel: (modelId: string) => void;
 }
 
@@ -47,6 +49,10 @@ export const Settings: React.FC<SettingsProps> = ({
   const [apiKey, setApiKey] = useState(config.apiKey);
   const [model, setModel] = useState(config.model);
   const [newModelInput, setNewModelInput] = useState('');
+  const [isFetchingModel, setIsFetchingModel] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [manualContextInput, setManualContextInput] = useState('128000');
+  const [fetchSuccessMsg, setFetchSuccessMsg] = useState<string | null>(null);
   const [contextWindow, setContextWindow] = useState<string>(
     config.contextWindow !== null ? String(config.contextWindow) : ''
   );
@@ -65,13 +71,56 @@ export const Settings: React.FC<SettingsProps> = ({
     }
   };
 
-  const handleAddCustomModel = (e: React.FormEvent) => {
+  const handleAddCustomModel = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = newModelInput.trim();
+    if (!trimmed || isFetchingModel) return;
+
+    setIsFetchingModel(true);
+    setFetchError(null);
+    setFetchSuccessMsg(null);
+
+    // Call OpenRouter API for model info (https://openrouter.ai/api/v1/model/<model_id>)
+    const info = await fetchModelInfo(trimmed, apiKey);
+    setIsFetchingModel(false);
+
+    if (info) {
+      const newModel: CustomModel = {
+        id: trimmed,
+        name: info.name,
+        contextLength: info.contextLength,
+      };
+      onAddCustomModel(newModel);
+      setModel(trimmed);
+      if (info.contextLength !== null) {
+        setContextWindow(String(info.contextLength));
+      }
+      setNewModelInput('');
+      const limitText = info.contextLength ? `${info.contextLength.toLocaleString()} tokens` : 'unknown limit';
+      setFetchSuccessMsg(`Added: ${info.name || trimmed} (${limitText})`);
+      setTimeout(() => setFetchSuccessMsg(null), 4000);
+    } else {
+      // Model not found on OpenRouter or network error: offer manual fallback
+      setFetchError(`Could not find "${trimmed}" on OpenRouter. Specify context window manually:`);
+      setManualContextInput(contextWindow || '128000');
+    }
+  };
+
+  const handleConfirmManualAdd = () => {
+    const trimmed = newModelInput.trim();
     if (!trimmed) return;
-    onAddCustomModel(trimmed);
+    const parsed = manualContextInput.trim() ? parseInt(manualContextInput.trim(), 10) : null;
+    const newModel: CustomModel = {
+      id: trimmed,
+      contextLength: isNaN(parsed as number) ? null : parsed,
+    };
+    onAddCustomModel(newModel);
     setModel(trimmed);
+    if (newModel.contextLength !== null) {
+      setContextWindow(String(newModel.contextLength));
+    }
     setNewModelInput('');
+    setFetchError(null);
   };
 
   const handleSave = (e: React.FormEvent) => {
@@ -198,23 +247,41 @@ export const Settings: React.FC<SettingsProps> = ({
                 <div className="custom-models-list">
                   {customModels.map((m) => (
                     <div
-                      key={m}
-                      className={`custom-model-chip ${model === m ? 'selected' : ''}`}
-                      onClick={() => setModel(m)}
-                      title={`Select ${m}`}
+                      key={m.id}
+                      className={`custom-model-chip ${model === m.id ? 'selected' : ''}`}
+                      onClick={() => {
+                        setModel(m.id);
+                        if (m.contextLength !== null) {
+                          setContextWindow(String(m.contextLength));
+                        }
+                      }}
+                      title={`Select ${m.name || m.id}`}
                     >
-                      <span className="custom-model-id">{m}</span>
+                      <div className="custom-model-text">
+                        <span className="custom-model-id">{m.name || m.id}</span>
+                        {m.contextLength !== null ? (
+                          <span className="custom-model-context-pill">
+                            {m.contextLength >= 1000000
+                              ? `${m.contextLength / 1000000}M`
+                              : m.contextLength >= 1000
+                              ? `${Math.round(m.contextLength / 1000)}k`
+                              : m.contextLength} ctx
+                          </span>
+                        ) : (
+                          <span className="custom-model-context-pill unknown">? ctx</span>
+                        )}
+                      </div>
                       <button
                         type="button"
                         className="delete-model-btn"
                         onClick={(e) => {
                           e.stopPropagation();
-                          onRemoveCustomModel(m);
-                          if (model === m) {
+                          onRemoveCustomModel(m.id);
+                          if (model === m.id) {
                             setModel('openai/gpt-4o-mini');
                           }
                         }}
-                        title={`Delete ${m} from saved models`}
+                        title={`Delete ${m.id} from saved models`}
                       >
                         <Trash2 size={12} />
                       </button>
@@ -232,8 +299,9 @@ export const Settings: React.FC<SettingsProps> = ({
                   type="text"
                   value={newModelInput}
                   onChange={(e) => setNewModelInput(e.target.value)}
-                  placeholder="e.g. qwen/qwen-2.5-72b-instruct"
+                  placeholder="e.g. anthropic/claude-sonnet-4"
                   className="form-input add-model-input"
+                  disabled={isFetchingModel}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       e.preventDefault();
@@ -245,13 +313,61 @@ export const Settings: React.FC<SettingsProps> = ({
                   type="button"
                   className="add-model-btn"
                   onClick={handleAddCustomModel}
-                  disabled={!newModelInput.trim()}
-                  title="Save model to local storage"
+                  disabled={!newModelInput.trim() || isFetchingModel}
+                  title="Query OpenRouter and save model"
                 >
-                  <Plus size={14} />
-                  <span>Add</span>
+                  {isFetchingModel ? (
+                    <>
+                      <Loader2 size={14} className="spin-icon" />
+                      <span>Checking...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Plus size={14} />
+                      <span>Add</span>
+                    </>
+                  )}
                 </button>
               </div>
+
+              {fetchSuccessMsg && (
+                <div className="fetch-success-banner">
+                  <Check size={14} />
+                  <span>{fetchSuccessMsg}</span>
+                </div>
+              )}
+
+              {fetchError && (
+                <div className="manual-fallback-card">
+                  <div className="fallback-header">
+                    <AlertCircle size={14} />
+                    <span>{fetchError}</span>
+                  </div>
+                  <div className="fallback-inputs">
+                    <input
+                      type="number"
+                      value={manualContextInput}
+                      onChange={(e) => setManualContextInput(e.target.value)}
+                      placeholder="Context window tokens"
+                      className="form-input fallback-num-input"
+                    />
+                    <button
+                      type="button"
+                      className="btn-primary-small"
+                      onClick={handleConfirmManualAdd}
+                    >
+                      Add with this limit
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-secondary-small"
+                      onClick={() => setFetchError(null)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="active-model-display">

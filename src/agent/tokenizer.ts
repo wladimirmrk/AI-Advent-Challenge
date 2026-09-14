@@ -112,3 +112,42 @@ export function calculateEstimatedCost(
 export function resolveContextLimit(model: string): number | null {
   return MODEL_CONTEXT_LIMITS[model] ?? null;
 }
+
+/**
+ * Queries OpenRouter API for a specific model's metadata (context_length, name).
+ * Endpoint: https://openrouter.ai/api/v1/model/<model_id>
+ */
+export async function fetchModelInfo(
+  modelId: string,
+  apiKey?: string
+): Promise<{ contextLength: number | null; name?: string } | null> {
+  const trimmed = modelId.trim();
+  if (!trimmed) return null;
+
+  try {
+    const headers: Record<string, string> = {};
+    if (apiKey && apiKey.trim()) {
+      headers['Authorization'] = `Bearer ${apiKey.trim()}`;
+    }
+
+    const response = await fetch(`https://openrouter.ai/api/v1/model/${trimmed}`, {
+      headers,
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const json = await response.json();
+    const data = json.data;
+    if (!data) return null;
+
+    const contextLength = typeof data.context_length === 'number' ? data.context_length : null;
+    const name = typeof data.name === 'string' ? data.name : undefined;
+
+    return { contextLength, name };
+  } catch (err) {
+    console.error(`[Tokenizer] Failed to fetch model info for ${trimmed}:`, err);
+    return null;
+  }
+}

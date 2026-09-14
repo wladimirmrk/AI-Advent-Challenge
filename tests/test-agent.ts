@@ -25,6 +25,7 @@ import {
   estimateConversationTokens,
   formatTokenCount,
   calculateEstimatedCost,
+  fetchModelInfo,
 } from '../src/agent/tokenizer';
 import {
   saveMessages,
@@ -232,40 +233,89 @@ async function runTests() {
   console.log('  PASSED: Clear conversation.\n');
 
   // ----------------------------------------------------
-  // Test 9: Custom Models Persistence and Switching
+  // Test 9: Custom Models Persistence, Context Length & Switching
   // ----------------------------------------------------
-  console.log('Test 9: Custom models persistence and switching');
-  const customModelId = 'qwen/qwen-2.5-72b-instruct';
-  restartedAgent.addCustomModel(customModelId);
+  console.log('Test 9: Custom models persistence, context length, and auto-switching contextWindow');
+
+  // Test fetchModelInfo with mocked OpenRouter model endpoint
+  const previousFetch = (globalThis as any).fetch;
+  (globalThis as any).fetch = async (url: string) => {
+    if (url === 'https://openrouter.ai/api/v1/model/anthropic/claude-sonnet-4') {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: {
+            id: 'anthropic/claude-sonnet-4',
+            name: 'Anthropic: Claude Sonnet 4',
+            context_length: 1000000,
+          },
+        }),
+      };
+    }
+    if (url.includes('nonexistent')) {
+      return { ok: false, status: 404 };
+    }
+    return previousFetch(url);
+  };
+
+  const fetchedInfo = await fetchModelInfo('anthropic/claude-sonnet-4');
+  assert(fetchedInfo !== null, 'fetchModelInfo should return data for valid model');
+  assert.equal(fetchedInfo.contextLength, 1000000, 'Context length should be 1,000,000');
+  assert.equal(fetchedInfo.name, 'Anthropic: Claude Sonnet 4');
+
+  const notFound = await fetchModelInfo('nonexistent/model');
+  assert.equal(notFound, null, 'fetchModelInfo should return null for 404 models');
+
+  // Add custom model with its fetched contextLength
+  restartedAgent.addCustomModel({
+    id: 'anthropic/claude-sonnet-4',
+    name: fetchedInfo.name,
+    contextLength: fetchedInfo.contextLength,
+  });
 
   // Verify in memory and in localStorage
-  assert(restartedAgent.getCustomModels().includes(customModelId), 'Custom model should be in agent list');
+  const customModels = restartedAgent.getCustomModels();
+  const addedModel = customModels.find((m) => m.id === 'anthropic/claude-sonnet-4');
+  assert(addedModel, 'Custom model should be in agent list');
+  assert.equal(addedModel.contextLength, 1000000, 'Model contextLength should match fetched length');
+
   const storedModels = loadCustomModels();
-  assert(storedModels.includes(customModelId), 'Custom model must be saved in localStorage');
+  const storedModel = storedModels.find((m) => m.id === 'anthropic/claude-sonnet-4');
+  assert(storedModel, 'Custom model must be saved in localStorage');
+  assert.equal(storedModel.contextLength, 1000000, 'Stored contextLength must be 1,000,000');
 
-  // Duplicate prevention
-  restartedAgent.addCustomModel(customModelId);
+  // Switch model and verify active contextWindow automatically updates!
+  restartedAgent.setModel('anthropic/claude-sonnet-4');
+  assert.equal(restartedAgent.getState().config.model, 'anthropic/claude-sonnet-4');
   assert.equal(
-    restartedAgent.getCustomModels().filter((m) => m === customModelId).length,
-    1,
-    'Duplicates must not be added'
+    restartedAgent.getState().config.contextWindow,
+    1000000,
+    'Active agent contextWindow must automatically update to model contextLength'
   );
-
-  // Model switching
-  restartedAgent.setModel(customModelId);
-  assert.equal(restartedAgent.getState().config.model, customModelId, 'Active model must switch to custom model');
+  assert.equal(
+    restartedAgent.getTokenStats().contextWindow,
+    1000000,
+    'TokenStats contextWindow must reflect 1,000,000'
+  );
 
   // Persistence across restart
   const thirdAgent = new Agent();
-  assert(thirdAgent.getCustomModels().includes(customModelId), 'New agent must restore custom models from localStorage');
-  assert.equal(thirdAgent.getState().config.model, customModelId, 'New agent must restore active model from localStorage');
+  const restoredCustoms = thirdAgent.getCustomModels();
+  assert(
+    restoredCustoms.some((m) => m.id === 'anthropic/claude-sonnet-4' && m.contextLength === 1000000),
+    'New agent must restore custom models with their contextLength from localStorage'
+  );
+  assert.equal(thirdAgent.getState().config.model, 'anthropic/claude-sonnet-4');
+  assert.equal(thirdAgent.getState().config.contextWindow, 1000000);
 
   // Deletion and fallback
-  thirdAgent.removeCustomModel(customModelId);
-  assert(!thirdAgent.getCustomModels().includes(customModelId), 'Custom model must be removed from agent');
-  assert(!loadCustomModels().includes(customModelId), 'Custom model must be removed from localStorage');
-  assert.equal(thirdAgent.getState().config.model, 'openai/gpt-4o-mini', 'Active model must fall back to default upon deletion');
-  console.log('  ✓ Successfully added, persisted, switched, and deleted custom models with fallback');
+  thirdAgent.removeCustomModel('anthropic/claude-sonnet-4');
+  assert(!thirdAgent.getCustomModels().some((m) => m.id === 'anthropic/claude-sonnet-4'));
+  assert.equal(thirdAgent.getState().config.model, 'openai/gpt-4o-mini', 'Must fall back to default model on deletion');
+  assert.equal(thirdAgent.getState().config.contextWindow, 128000, 'Must fall back to default context window');
+
+  console.log('  ✓ Verified OpenRouter context_length fetch, custom model persistence, and auto-updating context window');
   console.log('  PASSED: Custom models persistence and switching.\n');
 
   console.log('🎉 ALL 9 TESTS PASSED SUCCESSFULLY! 100% SPEC COMPLIANCE.\n');

@@ -21,6 +21,7 @@ import {
   TokenStats,
   AgentMode,
   TrimInfo,
+  CustomModel,
   StateListener,
 } from './types';
 import {
@@ -43,7 +44,7 @@ export class Agent {
   private config: AgentConfig;
   private messages: Message[] = [];
   private tokenStats: TokenStats;
-  private customModels: string[] = [];
+  private customModels: CustomModel[] = [];
   private isLoading = false;
   private error: string | null = null;
   private lastTrimInfo: TrimInfo | null = null;
@@ -120,7 +121,13 @@ export class Agent {
     if (customContextWindow !== undefined) {
       this.config.contextWindow = customContextWindow;
     } else {
-      this.config.contextWindow = resolveContextLimit(this.config.model);
+      // 1. Check if model is in customModels
+      const foundCustom = this.customModels.find((m) => m.id === this.config.model);
+      if (foundCustom && foundCustom.contextLength !== undefined) {
+        this.config.contextWindow = foundCustom.contextLength;
+      } else {
+        this.config.contextWindow = resolveContextLimit(this.config.model);
+      }
     }
     this.tokenStats.contextWindow = this.config.contextWindow;
     this.recalculateCurrentStats();
@@ -128,23 +135,34 @@ export class Agent {
     this.notify();
   }
 
-  public getCustomModels(): string[] {
+  public getCustomModels(): CustomModel[] {
     return [...this.customModels];
   }
 
-  public addCustomModel(modelId: string): void {
-    const trimmed = modelId.trim();
-    if (!trimmed) return;
-    if (!this.customModels.includes(trimmed)) {
-      this.customModels.push(trimmed);
-      saveCustomModels(this.customModels);
-      this.notify();
+  public addCustomModel(model: CustomModel | string): void {
+    const modelObj: CustomModel = typeof model === 'string'
+      ? { id: model.trim(), contextLength: resolveContextLimit(model.trim()) }
+      : {
+          id: model.id.trim(),
+          name: model.name,
+          contextLength: model.contextLength,
+        };
+
+    if (!modelObj.id) return;
+
+    const existingIndex = this.customModels.findIndex((m) => m.id === modelObj.id);
+    if (existingIndex >= 0) {
+      this.customModels[existingIndex] = modelObj;
+    } else {
+      this.customModels.push(modelObj);
     }
+    saveCustomModels(this.customModels);
+    this.notify();
   }
 
   public removeCustomModel(modelId: string): void {
     const trimmed = modelId.trim();
-    this.customModels = this.customModels.filter((m) => m !== trimmed);
+    this.customModels = this.customModels.filter((m) => m.id !== trimmed);
     saveCustomModels(this.customModels);
 
     // If the removed model was active, fall back to default model

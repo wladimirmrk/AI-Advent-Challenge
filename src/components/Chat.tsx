@@ -76,14 +76,15 @@ export const Chat: React.FC = () => {
               {agentState.customModels.length > 0 && (
                 <optgroup label="Saved Custom Models">
                   {agentState.customModels.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
+                    <option key={m.id} value={m.id}>
+                      {m.name || m.id}
+                      {m.contextLength ? ` (${m.contextLength >= 1000000 ? `${m.contextLength / 1000000}M` : `${Math.round(m.contextLength / 1000)}k`})` : ''}
                     </option>
                   ))}
                 </optgroup>
               )}
               {!MODEL_PRESETS.some((p) => p.id === agentState.config.model) &&
-                !agentState.customModels.includes(agentState.config.model) && (
+                !agentState.customModels.some((m) => m.id === agentState.config.model) && (
                   <optgroup label="Active Custom">
                     <option value={agentState.config.model}>{agentState.config.model}</option>
                   </optgroup>

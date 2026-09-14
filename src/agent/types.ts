@@ -46,11 +46,17 @@ export interface TrimInfo {
   trimmedTokens: number;
 }
 
+export interface CustomModel {
+  id: string;
+  name?: string;
+  contextLength: number | null;
+}
+
 export interface AgentState {
   messages: Message[];
   tokenStats: TokenStats;
   config: AgentConfig;
-  customModels: string[];
+  customModels: CustomModel[];
   isLoading: boolean;
   error: string | null;
   lastTrimInfo: TrimInfo | null;

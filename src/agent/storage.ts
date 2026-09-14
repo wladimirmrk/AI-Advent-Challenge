@@ -5,7 +5,8 @@
  * it delegates all persistence operations to this module.
  */
 
-import { Message, AgentConfig, AgentMode } from './types';
+import { Message, AgentConfig, AgentMode, CustomModel } from './types';
+import { resolveContextLimit } from './tokenizer';
 
 const STORAGE_KEYS = {
   MESSAGES: 'agent_messages',
@@ -168,17 +169,36 @@ export function saveConfig(config: AgentConfig): void {
 
 /**
  * Load user-added custom models from localStorage.
+ * Supports backwards compatibility with older string[] format.
  */
-export function loadCustomModels(): string[] {
+export function loadCustomModels(): CustomModel[] {
   try {
     if (typeof localStorage === 'undefined') return [];
     const raw = localStorage.getItem(STORAGE_KEYS.CUSTOM_MODELS);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
-      return parsed.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
-    }
-    return [];
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .map((item) => {
+        // Backwards compatibility if previously stored as string
+        if (typeof item === 'string' && item.trim()) {
+          const id = item.trim();
+          return {
+            id,
+            contextLength: resolveContextLimit(id),
+          };
+        }
+        if (item && typeof item === 'object' && typeof item.id === 'string' && item.id.trim()) {
+          return {
+            id: item.id.trim(),
+            name: typeof item.name === 'string' ? item.name : undefined,
+            contextLength: typeof item.contextLength === 'number' ? item.contextLength : null,
+          };
+        }
+        return null;
+      })
+      .filter((item): item is CustomModel => item !== null);
   } catch (err) {
     console.error('[Storage] Failed to load custom models from localStorage:', err);
     return [];
@@ -188,7 +208,7 @@ export function loadCustomModels(): string[] {
 /**
  * Save user-added custom models array to localStorage.
  */
-export function saveCustomModels(models: string[]): void {
+export function saveCustomModels(models: CustomModel[]): void {
   try {
     if (typeof localStorage === 'undefined') return;
     localStorage.setItem(STORAGE_KEYS.CUSTOM_MODELS, JSON.stringify(models));
