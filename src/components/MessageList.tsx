@@ -1,14 +1,26 @@
 import React, { useEffect, useRef } from 'react';
-import { Message, TrimInfo } from '../agent/types';
-import { User, Bot, AlertTriangle, Sparkles, Scissors, X } from 'lucide-react';
+import { Message, TrimInfo, ContextStrategy } from '../agent/types';
+import {
+  User,
+  Bot,
+  AlertTriangle,
+  Sparkles,
+  Scissors,
+  X,
+  GitBranch,
+  Layers,
+} from 'lucide-react';
 
 interface MessageListProps {
   messages: Message[];
   isLoading: boolean;
   error: string | null;
   lastTrimInfo: TrimInfo | null;
+  strategy?: ContextStrategy;
+  recentMessagesCount?: number;
   onClearError: () => void;
   onSuggestionClick?: (prompt: string) => void;
+  onBranchFromMessage?: (messageId: string) => void;
 }
 
 export const MessageList: React.FC<MessageListProps> = ({
@@ -16,8 +28,11 @@ export const MessageList: React.FC<MessageListProps> = ({
   isLoading,
   error,
   lastTrimInfo,
+  strategy = 'sliding_window',
+  recentMessagesCount = 10,
   onClearError,
   onSuggestionClick,
+  onBranchFromMessage,
 }) => {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -70,36 +85,78 @@ export const MessageList: React.FC<MessageListProps> = ({
         </div>
       ) : (
         <div className="messages-container">
-          {messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={`message-row ${msg.role === 'user' ? 'user-row' : 'assistant-row'}`}
-            >
-              <div className="avatar-col">
-                <div className={`avatar ${msg.role}`}>
-                  {msg.role === 'user' ? <User size={18} /> : <Bot size={18} />}
-                </div>
-              </div>
+          {(() => {
+            const usesWindowN = strategy === 'sliding_window' || strategy === 'sticky_facts' || strategy === 'summary';
+            const cutoffIndex = usesWindowN ? Math.max(0, messages.length - recentMessagesCount) : 0;
 
-              <div className="message-bubble-col">
-                <div className="message-header">
-                  <span className="sender-name">{msg.role === 'user' ? 'You' : 'Agent'}</span>
-                  <span className="message-time">
-                    {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </span>
-                  {msg.tokens !== undefined && (
-                    <span className="message-token-pill" title="Tokens consumed by this message">
-                      {msg.tokens} tokens
-                    </span>
+            return messages.map((msg, idx) => {
+              const isOutsideContext = cutoffIndex > 0 && idx < cutoffIndex;
+
+              return (
+                <React.Fragment key={msg.id}>
+                  {cutoffIndex > 0 && idx === cutoffIndex && (
+                    <div className="context-cutoff-divider">
+                      <div className="cutoff-line" />
+                      <div
+                        className="cutoff-badge"
+                        title={`В контекст модели передаются только сообщения ниже этой черты (последние ${recentMessagesCount})`}
+                      >
+                        <Layers size={13} />
+                        <span>Граница окна (N = {recentMessagesCount}) • Сообщения выше отсечены от LLM</span>
+                      </div>
+                      <div className="cutoff-line" />
+                    </div>
                   )}
-                </div>
 
-                <div className="message-content">
-                  {msg.content}
-                </div>
-              </div>
-            </div>
-          ))}
+                  <div
+                    className={`message-row ${msg.role === 'user' ? 'user-row' : 'assistant-row'} ${isOutsideContext ? 'outside-context' : ''}`}
+                    title={isOutsideContext ? 'Это сообщение находится за пределами окна N и не передаётся в LLM' : undefined}
+                  >
+                    <div className="avatar-col">
+                      <div className={`avatar ${msg.role}`}>
+                        {msg.role === 'user' ? <User size={18} /> : <Bot size={18} />}
+                      </div>
+                    </div>
+
+                    <div className="message-bubble-col">
+                      <div className="message-header">
+                        <span className="sender-name">{msg.role === 'user' ? 'You' : 'Agent'}</span>
+                        <span className="message-time">
+                          {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                        {msg.tokens !== undefined && (
+                          <span className="message-token-pill" title="Tokens consumed by this message">
+                            {msg.tokens} tokens
+                          </span>
+                        )}
+                        {isOutsideContext && (
+                          <span className="outside-context-pill" title="Отсечено из контекста модели">
+                            Отсечено (вне N)
+                          </span>
+                        )}
+
+                        {onBranchFromMessage && (
+                          <button
+                            type="button"
+                            className="msg-branch-btn"
+                            onClick={() => onBranchFromMessage(msg.id)}
+                            title="Создать новую ветку диалога от этого сообщения"
+                          >
+                            <GitBranch size={12} />
+                            <span>Ветка</span>
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="message-content">
+                        {msg.content}
+                      </div>
+                    </div>
+                  </div>
+                </React.Fragment>
+              );
+            });
+          })()}
 
           {/* Context Trim Notification */}
           {lastTrimInfo && lastTrimInfo.wasTrimmed && (

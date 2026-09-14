@@ -13,7 +13,25 @@ export interface Message {
 }
 
 export type AgentMode = 'production' | 'demo';
+export type ContextStrategy = 'sliding_window' | 'sticky_facts' | 'branching' | 'summary' | 'demo';
 export type ModelProvider = 'openrouter' | 'ollama';
+
+export interface FactItem {
+  id: string;
+  key: string;
+  value: string;
+  category?: 'goal' | 'constraint' | 'preference' | 'decision' | 'agreement' | 'other';
+  updatedAt: number;
+}
+
+export interface DialogueBranch {
+  id: string;
+  name: string;
+  parentBranchId?: string;
+  checkpointMessageId?: string;
+  createdAt: number;
+  messages: Message[];
+}
 
 export interface TokenStats {
   /** Tokens in the user's latest prompt */
@@ -49,6 +67,7 @@ export interface AgentConfig {
   model: string;
   contextWindow: number | null;
   mode: AgentMode;
+  strategy: ContextStrategy;
   systemPrompt: string;
   /** Number of recent messages to send as-is (N). Defaults to 10. */
   recentMessagesCount: number;
@@ -77,9 +96,13 @@ export interface AgentState {
   customModels: CustomModel[];
   isLoading: boolean;
   isSummarizing: boolean;
+  isExtractingFacts: boolean;
   error: string | null;
   lastTrimInfo: TrimInfo | null;
   summary: ConversationSummary | null;
+  facts: FactItem[];
+  branches: DialogueBranch[];
+  activeBranchId: string;
 }
 
 export type StateListener = (state: AgentState) => void;

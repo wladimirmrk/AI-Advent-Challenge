@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AgentConfig, AgentMode, CustomModel, ModelProvider } from '../agent/types';
+import { AgentConfig, AgentMode, ContextStrategy, CustomModel, ModelProvider } from '../agent/types';
 import { MODEL_CONTEXT_LIMITS, fetchModelInfo } from '../agent/tokenizer';
 import { clearApiKey } from '../agent/storage';
 import {
@@ -73,6 +73,7 @@ export const Settings: React.FC<SettingsProps> = ({
     config.contextWindow !== null ? String(config.contextWindow) : ''
   );
   const [mode, setMode] = useState<AgentMode>(config.mode);
+  const [strategy, setStrategy] = useState<ContextStrategy>(config.strategy || 'sliding_window');
   const [systemPrompt, setSystemPrompt] = useState(config.systemPrompt);
   const [recentMessagesCount, setRecentMessagesCount] = useState<string>(
     String(config.recentMessagesCount ?? 10)
@@ -283,6 +284,7 @@ export const Settings: React.FC<SettingsProps> = ({
       model: model.trim() || (provider === 'ollama' ? 'llama3.2:latest' : 'openai/gpt-4o-mini'),
       contextWindow: validatedLimit,
       mode,
+      strategy,
       systemPrompt: systemPrompt.trim(),
       recentMessagesCount: isNaN(parsedN) || parsedN <= 0 ? 10 : parsedN,
       summaryThreshold: isNaN(parsedThreshold) || parsedThreshold <= 0 ? 10 : parsedThreshold,
@@ -805,9 +807,36 @@ export const Settings: React.FC<SettingsProps> = ({
           </div>
 
           {/* Context Mode */}
+          {/* Context Strategy & Mode */}
+          <div className="form-group">
+            <label htmlFor="contextStrategySelect">
+              <Sparkles size={14} /> Context Management Strategy
+            </label>
+            <select
+              id="contextStrategySelect"
+              className="form-input"
+              value={strategy}
+              onChange={(e) => {
+                const s = e.target.value as ContextStrategy;
+                setStrategy(s);
+                if (s === 'demo') {
+                  setMode('demo');
+                } else {
+                  setMode('production');
+                }
+              }}
+            >
+              <option value="sliding_window">🪟 Sliding Window (только последние N сообщений)</option>
+              <option value="sticky_facts">📌 Sticky Facts (Key-Value память + последние N сообщений)</option>
+              <option value="branching">🌲 Branching (ветки диалога с чекпоинтами)</option>
+              <option value="summary">📝 Summary (инкрементальное саммари + N сообщений)</option>
+              <option value="demo">⚠️ Demo Overflow (без управления контекстом)</option>
+            </select>
+          </div>
+
           <div className="form-group">
             <label>
-              <Sparkles size={14} /> Context Management Mode
+              <Sparkles size={14} /> Context Limit Behavior
             </label>
             <div className="radio-cards">
               <label className={`radio-card ${mode === 'production' ? 'selected' : ''}`}>
@@ -816,7 +845,10 @@ export const Settings: React.FC<SettingsProps> = ({
                   name="mode"
                   value="production"
                   checked={mode === 'production'}
-                  onChange={() => setMode('production')}
+                  onChange={() => {
+                    setMode('production');
+                    if (strategy === 'demo') setStrategy('sliding_window');
+                  }}
                 />
                 <div className="radio-card-body">
                   <div className="radio-card-title">Production Mode (Auto-trim)</div>
@@ -832,7 +864,10 @@ export const Settings: React.FC<SettingsProps> = ({
                   name="mode"
                   value="demo"
                   checked={mode === 'demo'}
-                  onChange={() => setMode('demo')}
+                  onChange={() => {
+                    setMode('demo');
+                    setStrategy('demo');
+                  }}
                 />
                 <div className="radio-card-body">
                   <div className="radio-card-title">Demo Overflow Mode</div>

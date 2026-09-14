@@ -943,9 +943,233 @@ async function runTests() {
     'Failed user message must be removed from localStorage'
   );
   console.log('  ✓ User message rolled back from state and storage upon LLM error');
-  console.log('  PASSED: Immediate User Message Rendering & Rollback on Error.\n');
+  // ----------------------------------------------------
+  // Test 18: Strategy 1 - Sliding Window (Keep only last N messages)
+  // ----------------------------------------------------
+  console.log('Test 18: Strategy 1 - Sliding Window');
+  mockStorage.clear();
+  const slidingAgent = new Agent({
+    apiKey: 'sk-test',
+    model: 'openai/gpt-4o-mini',
+    recentMessagesCount: 3,
+    strategy: 'sliding_window',
+    systemPrompt: 'You are a sliding window assistant.',
+  });
 
-  console.log('🎉 ALL 17 TESTS PASSED SUCCESSFULLY! 100% SPEC COMPLIANCE.\n');
+  const sixMessages = [
+    { id: 'sw1', role: 'user' as const, content: 'Msg 1', timestamp: 1 },
+    { id: 'sw2', role: 'assistant' as const, content: 'Msg 2', timestamp: 2 },
+    { id: 'sw3', role: 'user' as const, content: 'Msg 3', timestamp: 3 },
+    { id: 'sw4', role: 'assistant' as const, content: 'Msg 4', timestamp: 4 },
+    { id: 'sw5', role: 'user' as const, content: 'Msg 5', timestamp: 5 },
+    { id: 'sw6', role: 'assistant' as const, content: 'Msg 6', timestamp: 6 },
+  ];
+  saveMessages(sixMessages);
+  saveSummary({
+    summary: 'Old summary that should be ignored in sliding window',
+    lastSummarizedMessageId: 'sw2',
+    lastSummarizedIndex: 1,
+    updatedAt: 100,
+    version: 1,
+  });
+  slidingAgent.loadHistory();
+
+  const preparedSliding = slidingAgent.getPreparedMessages(
+    slidingAgent.getHistory(),
+    { role: 'user', content: 'Msg 7' }
+  );
+
+  // Should have: 1 system prompt + exactly 3 recent messages (Msg 4, 5, 6) + Msg 7
+  assert.equal(preparedSliding.length, 5, 'Should contain: 1 system + 3 recent + 1 new user');
+  assert.equal(preparedSliding[0].role, 'system');
+  assert.equal(preparedSliding[0].content, 'You are a sliding window assistant.');
+  assert.equal(preparedSliding[1].content, 'Msg 4');
+  assert.equal(preparedSliding[2].content, 'Msg 5');
+  assert.equal(preparedSliding[3].content, 'Msg 6');
+  assert.equal(preparedSliding[4].content, 'Msg 7');
+  // Verify older messages Msg 1..3 and summary are completely excluded
+  assert(!preparedSliding.some((m) => m.content.includes('Old summary')));
+  assert(!preparedSliding.some((m) => m.content === 'Msg 1'));
+  assert(!preparedSliding.some((m) => m.content === 'Msg 2'));
+  assert(!preparedSliding.some((m) => m.content === 'Msg 3'));
+  console.log('  ✓ Sliding Window strictly transmits last N messages and discards older context');
+  console.log('  PASSED: Strategy 1 - Sliding Window.\n');
+
+  // ----------------------------------------------------
+  // Test 19: Strategy 2 - Sticky Facts / Key-Value Memory
+  // ----------------------------------------------------
+  console.log('Test 19: Strategy 2 - Sticky Facts (Key-Value Memory)');
+  mockStorage.clear();
+  const factsAgent = new Agent({
+    apiKey: 'sk-test',
+    model: 'openai/gpt-4o-mini',
+    recentMessagesCount: 2,
+    strategy: 'sticky_facts',
+    systemPrompt: 'You are a facts-aware assistant.',
+  });
+
+  // Add facts
+  factsAgent.addFact('цель проекта', 'Создать чат-агент на TypeScript', 'goal');
+  factsAgent.addFact('бюджет', 'до 500 долларов', 'constraint');
+  factsAgent.addFact('стиль кода', 'Строгий ESLint и Prettier', 'preference');
+
+  assert.equal(factsAgent.getFacts().length, 3);
+  assert.equal(factsAgent.getState().facts.length, 3);
+
+  // Update existing fact
+  const budgetFact = factsAgent.getFacts().find((f) => f.key === 'бюджет');
+  assert(budgetFact);
+  factsAgent.updateFact(budgetFact.id, { value: 'до 1000 долларов' });
+  assert.equal(
+    factsAgent.getFacts().find((f) => f.key === 'бюджет')?.value,
+    'до 1000 долларов'
+  );
+
+  // Seed 4 messages in history
+  const fourMsgs = [
+    { id: 'f1', role: 'user' as const, content: 'Привет', timestamp: 1 },
+    { id: 'f2', role: 'assistant' as const, content: 'Привет!', timestamp: 2 },
+    { id: 'f3', role: 'user' as const, content: 'Как дела?', timestamp: 3 },
+    { id: 'f4', role: 'assistant' as const, content: 'Отлично!', timestamp: 4 },
+  ];
+  saveMessages(fourMsgs);
+  factsAgent.loadHistory();
+
+  // Test prepared messages: 1 system prompt + 1 sticky facts block + 2 recent messages + 1 new user
+  const preparedFacts = factsAgent.getPreparedMessages(
+    factsAgent.getHistory(),
+    { role: 'user', content: 'Новый вопрос' }
+  );
+  assert.equal(preparedFacts.length, 5, 'Should contain: 1 system + 1 facts block + 2 recent + 1 new user');
+  assert.equal(preparedFacts[0].role, 'system');
+  assert.equal(preparedFacts[0].content, 'You are a facts-aware assistant.');
+  assert.equal(preparedFacts[1].role, 'system');
+  assert(preparedFacts[1].content.includes('Key-Value Memory'));
+  assert(preparedFacts[1].content.includes('цель проекта: Создать чат-агент на TypeScript'));
+  assert(preparedFacts[1].content.includes('бюджет: до 1000 долларов'));
+  assert.equal(preparedFacts[2].content, 'Как дела?');
+  assert.equal(preparedFacts[3].content, 'Отлично!');
+  assert.equal(preparedFacts[4].content, 'Новый вопрос');
+
+  // Test remove and clear facts
+  factsAgent.removeFact(budgetFact.id);
+  assert.equal(factsAgent.getFacts().length, 2);
+  factsAgent.clearFacts();
+  assert.equal(factsAgent.getFacts().length, 0);
+  console.log('  ✓ Sticky Facts Key-Value memory is persisted, updated, and injected into context');
+  console.log('  PASSED: Strategy 2 - Sticky Facts.\n');
+
+  // ----------------------------------------------------
+  // Test 20: Strategy 3 - Branching (Checkpoints & Dialogue Threads)
+  // ----------------------------------------------------
+  console.log('Test 20: Strategy 3 - Branching (Dialogue Branches)');
+  mockStorage.clear();
+  const branchAgent = new Agent({
+    apiKey: 'sk-test',
+    model: 'openai/gpt-4o-mini',
+    strategy: 'branching',
+    recentMessagesCount: 10,
+  });
+
+  // Main branch starts with initial messages
+  const initialBranchMsgs = [
+    { id: 'b1', role: 'user' as const, content: 'Начало диалога', timestamp: 1 },
+    { id: 'b2', role: 'assistant' as const, content: 'Привет, о чем говорим?', timestamp: 2 },
+    { id: 'b3', role: 'user' as const, content: 'Точка выбора чекпоинта', timestamp: 3 },
+    { id: 'b4', role: 'assistant' as const, content: 'Вот два варианта решения', timestamp: 4 },
+    { id: 'b5', role: 'user' as const, content: 'Идем по плану А', timestamp: 5 },
+  ];
+  saveMessages(initialBranchMsgs);
+  branchAgent.loadHistory();
+
+  assert.equal(branchAgent.getBranches().length, 1);
+  assert.equal(branchAgent.getActiveBranchId(), 'main');
+
+  // 1. Create a new branch from checkpoint b3 ("Точка выбора чекпоинта")
+  const branchB = branchAgent.createBranch('Ветка Б (Альтернатива)', 'b3');
+  assert.equal(branchAgent.getActiveBranchId(), branchB.id);
+  // Forked history should only include messages up to b3 (b1, b2, b3)
+  assert.equal(branchAgent.getHistory().length, 3);
+  assert.equal(branchAgent.getHistory()[2].id, 'b3');
+  assert(!branchAgent.getHistory().some((m) => m.id === 'b4' || m.id === 'b5'));
+
+  // Verify that branching context transmits system prompt + all messages of the active branch
+  const prepBranchB = branchAgent.getPreparedMessages(
+    branchAgent.getHistory(),
+    { role: 'user', content: 'Вопрос в ветке Б' }
+  );
+  assert.equal(prepBranchB.length, 5, 'Should contain 1 system + 3 branch messages + 1 new user message');
+  assert.equal(prepBranchB[0].role, 'system');
+  assert.equal(prepBranchB[1].content, 'Начало диалога');
+  assert.equal(prepBranchB[2].content, 'Привет, о чем говорим?');
+  assert.equal(prepBranchB[3].content, 'Точка выбора чекпоинта');
+  assert.equal(prepBranchB[4].content, 'Вопрос в ветке Б');
+
+  // 2. Switch back to Main branch
+  branchAgent.switchBranch('main');
+  assert.equal(branchAgent.getActiveBranchId(), 'main');
+  assert.equal(branchAgent.getHistory().length, 5);
+  assert.equal(branchAgent.getHistory()[4].content, 'Идем по плану А');
+
+  // 3. Rename branch
+  branchAgent.renameBranch(branchB.id, 'Ветка Б: Финальный план');
+  const renamedBranch = branchAgent.getBranches().find((b) => b.id === branchB.id);
+  assert.equal(renamedBranch?.name, 'Ветка Б: Финальный план');
+
+  // 4. Delete branch
+  branchAgent.deleteBranch(branchB.id);
+  assert.equal(branchAgent.getBranches().length, 1);
+  assert.equal(branchAgent.getActiveBranchId(), 'main');
+  console.log('  ✓ Branches can be created from checkpoints, switched independently, and managed');
+  console.log('  PASSED: Strategy 3 - Branching.\n');
+
+  // ----------------------------------------------------
+  // Test 21: Context Strategy Switcher
+  // ----------------------------------------------------
+  console.log('Test 21: Context Strategy Switcher');
+  mockStorage.clear();
+  const switchAgent = new Agent({
+    apiKey: 'sk-test',
+    model: 'openai/gpt-4o-mini',
+    strategy: 'sliding_window',
+    recentMessagesCount: 2,
+    systemPrompt: 'System',
+  });
+
+  const testFive = [
+    { id: 's1', role: 'user' as const, content: '1', timestamp: 1 },
+    { id: 's2', role: 'assistant' as const, content: '2', timestamp: 2 },
+    { id: 's3', role: 'user' as const, content: '3', timestamp: 3 },
+    { id: 's4', role: 'assistant' as const, content: '4', timestamp: 4 },
+    { id: 's5', role: 'user' as const, content: '5', timestamp: 5 },
+  ];
+  saveMessages(testFive);
+  switchAgent.loadHistory();
+
+  // Sliding window -> 1 system + 2 recent (4, 5) = 3 messages
+  let prep = switchAgent.getPreparedMessages(switchAgent.getHistory());
+  assert.equal(prep.length, 3);
+  assert.equal(prep[1].content, '4');
+  assert.equal(prep[2].content, '5');
+
+  // Switch to Demo -> all 5 messages included without slicing = 6 messages
+  switchAgent.setStrategy('demo');
+  assert.equal(switchAgent.getState().config.strategy, 'demo');
+  assert.equal(switchAgent.getState().config.mode, 'demo');
+  prep = switchAgent.getPreparedMessages(switchAgent.getHistory());
+  assert.equal(prep.length, 6); // 1 system + 5 messages
+
+  // Switch to Sliding Window with N=4
+  switchAgent.setStrategy('sliding_window');
+  switchAgent.setRecentMessagesCount(4);
+  prep = switchAgent.getPreparedMessages(switchAgent.getHistory());
+  assert.equal(prep.length, 5); // 1 system + 4 messages (2, 3, 4, 5)
+  assert.equal(prep[1].content, '2');
+
+  console.log('  ✓ Context Strategy Switcher dynamically alters LLM context transmission');
+  console.log('  PASSED: Context Strategy Switcher.\n');
+
+  console.log('🎉 ALL 21 TESTS PASSED SUCCESSFULLY! 100% SPEC COMPLIANCE.\n');
 }
 
 runTests().catch((err) => {

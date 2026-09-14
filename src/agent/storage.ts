@@ -5,7 +5,17 @@
  * it delegates all persistence operations to this module.
  */
 
-import { Message, AgentConfig, AgentMode, CustomModel, ModelProvider, ConversationSummary } from './types';
+import {
+  Message,
+  AgentConfig,
+  AgentMode,
+  ContextStrategy,
+  CustomModel,
+  ModelProvider,
+  ConversationSummary,
+  FactItem,
+  DialogueBranch,
+} from './types';
 import { resolveContextLimit } from './tokenizer';
 
 const STORAGE_KEYS = {
@@ -16,6 +26,9 @@ const STORAGE_KEYS = {
   CUSTOM_MODELS: 'agent_custom_models',
   OLLAMA_MODELS: 'agent_ollama_models',
   SUMMARY: 'agent_summary',
+  FACTS: 'agent_sticky_facts',
+  BRANCHES: 'agent_branches',
+  ACTIVE_BRANCH: 'agent_active_branch_id',
   STORAGE_VERSION: 'agent_storage_version',
 } as const;
 
@@ -26,6 +39,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   model: 'openai/gpt-4o-mini',
   contextWindow: 128000,
   mode: 'production',
+  strategy: 'summary',
   systemPrompt: 'You are a helpful, concise AI assistant.',
   recentMessagesCount: 10,
   summaryThreshold: 10,
@@ -39,7 +53,7 @@ export const DEFAULT_SUMMARY: ConversationSummary = {
   version: 1,
 };
 
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 3;
 
 /**
  * Migration helper: safely migrates localStorage schema across versions.
@@ -50,16 +64,29 @@ export function migrateStorage(): void {
     const currentVersionStr = localStorage.getItem(STORAGE_KEYS.STORAGE_VERSION);
     const currentVersion = currentVersionStr ? parseInt(currentVersionStr, 10) : 1;
 
-    if (currentVersion < CURRENT_SCHEMA_VERSION) {
+    if (currentVersion < 2) {
       // Version 1 -> 2 migration:
       // Ensure summary key exists separately without touching messages
       const existingSummary = localStorage.getItem(STORAGE_KEYS.SUMMARY);
       if (!existingSummary) {
         saveSummary(DEFAULT_SUMMARY);
       }
-
-      localStorage.setItem(STORAGE_KEYS.STORAGE_VERSION, String(CURRENT_SCHEMA_VERSION));
     }
+
+    if (currentVersion < 3) {
+      // Version 2 -> 3 migration:
+      // Initialize facts and branches if needed
+      const existingFacts = localStorage.getItem(STORAGE_KEYS.FACTS);
+      if (!existingFacts) {
+        saveFacts([]);
+      }
+      const existingBranches = localStorage.getItem(STORAGE_KEYS.BRANCHES);
+      if (!existingBranches) {
+        saveBranches([]);
+      }
+    }
+
+    localStorage.setItem(STORAGE_KEYS.STORAGE_VERSION, String(CURRENT_SCHEMA_VERSION));
   } catch (err) {
     console.error('[Storage] Migration failed:', err);
   }
@@ -159,6 +186,106 @@ export function clearSummary(): void {
     localStorage.removeItem(STORAGE_KEYS.SUMMARY);
   } catch (err) {
     console.error('[Storage] Failed to clear summary from localStorage:', err);
+  }
+}
+
+/**
+ * Load sticky facts from localStorage.
+ */
+export function loadFacts(): FactItem[] {
+  try {
+    if (typeof localStorage === 'undefined') return [];
+    const raw = localStorage.getItem(STORAGE_KEYS.FACTS);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
+    return [];
+  } catch (err) {
+    console.error('[Storage] Failed to load facts from localStorage:', err);
+    return [];
+  }
+}
+
+/**
+ * Save sticky facts to localStorage.
+ */
+export function saveFacts(facts: FactItem[]): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(STORAGE_KEYS.FACTS, JSON.stringify(facts));
+  } catch (err) {
+    console.error('[Storage] Failed to save facts to localStorage:', err);
+  }
+}
+
+/**
+ * Clear sticky facts from localStorage.
+ */
+export function clearFacts(): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.removeItem(STORAGE_KEYS.FACTS);
+  } catch (err) {
+    console.error('[Storage] Failed to clear facts from localStorage:', err);
+  }
+}
+
+/**
+ * Load branches from localStorage.
+ */
+export function loadBranches(): DialogueBranch[] {
+  try {
+    if (typeof localStorage === 'undefined') return [];
+    const raw = localStorage.getItem(STORAGE_KEYS.BRANCHES);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
+    return [];
+  } catch (err) {
+    console.error('[Storage] Failed to load branches from localStorage:', err);
+    return [];
+  }
+}
+
+/**
+ * Save branches to localStorage.
+ */
+export function saveBranches(branches: DialogueBranch[]): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(STORAGE_KEYS.BRANCHES, JSON.stringify(branches));
+  } catch (err) {
+    console.error('[Storage] Failed to save branches to localStorage:', err);
+  }
+}
+
+/**
+ * Load active branch ID from localStorage.
+ */
+export function loadActiveBranchId(): string {
+  try {
+    if (typeof localStorage === 'undefined') return 'main';
+    const raw = localStorage.getItem(STORAGE_KEYS.ACTIVE_BRANCH);
+    return raw && raw.trim() ? raw.trim() : 'main';
+  } catch (err) {
+    console.error('[Storage] Failed to load active branch id:', err);
+    return 'main';
+  }
+}
+
+/**
+ * Save active branch ID to localStorage.
+ */
+export function saveActiveBranchId(id: string): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(STORAGE_KEYS.ACTIVE_BRANCH, id.trim());
+  } catch (err) {
+    console.error('[Storage] Failed to save active branch id:', err);
   }
 }
 
@@ -272,6 +399,9 @@ export function loadConfig(): AgentConfig {
           mode: (parsed.mode === 'demo' || parsed.mode === 'production')
             ? (parsed.mode as AgentMode)
             : DEFAULT_CONFIG.mode,
+          strategy: (['sliding_window', 'sticky_facts', 'branching', 'summary', 'demo'].includes(parsed.strategy))
+            ? (parsed.strategy as ContextStrategy)
+            : (parsed.mode === 'demo' ? 'demo' : DEFAULT_CONFIG.strategy),
           systemPrompt: typeof parsed.systemPrompt === 'string'
             ? parsed.systemPrompt
             : DEFAULT_CONFIG.systemPrompt,

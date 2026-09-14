@@ -1,16 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import { agentInstance } from '../agent/Agent';
-import { AgentState, AgentConfig, AgentMode } from '../agent/types';
+import { AgentState, AgentConfig, ContextStrategy } from '../agent/types';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
 import { TokenStats } from './TokenStats';
 import { Settings, OPENROUTER_PRESETS, OLLAMA_PRESETS } from './Settings';
-import { ModeToggle } from './ModeToggle';
+import { StrategySelector } from './StrategySelector';
+import { BranchBar } from './BranchBar';
+import { StickyFactsPanel } from './StickyFactsPanel';
 import { Bot, Settings as SettingsIcon, Trash2, Cpu } from 'lucide-react';
 
 export const Chat: React.FC = () => {
   const [agentState, setAgentState] = useState<AgentState>(() => agentInstance.getState());
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isFactsDrawerOpen, setIsFactsDrawerOpen] = useState(false);
 
   // Subscribe to Agent state changes (Agent -> React state -> UI)
   useEffect(() => {
@@ -26,13 +29,16 @@ export const Chat: React.FC = () => {
 
   const handleClearHistory = () => {
     if (agentState.messages.length === 0) return;
-    if (window.confirm('Clear all conversation history from Agent and localStorage?')) {
+    if (window.confirm('Clear all conversation history for the active branch?')) {
       agentInstance.clearHistory();
     }
   };
 
-  const handleModeChange = (newMode: AgentMode) => {
-    agentInstance.setMode(newMode);
+  const handleStrategyChange = (newStrategy: ContextStrategy) => {
+    agentInstance.setStrategy(newStrategy);
+    if (newStrategy === 'sticky_facts') {
+      setIsFactsDrawerOpen(true);
+    }
   };
 
   const handleSaveSettings = (newConfig: AgentConfig) => {
@@ -40,10 +46,16 @@ export const Chat: React.FC = () => {
     agentInstance.setOllamaUrl(newConfig.ollamaUrl);
     agentInstance.setProvider(newConfig.provider);
     agentInstance.setModel(newConfig.model, newConfig.contextWindow, newConfig.provider);
-    agentInstance.setMode(newConfig.mode);
+    agentInstance.setStrategy(newConfig.strategy);
     agentInstance.setSystemPrompt(newConfig.systemPrompt);
     agentInstance.setRecentMessagesCount(newConfig.recentMessagesCount);
     agentInstance.setSummaryThreshold(newConfig.summaryThreshold);
+  };
+
+  const handleBranchFromMessage = (messageId: string) => {
+    const branchName = `Ветка ${agentState.branches.length + 1}`;
+    agentInstance.createBranch(branchName, messageId);
+    agentInstance.setStrategy('branching');
   };
 
   const handleSelectModel = (val: string) => {
@@ -133,9 +145,14 @@ export const Chat: React.FC = () => {
         </div>
 
         <div className="header-center">
-          <ModeToggle
-            mode={agentState.config.mode}
-            onChange={handleModeChange}
+          <StrategySelector
+            strategy={agentState.config.strategy}
+            onStrategyChange={handleStrategyChange}
+            recentMessagesCount={agentState.config.recentMessagesCount}
+            onRecentMessagesCountChange={(n) => agentInstance.setRecentMessagesCount(n)}
+            factsCount={agentState.facts.length}
+            isFactsOpen={isFactsDrawerOpen}
+            onToggleFacts={() => setIsFactsDrawerOpen(!isFactsDrawerOpen)}
             disabled={agentState.isLoading}
           />
         </div>
@@ -169,14 +186,42 @@ export const Chat: React.FC = () => {
 
       {/* Main Conversation Canvas */}
       <main className="chat-main-content">
-        <MessageList
-          messages={agentState.messages}
-          isLoading={agentState.isLoading}
-          error={agentState.error}
-          lastTrimInfo={agentState.lastTrimInfo}
-          onClearError={() => agentInstance.clearError()}
-          onSuggestionClick={(prompt) => handleSendMessage(prompt)}
-        />
+        {(agentState.config.strategy === 'branching' || agentState.branches.length > 1) && (
+          <BranchBar
+            branches={agentState.branches}
+            activeBranchId={agentState.activeBranchId}
+            onSwitchBranch={(id) => agentInstance.switchBranch(id)}
+            onCreateBranch={(name) => agentInstance.createBranch(name)}
+            onRenameBranch={(id, name) => agentInstance.renameBranch(id, name)}
+            onDeleteBranch={(id) => agentInstance.deleteBranch(id)}
+            disabled={agentState.isLoading}
+          />
+        )}
+
+        <div className="chat-body-container">
+          <MessageList
+            messages={agentState.messages}
+            isLoading={agentState.isLoading}
+            error={agentState.error}
+            lastTrimInfo={agentState.lastTrimInfo}
+            strategy={agentState.config.strategy}
+            recentMessagesCount={agentState.config.recentMessagesCount}
+            onClearError={() => agentInstance.clearError()}
+            onSuggestionClick={(prompt) => handleSendMessage(prompt)}
+            onBranchFromMessage={handleBranchFromMessage}
+          />
+
+          <StickyFactsPanel
+            isOpen={isFactsDrawerOpen}
+            onClose={() => setIsFactsDrawerOpen(false)}
+            facts={agentState.facts}
+            isExtracting={agentState.isExtractingFacts}
+            onAddFact={(k, v, cat) => agentInstance.addFact(k, v, cat)}
+            onUpdateFact={(id, upd) => agentInstance.updateFact(id, upd)}
+            onRemoveFact={(id) => agentInstance.removeFact(id)}
+            onClearFacts={() => agentInstance.clearFacts()}
+          />
+        </div>
       </main>
 
       {/* Token Usage Stats Bar */}

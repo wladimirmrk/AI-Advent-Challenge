@@ -20,11 +20,14 @@ import {
   AgentState,
   TokenStats,
   AgentMode,
+  ContextStrategy,
   ModelProvider,
   TrimInfo,
   CustomModel,
   StateListener,
   ConversationSummary,
+  FactItem,
+  DialogueBranch,
 } from './types';
 import {
   loadMessages,
@@ -37,6 +40,13 @@ import {
   loadSummary,
   saveSummary,
   clearSummary,
+  loadFacts,
+  saveFacts,
+  clearFacts,
+  loadBranches,
+  saveBranches,
+  loadActiveBranchId,
+  saveActiveBranchId,
   migrateStorage,
   DEFAULT_SUMMARY,
 } from './storage';
@@ -52,10 +62,14 @@ export class Agent {
   private config: AgentConfig;
   private messages: Message[] = [];
   private summary: ConversationSummary;
+  private facts: FactItem[] = [];
+  private branches: DialogueBranch[] = [];
+  private activeBranchId = 'main';
   private tokenStats: TokenStats;
   private customModels: CustomModel[] = [];
   private isLoading = false;
   private isSummarizing = false;
+  private isExtractingFacts = false;
   private error: string | null = null;
   private lastTrimInfo: TrimInfo | null = null;
   private listeners: Set<StateListener> = new Set();
@@ -77,16 +91,44 @@ export class Agent {
       this.config.contextWindow = resolveContextLimit(this.config.model);
     }
 
-    // 2. Load conversation history from localStorage
-    this.messages = loadMessages();
+    // 2. Load sticky facts
+    this.facts = loadFacts();
 
-    // 3. Load summary from localStorage
+    // 3. Load branches and active branch
+    this.branches = loadBranches();
+    this.activeBranchId = loadActiveBranchId();
+
+    // 4. Load conversation history from localStorage
+    const savedMessages = loadMessages();
+
+    // Ensure at least a default 'main' branch exists
+    if (this.branches.length === 0) {
+      this.branches = [
+        {
+          id: 'main',
+          name: 'Main',
+          createdAt: Date.now(),
+          messages: savedMessages,
+        },
+      ];
+      this.activeBranchId = 'main';
+      saveBranches(this.branches);
+      saveActiveBranchId('main');
+      this.messages = savedMessages;
+    } else {
+      const activeBranch = this.branches.find((b) => b.id === this.activeBranchId) || this.branches[0];
+      this.activeBranchId = activeBranch.id;
+      // Active branch messages take precedence if savedMessages matches or branch has messages
+      this.messages = activeBranch.messages || savedMessages;
+    }
+
+    // 5. Load summary from localStorage
     this.summary = loadSummary();
 
-    // 4. Load user-added custom models from localStorage
+    // 6. Load user-added custom models from localStorage
     this.customModels = loadCustomModels();
 
-    // 5. Initialize token statistics based on restored history and summary
+    // 7. Initialize token statistics based on restored history and context strategy
     this.tokenStats = this.calculateInitialTokenStats();
   }
 
@@ -118,9 +160,13 @@ export class Agent {
       customModels: [...this.customModels],
       isLoading: this.isLoading,
       isSummarizing: this.isSummarizing,
+      isExtractingFacts: this.isExtractingFacts,
       error: this.error,
       lastTrimInfo: this.lastTrimInfo ? { ...this.lastTrimInfo } : null,
       summary: { ...this.summary },
+      facts: [...this.facts],
+      branches: [...this.branches],
+      activeBranchId: this.activeBranchId,
     };
   }
 
@@ -237,9 +283,27 @@ export class Agent {
     this.notify();
   }
 
+  public setStrategy(strategy: ContextStrategy): void {
+    this.config.strategy = strategy;
+    if (strategy === 'demo') {
+      this.config.mode = 'demo';
+    } else {
+      this.config.mode = 'production';
+    }
+    saveConfig(this.config);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
   public setMode(mode: AgentMode): void {
     this.config.mode = mode;
+    if (mode === 'demo') {
+      this.config.strategy = 'demo';
+    } else if (this.config.strategy === 'demo') {
+      this.config.strategy = 'sliding_window';
+    }
     saveConfig(this.config);
+    this.recalculateCurrentStats();
     this.notify();
   }
 
@@ -282,6 +346,251 @@ export class Agent {
   }
 
   // ==========================================
+  // Sticky Facts (Key-Value Memory) Management
+  // ==========================================
+
+  public getFacts(): FactItem[] {
+    return [...this.facts];
+  }
+
+  public addFact(key: string, value: string, category: FactItem['category'] = 'other'): void {
+    const trimmedKey = key.trim();
+    const trimmedVal = value.trim();
+    if (!trimmedKey || !trimmedVal) return;
+
+    const existingIdx = this.facts.findIndex(
+      (f) => f.key.toLowerCase() === trimmedKey.toLowerCase()
+    );
+
+    if (existingIdx >= 0) {
+      this.facts[existingIdx] = {
+        ...this.facts[existingIdx],
+        value: trimmedVal,
+        category: category || this.facts[existingIdx].category,
+        updatedAt: Date.now(),
+      };
+    } else {
+      this.facts.push({
+        id: `fact-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        key: trimmedKey,
+        value: trimmedVal,
+        category,
+        updatedAt: Date.now(),
+      });
+    }
+
+    saveFacts(this.facts);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public updateFact(id: string, updates: Partial<Omit<FactItem, 'id'>>): void {
+    const idx = this.facts.findIndex((f) => f.id === id);
+    if (idx >= 0) {
+      this.facts[idx] = {
+        ...this.facts[idx],
+        ...updates,
+        updatedAt: Date.now(),
+      };
+      saveFacts(this.facts);
+      this.recalculateCurrentStats();
+      this.notify();
+    }
+  }
+
+  public removeFact(id: string): void {
+    this.facts = this.facts.filter((f) => f.id !== id);
+    saveFacts(this.facts);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public clearFacts(): void {
+    this.facts = [];
+    clearFacts();
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public async extractFactsInBackground(userContent: string, assistantContent: string): Promise<void> {
+    if (this.isExtractingFacts) return;
+
+    this.isExtractingFacts = true;
+    this.notify();
+
+    try {
+      const existingFactsSummary =
+        this.facts.length > 0
+          ? JSON.stringify(this.facts.map((f) => ({ key: f.key, value: f.value, category: f.category })))
+          : '[]';
+
+      const extractionPrompt = [
+        {
+          role: 'system',
+          content: `You are a factual key-value memory extractor for an AI dialogue.
+Analyze the latest exchange between User and Assistant, and extract or update important sticky facts.
+Categories must be one of: "goal", "constraint", "preference", "decision", "agreement", "other".
+Existing facts (JSON):
+${existingFactsSummary}
+
+Latest exchange:
+User: ${userContent}
+Assistant: ${assistantContent}
+
+Respond ONLY with a valid JSON array of fact objects:
+[
+  { "key": "short descriptive key", "value": "fact content", "category": "goal|constraint|preference|decision|agreement|other" }
+]
+If facts changed or new facts arrived, include the complete updated list. If no new facts, return existing facts.
+Do NOT wrap output in markdown fences, return pure JSON array.`,
+        },
+      ];
+
+      const res = await this.callLLM(extractionPrompt);
+      const cleaned = res.content.trim().replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
+      const parsed = JSON.parse(cleaned);
+
+      if (Array.isArray(parsed)) {
+        const validCategories: FactItem['category'][] = ['goal', 'constraint', 'preference', 'decision', 'agreement', 'other'];
+        const newFacts: FactItem[] = [];
+
+        for (const item of parsed) {
+          if (item && typeof item.key === 'string' && typeof item.value === 'string' && item.key.trim() && item.value.trim()) {
+            const cat = validCategories.includes(item.category) ? item.category : 'other';
+            newFacts.push({
+              id: `fact-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+              key: item.key.trim(),
+              value: item.value.trim(),
+              category: cat,
+              updatedAt: Date.now(),
+            });
+          }
+        }
+
+        if (newFacts.length > 0) {
+          this.facts = newFacts;
+          saveFacts(this.facts);
+        }
+      }
+    } catch (err) {
+      console.warn('[Agent] Background facts extraction skipped or failed:', err);
+    } finally {
+      this.isExtractingFacts = false;
+      this.recalculateCurrentStats();
+      this.notify();
+    }
+  }
+
+  // ==========================================
+  // Branch Management (Branching Strategy)
+  // ==========================================
+
+  public getBranches(): DialogueBranch[] {
+    return [...this.branches];
+  }
+
+  public getActiveBranchId(): string {
+    return this.activeBranchId;
+  }
+
+  public createBranch(name: string, fromMessageId?: string): DialogueBranch {
+    const trimmedName = name.trim() || `Branch ${this.branches.length + 1}`;
+    let forkedMessages: Message[] = [];
+
+    if (fromMessageId) {
+      const idx = this.messages.findIndex((m) => m.id === fromMessageId);
+      if (idx >= 0) {
+        forkedMessages = this.messages.slice(0, idx + 1);
+      } else {
+        forkedMessages = [...this.messages];
+      }
+    } else {
+      forkedMessages = [...this.messages];
+    }
+
+    const newBranch: DialogueBranch = {
+      id: `branch-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      name: trimmedName,
+      parentBranchId: this.activeBranchId,
+      checkpointMessageId: fromMessageId,
+      createdAt: Date.now(),
+      messages: forkedMessages,
+    };
+
+    // Save current active branch state before switching
+    const currentActiveIdx = this.branches.findIndex((b) => b.id === this.activeBranchId);
+    if (currentActiveIdx >= 0) {
+      this.branches[currentActiveIdx].messages = [...this.messages];
+    }
+
+    this.branches.push(newBranch);
+    this.activeBranchId = newBranch.id;
+    this.messages = [...forkedMessages];
+
+    saveBranches(this.branches);
+    saveActiveBranchId(this.activeBranchId);
+    saveMessages(this.messages);
+
+    this.recalculateCurrentStats();
+    this.notify();
+
+    return newBranch;
+  }
+
+  public switchBranch(branchId: string): void {
+    if (branchId === this.activeBranchId) return;
+    const targetBranch = this.branches.find((b) => b.id === branchId);
+    if (!targetBranch) return;
+
+    // Save current messages to active branch before switching
+    const currentActiveIdx = this.branches.findIndex((b) => b.id === this.activeBranchId);
+    if (currentActiveIdx >= 0) {
+      this.branches[currentActiveIdx].messages = [...this.messages];
+    }
+
+    this.activeBranchId = targetBranch.id;
+    this.messages = [...targetBranch.messages];
+
+    saveBranches(this.branches);
+    saveActiveBranchId(this.activeBranchId);
+    saveMessages(this.messages);
+
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public renameBranch(branchId: string, newName: string): void {
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    const branch = this.branches.find((b) => b.id === branchId);
+    if (branch) {
+      branch.name = trimmed;
+      saveBranches(this.branches);
+      this.notify();
+    }
+  }
+
+  public deleteBranch(branchId: string): void {
+    if (this.branches.length <= 1) return; // Keep at least one branch
+    const branchIndex = this.branches.findIndex((b) => b.id === branchId);
+    if (branchIndex < 0) return;
+
+    this.branches.splice(branchIndex, 1);
+
+    if (this.activeBranchId === branchId) {
+      const fallbackBranch = this.branches[0];
+      this.activeBranchId = fallbackBranch.id;
+      this.messages = [...fallbackBranch.messages];
+      saveActiveBranchId(this.activeBranchId);
+      saveMessages(this.messages);
+    }
+
+    saveBranches(this.branches);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  // ==========================================
   // History & Persistence
   // ==========================================
 
@@ -296,6 +605,9 @@ export class Agent {
   public loadHistory(): void {
     this.messages = loadMessages();
     this.summary = loadSummary();
+    this.facts = loadFacts();
+    this.branches = loadBranches();
+    this.activeBranchId = loadActiveBranchId();
     this.tokenStats = this.calculateInitialTokenStats();
     this.lastTrimInfo = null;
     this.error = null;
@@ -305,11 +617,22 @@ export class Agent {
   public saveHistory(): void {
     saveMessages(this.messages);
     saveSummary(this.summary);
+    saveFacts(this.facts);
+    saveBranches(this.branches);
+    saveActiveBranchId(this.activeBranchId);
   }
 
   public clearHistory(): void {
     this.messages = [];
     clearMessages();
+
+    // Clear messages for active branch as well
+    const branchIdx = this.branches.findIndex((b) => b.id === this.activeBranchId);
+    if (branchIdx >= 0) {
+      this.branches[branchIdx].messages = [];
+      saveBranches(this.branches);
+    }
+
     this.summary = { ...DEFAULT_SUMMARY };
     clearSummary();
     this.tokenStats = this.calculateInitialTokenStats();
@@ -356,12 +679,12 @@ export class Agent {
   }
 
   /**
-   * Prepares the messages array for LLM context.
-   * Transmits:
-   * 1. system prompt
-   * 2. summary of previous conversation history (if present)
-   * 3. last N messages without changes
-   * 4. new user message (if provided)
+   * Prepares the messages array for LLM context according to active strategy:
+   * - sliding_window: system prompt + last N messages
+   * - sticky_facts: system prompt + Key-Value facts + last N messages
+   * - branching: system prompt + last N messages of active branch
+   * - summary: system prompt + incremental summary + last N messages
+   * - demo: system prompt + full message history (Demo Overflow)
    */
   public getPreparedMessages(
     messagesList: Message[],
@@ -369,7 +692,7 @@ export class Agent {
   ): Array<{ role: string; content: string }> {
     const prepared: Array<{ role: string; content: string }> = [];
 
-    // 1. system prompt
+    // 1. System prompt
     if (this.config.systemPrompt && this.config.systemPrompt.trim()) {
       prepared.push({
         role: 'system',
@@ -377,24 +700,49 @@ export class Agent {
       });
     }
 
-    // 2. summary of old conversation (if available)
-    if (this.summary && this.summary.summary && this.summary.summary.trim()) {
-      prepared.push({
-        role: 'system',
-        content: `Summary of previous conversation:\n${this.summary.summary.trim()}`,
-      });
+    const strategy = this.config.strategy || (this.config.mode === 'demo' ? 'demo' : 'sliding_window');
+
+    // 2. Strategy-specific context augmentation
+    if (strategy === 'summary') {
+      if (this.summary && this.summary.summary && this.summary.summary.trim()) {
+        prepared.push({
+          role: 'system',
+          content: `Summary of previous conversation:\n${this.summary.summary.trim()}`,
+        });
+      }
+    } else if (strategy === 'sticky_facts') {
+      if (this.facts && this.facts.length > 0) {
+        const formattedFacts = this.facts
+          .map((f) => `- [${f.category || 'fact'}] ${f.key}: ${f.value}`)
+          .join('\n');
+        prepared.push({
+          role: 'system',
+          content: `Key-Value Memory (Sticky Facts from conversation):\n${formattedFacts}`,
+        });
+      }
     }
 
-    // 3. last N messages without changes
-    const recent = messagesList.slice(-this.config.recentMessagesCount);
-    for (const msg of recent) {
-      prepared.push({
-        role: msg.role,
-        content: msg.content,
-      });
+    // 3. Message history window
+    if (strategy === 'demo' || strategy === 'branching') {
+      // Full history: Demo (untrimmed) and Branching (full branch thread)
+      for (const msg of messagesList) {
+        prepared.push({
+          role: msg.role,
+          content: msg.content,
+        });
+      }
+    } else {
+      // Sliding window across sliding_window, sticky_facts, summary
+      const recent = messagesList.slice(-this.config.recentMessagesCount);
+      for (const msg of recent) {
+        prepared.push({
+          role: msg.role,
+          content: msg.content,
+        });
+      }
     }
 
-    // 4. new user message (if provided)
+    // 4. New user message (if provided)
     if (newUserMessage) {
       prepared.push({
         role: newUserMessage.role,
@@ -679,11 +1027,13 @@ export class Agent {
     this.error = null;
     this.lastTrimInfo = null;
 
-    // 1. Check if unsummarized older messages need to be summarized before sending
-    const olderCutoff = Math.max(0, this.messages.length - this.config.recentMessagesCount);
-    if (olderCutoff > 0) {
-      const olderMessages = this.messages.slice(0, olderCutoff);
-      await this.updateSummaryIfNeeded(olderMessages);
+    // 1. Check if unsummarized older messages need to be summarized (only for summary strategy)
+    if (this.config.strategy === 'summary') {
+      const olderCutoff = Math.max(0, this.messages.length - this.config.recentMessagesCount);
+      if (olderCutoff > 0) {
+        const olderMessages = this.messages.slice(0, olderCutoff);
+        await this.updateSummaryIfNeeded(olderMessages);
+      }
     }
 
     // 2. Create user message
@@ -699,12 +1049,13 @@ export class Agent {
     // Past messages before this new message
     const pastMessages = [...this.messages];
 
-    // 3. Prepare messages to send to LLM:
-    // system prompt + summary (if present) + last N past messages + new user message
+    // 3. Prepare messages to send to LLM according to strategy
     let messagesToSend = this.getPreparedMessages(pastMessages, userMessage);
 
-    // 4. Handle Context Window limits (Production Trimming vs Demo Overflow)
-    if (this.config.mode === 'production' && this.config.contextWindow !== null) {
+    // 4. Handle Context Window limits (Trimming vs Demo Overflow)
+    const isDemo = this.config.strategy === 'demo' || this.config.mode === 'demo';
+
+    if (!isDemo && this.config.contextWindow !== null) {
       const { trimmedList, info } = this.trimHistoryForContext(
         pastMessages,
         userMessageTokens,
@@ -714,7 +1065,7 @@ export class Agent {
         messagesToSend = this.getPreparedMessages(trimmedList, userMessage);
         this.lastTrimInfo = info;
       }
-    } else if (this.config.mode === 'demo' && this.config.contextWindow !== null) {
+    } else if (isDemo && this.config.contextWindow !== null) {
       const totalEstimatedContext = estimateConversationTokens(messagesToSend);
       if (totalEstimatedContext > this.config.contextWindow) {
         this.error = `Context limit exceeded.\n\nConversation: ${totalEstimatedContext.toLocaleString()} tokens\nModel limit: ${this.config.contextWindow.toLocaleString()} tokens`;
@@ -729,6 +1080,13 @@ export class Agent {
     // 5. Add user message immediately so it renders in the UI before network call
     this.messages.push(userMessage);
     saveMessages(this.messages);
+
+    // Sync active branch with the new user message
+    const branchPreIdx = this.branches.findIndex((b) => b.id === this.activeBranchId);
+    if (branchPreIdx >= 0) {
+      this.branches[branchPreIdx].messages = [...this.messages];
+      saveBranches(this.branches);
+    }
 
     // Update token stats for pre-request stage
     const preRequestConvTokens = estimateConversationTokens(messagesToSend);
@@ -773,11 +1131,21 @@ export class Agent {
         isLocal: this.config.provider === 'ollama',
       };
 
-      // 9. Persist conversation history to localStorage
+      // 9. Persist conversation history to localStorage and update active branch
       saveMessages(this.messages);
+      const branchPostIdx = this.branches.findIndex((b) => b.id === this.activeBranchId);
+      if (branchPostIdx >= 0) {
+        this.branches[branchPostIdx].messages = [...this.messages];
+        saveBranches(this.branches);
+      }
 
       this.isLoading = false;
       this.notify();
+
+      // 10. If in Sticky Facts strategy, trigger background fact extraction
+      if (this.config.strategy === 'sticky_facts') {
+        this.extractFactsInBackground(userMessage.content, assistantMessage.content);
+      }
 
       return res.content;
     } catch (err: unknown) {
@@ -788,6 +1156,11 @@ export class Agent {
       // Roll back user message from history on LLM call error
       this.messages = this.messages.filter((m) => m.id !== userMessage.id);
       saveMessages(this.messages);
+      const branchErrIdx = this.branches.findIndex((b) => b.id === this.activeBranchId);
+      if (branchErrIdx >= 0) {
+        this.branches[branchErrIdx].messages = [...this.messages];
+        saveBranches(this.branches);
+      }
       this.recalculateCurrentStats();
       this.notify();
       throw err;
