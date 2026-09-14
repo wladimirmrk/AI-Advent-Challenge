@@ -13,6 +13,7 @@ export interface Message {
 }
 
 export type AgentMode = 'production' | 'demo';
+export type ModelProvider = 'openrouter' | 'ollama';
 
 export interface TokenStats {
   /** Tokens in the user's latest prompt */
@@ -29,10 +30,14 @@ export interface TokenStats {
   isEstimated: boolean;
   /** Estimated cost in USD based on model pricing heuristics */
   estimatedCost: number | null;
+  /** Whether the model is running locally (e.g. Ollama) */
+  isLocal?: boolean;
 }
 
 export interface AgentConfig {
+  provider: ModelProvider;
   apiKey: string;
+  ollamaUrl: string;
   model: string;
   contextWindow: number | null;
   mode: AgentMode;
@@ -50,6 +55,7 @@ export interface CustomModel {
   id: string;
   name?: string;
   contextLength: number | null;
+  provider?: ModelProvider;
 }
 
 export interface AgentState {

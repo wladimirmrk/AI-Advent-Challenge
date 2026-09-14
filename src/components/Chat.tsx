@@ -4,7 +4,7 @@ import { AgentState, AgentConfig, AgentMode } from '../agent/types';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
 import { TokenStats } from './TokenStats';
-import { Settings, MODEL_PRESETS } from './Settings';
+import { Settings, OPENROUTER_PRESETS, OLLAMA_PRESETS } from './Settings';
 import { ModeToggle } from './ModeToggle';
 import { Bot, Settings as SettingsIcon, Trash2, Cpu } from 'lucide-react';
 
@@ -37,12 +37,33 @@ export const Chat: React.FC = () => {
 
   const handleSaveSettings = (newConfig: AgentConfig) => {
     agentInstance.setApiKey(newConfig.apiKey);
-    agentInstance.setModel(newConfig.model, newConfig.contextWindow);
+    agentInstance.setOllamaUrl(newConfig.ollamaUrl);
+    agentInstance.setProvider(newConfig.provider);
+    agentInstance.setModel(newConfig.model, newConfig.contextWindow, newConfig.provider);
     agentInstance.setMode(newConfig.mode);
     agentInstance.setSystemPrompt(newConfig.systemPrompt);
   };
 
+  const handleSelectModel = (val: string) => {
+    if (OPENROUTER_PRESETS.some((p) => p.id === val)) {
+      agentInstance.setModel(val, undefined, 'openrouter');
+    } else if (OLLAMA_PRESETS.some((p) => p.id === val)) {
+      agentInstance.setModel(val, undefined, 'ollama');
+    } else {
+      const custom = agentState.customModels.find((m) => m.id === val);
+      const prov = custom?.provider || agentState.config.provider;
+      agentInstance.setModel(val, custom?.contextLength, prov);
+    }
+  };
+
+  const isOllama = agentState.config.provider === 'ollama';
   const hasApiKey = Boolean(agentState.config.apiKey && agentState.config.apiKey.trim().length > 0);
+  const isReady = isOllama || hasApiKey;
+
+  const openrouterCustom = agentState.customModels.filter(
+    (m) => !m.provider || m.provider === 'openrouter'
+  );
+  const ollamaCustom = agentState.customModels.filter((m) => m.provider === 'ollama');
 
   return (
     <div className="chat-app-layout">
@@ -62,28 +83,44 @@ export const Chat: React.FC = () => {
             <select
               className="model-select-dropdown"
               value={agentState.config.model}
-              onChange={(e) => agentInstance.setModel(e.target.value)}
+              onChange={(e) => handleSelectModel(e.target.value)}
               disabled={agentState.isLoading}
               title="Select active model"
             >
-              <optgroup label="Default Presets">
-                {MODEL_PRESETS.map((p) => (
+              <optgroup label="🌐 OpenRouter Models">
+                {OPENROUTER_PRESETS.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.label}
                   </option>
                 ))}
+                {openrouterCustom.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name || m.id}
+                    {m.contextLength
+                      ? ` (${m.contextLength >= 1000000 ? `${m.contextLength / 1000000}M` : `${Math.round(m.contextLength / 1000)}k`})`
+                      : ''}
+                  </option>
+                ))}
               </optgroup>
-              {agentState.customModels.length > 0 && (
-                <optgroup label="Saved Custom Models">
-                  {agentState.customModels.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name || m.id}
-                      {m.contextLength ? ` (${m.contextLength >= 1000000 ? `${m.contextLength / 1000000}M` : `${Math.round(m.contextLength / 1000)}k`})` : ''}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-              {!MODEL_PRESETS.some((p) => p.id === agentState.config.model) &&
+
+              <optgroup label="💻 Local Ollama Models">
+                {OLLAMA_PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
+                {ollamaCustom.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name || m.id}
+                    {m.contextLength
+                      ? ` (${m.contextLength >= 1000 ? `${Math.round(m.contextLength / 1000)}k` : m.contextLength})`
+                      : ''}
+                  </option>
+                ))}
+              </optgroup>
+
+              {!OPENROUTER_PRESETS.some((p) => p.id === agentState.config.model) &&
+                !OLLAMA_PRESETS.some((p) => p.id === agentState.config.model) &&
                 !agentState.customModels.some((m) => m.id === agentState.config.model) && (
                   <optgroup label="Active Custom">
                     <option value={agentState.config.model}>{agentState.config.model}</option>
@@ -117,13 +154,13 @@ export const Chat: React.FC = () => {
 
           <button
             type="button"
-            className={`action-btn settings-btn ${!hasApiKey ? 'needs-attention' : ''}`}
+            className={`action-btn settings-btn ${!isReady ? 'needs-attention' : ''}`}
             onClick={() => setIsSettingsOpen(true)}
             title="Open Settings"
           >
             <SettingsIcon size={18} />
             <span className="btn-text">Settings</span>
-            {!hasApiKey && <span className="notification-dot" title="API Key required" />}
+            {!isReady && <span className="notification-dot" title="Configuration required" />}
           </button>
         </div>
       </header>
@@ -150,7 +187,7 @@ export const Chat: React.FC = () => {
         <MessageInput
           onSendMessage={handleSendMessage}
           disabled={agentState.isLoading}
-          hasApiKey={hasApiKey}
+          hasApiKey={isReady}
           onOpenSettings={() => setIsSettingsOpen(true)}
         />
       </footer>
@@ -162,7 +199,7 @@ export const Chat: React.FC = () => {
         config={agentState.config}
         customModels={agentState.customModels}
         onSave={handleSaveSettings}
-        onAddCustomModel={(modelId) => agentInstance.addCustomModel(modelId)}
+        onAddCustomModel={(model) => agentInstance.addCustomModel(model)}
         onRemoveCustomModel={(modelId) => agentInstance.removeCustomModel(modelId)}
       />
     </div>

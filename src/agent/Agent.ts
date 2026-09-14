@@ -20,6 +20,7 @@ import {
   AgentState,
   TokenStats,
   AgentMode,
+  ModelProvider,
   TrimInfo,
   CustomModel,
   StateListener,
@@ -39,6 +40,7 @@ import {
   calculateEstimatedCost,
   resolveContextLimit,
 } from './tokenizer';
+import { sendOllamaChat, fetchOllamaModelInfo } from './ollama';
 
 export class Agent {
   private config: AgentConfig;
@@ -116,19 +118,52 @@ export class Agent {
     this.notify();
   }
 
-  public setModel(model: string, customContextWindow?: number | null): void {
+  public setOllamaUrl(url: string): void {
+    this.config.ollamaUrl = url.trim();
+    saveConfig(this.config);
+    this.notify();
+  }
+
+  public setProvider(provider: ModelProvider): void {
+    this.config.provider = provider;
+    saveConfig(this.config);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public async setModel(
+    model: string,
+    customContextWindow?: number | null,
+    provider?: ModelProvider
+  ): Promise<void> {
     this.config.model = model.trim();
+
+    // Resolve provider if explicitly specified or look up in customModels
+    if (provider) {
+      this.config.provider = provider;
+    } else {
+      const foundCustom = this.customModels.find((m) => m.id === this.config.model);
+      if (foundCustom && foundCustom.provider) {
+        this.config.provider = foundCustom.provider;
+      }
+    }
+
     if (customContextWindow !== undefined) {
       this.config.contextWindow = customContextWindow;
     } else {
       // 1. Check if model is in customModels
       const foundCustom = this.customModels.find((m) => m.id === this.config.model);
-      if (foundCustom && foundCustom.contextLength !== undefined) {
+      if (foundCustom && foundCustom.contextLength !== undefined && foundCustom.contextLength !== null) {
         this.config.contextWindow = foundCustom.contextLength;
+      } else if (this.config.provider === 'ollama') {
+        // Try fetching context from Ollama
+        const info = await fetchOllamaModelInfo(this.config.ollamaUrl, this.config.model);
+        this.config.contextWindow = info.contextLength;
       } else {
         this.config.contextWindow = resolveContextLimit(this.config.model);
       }
     }
+
     this.tokenStats.contextWindow = this.config.contextWindow;
     this.recalculateCurrentStats();
     saveConfig(this.config);
@@ -141,11 +176,16 @@ export class Agent {
 
   public addCustomModel(model: CustomModel | string): void {
     const modelObj: CustomModel = typeof model === 'string'
-      ? { id: model.trim(), contextLength: resolveContextLimit(model.trim()) }
+      ? {
+          id: model.trim(),
+          contextLength: resolveContextLimit(model.trim()),
+          provider: this.config.provider,
+        }
       : {
           id: model.id.trim(),
           name: model.name,
           contextLength: model.contextLength,
+          provider: model.provider || this.config.provider,
         };
 
     if (!modelObj.id) return;
@@ -167,7 +207,7 @@ export class Agent {
 
     // If the removed model was active, fall back to default model
     if (this.config.model === trimmed) {
-      this.setModel('openai/gpt-4o-mini');
+      this.setModel('openai/gpt-4o-mini', 128000, 'openrouter');
     } else {
       this.notify();
     }
@@ -245,7 +285,8 @@ export class Agent {
       total: conversationTokens,
       contextWindow: this.config.contextWindow,
       isEstimated: true,
-      estimatedCost: calculateEstimatedCost(conversationTokens, 0, this.config.model),
+      estimatedCost: calculateEstimatedCost(conversationTokens, 0, this.config.model, this.config.provider),
+      isLocal: this.config.provider === 'ollama',
     };
   }
 
@@ -257,7 +298,8 @@ export class Agent {
       conversation: conversationTokens,
       total: conversationTokens + this.tokenStats.response,
       contextWindow: this.config.contextWindow,
-      estimatedCost: calculateEstimatedCost(conversationTokens, this.tokenStats.response, this.config.model),
+      estimatedCost: calculateEstimatedCost(conversationTokens, this.tokenStats.response, this.config.model, this.config.provider),
+      isLocal: this.config.provider === 'ollama',
     };
   }
 
@@ -352,10 +394,10 @@ export class Agent {
    * Sends a user message to the LLM agent.
    *
    * Flow:
-   * 1. Validate input & API key.
+   * 1. Validate input & API key (for OpenRouter).
    * 2. Append user message to history.
    * 3. Apply context strategy (Demo Overflow vs Production Trimming).
-   * 4. Call OpenRouter HTTP API.
+   * 4. Call provider API (OpenRouter HTTP API or native Ollama /api/chat).
    * 5. Parse response & usage tokens.
    * 6. Append assistant message to history.
    * 7. Persist updated history to localStorage.
@@ -370,7 +412,8 @@ export class Agent {
       throw new Error('Agent is already processing a request.');
     }
 
-    if (!this.config.apiKey) {
+    // OpenRouter requires an API key; Ollama does not
+    if (this.config.provider === 'openrouter' && !this.config.apiKey) {
       this.error = 'API key is not configured. Open Settings and enter your OpenRouter API key.';
       this.notify();
       throw new Error(this.error);
@@ -431,76 +474,96 @@ export class Agent {
       total: preRequestConvTokens,
       contextWindow: this.config.contextWindow,
       isEstimated: true,
-      estimatedCost: calculateEstimatedCost(preRequestConvTokens, 0, this.config.model),
+      estimatedCost: calculateEstimatedCost(preRequestConvTokens, 0, this.config.model, this.config.provider),
+      isLocal: this.config.provider === 'ollama',
     };
 
     this.isLoading = true;
     this.notify();
 
     try {
-      // 3. Call OpenRouter HTTP API
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.config.apiKey}`,
-          'Content-Type': 'application/json',
-          'HTTP-Referer': window.location.origin,
-          'X-Title': 'Educational AI Agent Chat',
-        },
-        body: JSON.stringify({
+      let assistantContent = '';
+      let promptTokens = preRequestConvTokens;
+      let responseTokens = 0;
+      let totalTokens = preRequestConvTokens;
+      let isEstimated = true;
+
+      if (this.config.provider === 'ollama') {
+        // 3a. Call native Ollama HTTP API
+        const ollamaRes = await sendOllamaChat(this.config.ollamaUrl, {
           model: this.config.model,
           messages: preparedMessages,
-        }),
-      });
-
-      // 4. Handle HTTP / API errors
-      if (!response.ok) {
-        let errorMessage = `HTTP Error ${response.status}: ${response.statusText}`;
-        try {
-          const errorData = await response.json();
-          if (errorData.error?.message) {
-            errorMessage = errorData.error.message;
-          }
-        } catch {
-          // If response body is not JSON, use default status text
-        }
-
-        // Format user-friendly error messages
-        if (response.status === 401) {
-          errorMessage = 'Invalid API key. Please verify your OpenRouter API key in Settings.';
-        } else if (response.status === 402) {
-          errorMessage = 'Insufficient credits. Please check your OpenRouter account balance or switch to a free model.';
-        } else if (response.status === 429) {
-          errorMessage = 'Rate limit exceeded. Please wait a moment before sending another message.';
-        } else if (response.status === 400 && errorMessage.toLowerCase().includes('context')) {
-          // Real OpenRouter context limit exceeded error!
-          errorMessage = `Context limit exceeded by API.\n\n${errorMessage}`;
-        }
-
-        console.error('[Agent] OpenRouter API call failed:', {
-          status: response.status,
-          message: errorMessage,
         });
 
-        throw new Error(errorMessage);
+        assistantContent = ollamaRes.content;
+        promptTokens = ollamaRes.promptTokens || preRequestConvTokens;
+        responseTokens = ollamaRes.responseTokens || estimateTokens(assistantContent);
+        totalTokens = ollamaRes.totalTokens || (promptTokens + responseTokens);
+        isEstimated = ollamaRes.promptTokens === 0 && ollamaRes.responseTokens === 0;
+      } else {
+        // 3b. Call OpenRouter HTTP API
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${this.config.apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': window.location.origin,
+            'X-Title': 'Educational AI Agent Chat',
+          },
+          body: JSON.stringify({
+            model: this.config.model,
+            messages: preparedMessages,
+          }),
+        });
+
+        // 4. Handle HTTP / API errors
+        if (!response.ok) {
+          let errorMessage = `HTTP Error ${response.status}: ${response.statusText}`;
+          try {
+            const errorData = await response.json();
+            if (errorData.error?.message) {
+              errorMessage = errorData.error.message;
+            }
+          } catch {
+            // If response body is not JSON, use default status text
+          }
+
+          // Format user-friendly error messages
+          if (response.status === 401) {
+            errorMessage = 'Invalid API key. Please verify your OpenRouter API key in Settings.';
+          } else if (response.status === 402) {
+            errorMessage = 'Insufficient credits. Please check your OpenRouter account balance or switch to a free model.';
+          } else if (response.status === 429) {
+            errorMessage = 'Rate limit exceeded. Please wait a moment before sending another message.';
+          } else if (response.status === 400 && errorMessage.toLowerCase().includes('context')) {
+            // Real OpenRouter context limit exceeded error!
+            errorMessage = `Context limit exceeded by API.\n\n${errorMessage}`;
+          }
+
+          console.error('[Agent] OpenRouter API call failed:', {
+            status: response.status,
+            message: errorMessage,
+          });
+
+          throw new Error(errorMessage);
+        }
+
+        // 5. Parse successful response
+        const data = await response.json();
+
+        if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+          throw new Error('Received malformed response from OpenRouter API.');
+        }
+
+        assistantContent = data.choices[0].message.content || '';
+
+        // 6. Extract token usage statistics
+        const usage = data.usage;
+        responseTokens = usage?.completion_tokens ?? estimateTokens(assistantContent);
+        promptTokens = usage?.prompt_tokens ?? preRequestConvTokens;
+        totalTokens = usage?.total_tokens ?? (promptTokens + responseTokens);
+        isEstimated = !usage;
       }
-
-      // 5. Parse successful response
-      const data = await response.json();
-
-      if (!data.choices || !data.choices[0] || !data.choices[0].message) {
-        throw new Error('Received malformed response from OpenRouter API.');
-      }
-
-      const assistantContent: string = data.choices[0].message.content || '';
-
-      // 6. Extract token usage statistics
-      // OpenRouter returns usage: { prompt_tokens, completion_tokens, total_tokens }
-      const usage = data.usage;
-      const responseTokens = usage?.completion_tokens ?? estimateTokens(assistantContent);
-      const promptTokens = usage?.prompt_tokens ?? preRequestConvTokens;
-      const totalTokens = usage?.total_tokens ?? (promptTokens + responseTokens);
-      const isEstimated = !usage;
 
       // 7. Create and append assistant message
       const assistantMessage: Message = {
@@ -521,7 +584,8 @@ export class Agent {
         total: totalTokens,
         contextWindow: this.config.contextWindow,
         isEstimated,
-        estimatedCost: calculateEstimatedCost(promptTokens, responseTokens, this.config.model),
+        estimatedCost: calculateEstimatedCost(promptTokens, responseTokens, this.config.model, this.config.provider),
+        isLocal: this.config.provider === 'ollama',
       };
 
       // 9. Persist conversation history to localStorage

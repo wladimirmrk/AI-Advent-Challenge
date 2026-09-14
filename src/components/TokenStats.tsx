@@ -38,12 +38,16 @@ export const TokenStats: React.FC<TokenStatsProps> = ({ stats }) => {
           )}
         </div>
 
-        {estimatedCost !== null && (
+        {stats.isLocal ? (
+          <div className="cost-tag local" title="Local Ollama model runs on your machine for free">
+            <span>$0.00 (Local)</span>
+          </div>
+        ) : estimatedCost !== null ? (
           <div className="cost-tag" title="Estimated cost based on model token pricing">
             <DollarSign size={12} />
             <span>~${estimatedCost < 0.0001 ? '<0.0001' : estimatedCost.toFixed(4)}</span>
           </div>
-        )}
+        ) : null}
       </div>
 
       <div className="stats-grid">

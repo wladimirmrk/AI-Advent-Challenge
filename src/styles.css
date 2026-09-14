@@ -1429,3 +1429,224 @@ html, body, #root {
     padding: 8px 14px 12px;
   }
 }
+
+/* ==========================================================================
+   Provider Architecture & Ollama Integration Styles
+   ========================================================================== */
+
+.settings-modal-wide {
+  max-width: 820px !important;
+  width: 95% !important;
+}
+
+.providers-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.provider-card {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  padding: 14px 16px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.provider-card.active-provider-card {
+  border-color: rgba(99, 102, 241, 0.6);
+  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.25), 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.provider-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.provider-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.provider-icon {
+  padding: 6px;
+  border-radius: 6px;
+  box-sizing: content-box;
+}
+
+.provider-icon.openrouter {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+}
+
+.provider-icon.ollama {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+}
+
+.provider-heading {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.provider-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 2px 0 0 0;
+}
+
+.provider-status-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.provider-status-badge.active {
+  background: rgba(99, 102, 241, 0.2);
+  color: #818cf8;
+  border: 1px solid rgba(99, 102, 241, 0.4);
+}
+
+.form-group.compact {
+  margin-bottom: 12px;
+}
+
+.ollama-url-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.refresh-models-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.ollama-status-row {
+  margin-top: 8px;
+}
+
+.status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.status-indicator.online {
+  color: #34d399;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.status-indicator.offline {
+  color: #f87171;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.status-indicator.neutral {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.refresh-banner {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: rgba(99, 102, 241, 0.12);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+}
+
+.fetch-error-banner {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #f87171;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.active-config-panel {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+
+.active-config-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: var(--text-primary);
+}
+
+.active-provider-pill {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  margin-left: auto;
+}
+
+.active-provider-pill.ollama {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.active-provider-pill.openrouter {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.active-config-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+@media (max-width: 640px) {
+  .active-config-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+.cost-tag.local {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.custom-model-context-pill.local {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+

@@ -318,7 +318,136 @@ async function runTests() {
   console.log('  ✓ Verified OpenRouter context_length fetch, custom model persistence, and auto-updating context window');
   console.log('  PASSED: Custom models persistence and switching.\n');
 
-  console.log('🎉 ALL 9 TESTS PASSED SUCCESSFULLY! 100% SPEC COMPLIANCE.\n');
+  // ----------------------------------------------------
+  // Test 10: Ollama Provider, API Endpoints, Context Discovery & Chat
+  // ----------------------------------------------------
+  console.log('Test 10: Ollama Provider, Endpoints, Context Discovery & Chat');
+
+  // Mock global fetch for Ollama endpoints
+  (globalThis as any).fetch = async (url: string, options: any) => {
+    if (url === 'http://localhost:11434/api/version') {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ version: '0.5.4' }),
+      };
+    }
+    if (url === 'http://localhost:11434/api/tags') {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          models: [
+            { name: 'llama3.2:latest', size: 2000000000 },
+            { name: 'mistral:latest', size: 4000000000 },
+          ],
+        }),
+      };
+    }
+    if (url === 'http://localhost:11434/api/show') {
+      const body = JSON.parse(options.body);
+      if (body.model === 'llama3.2:latest') {
+        // Returns parameters with num_ctx
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            parameters: 'stop "<|eot_id|>"\nnum_ctx 8192\ntemperature 0.7',
+            model_info: { 'llama.context_length': 131072 },
+          }),
+        };
+      }
+      if (body.model === 'mistral:latest') {
+        // No num_ctx in parameters, falls back to model_info architecture context_length
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            parameters: 'temperature 0.7',
+            model_info: { 'mistral.context_length': 32768 },
+          }),
+        };
+      }
+      return { ok: false, status: 404 };
+    }
+    if (url === 'http://localhost:11434/api/chat') {
+      const body = JSON.parse(options.body);
+      assert.equal(body.stream, false, 'Ollama chat request must specify stream: false');
+      assert(body.messages.length >= 2, 'Must include system prompt and user message');
+      // Assert num_ctx is NOT sent in options per design agreement
+      assert(!body.options?.num_ctx, 'num_ctx must NOT be passed in chat options per agreed design');
+
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          model: body.model,
+          message: {
+            role: 'assistant',
+            content: 'Привет! Я локальная модель Ollama.',
+          },
+          done: true,
+          prompt_eval_count: 28,
+          eval_count: 14,
+        }),
+      };
+    }
+    return previousFetch(url, options);
+  };
+
+  const { checkOllamaConnection, fetchOllamaModels, fetchOllamaModelInfo } = await import(
+    '../src/agent/ollama'
+  );
+
+  // 10a. Connection check
+  const conn = await checkOllamaConnection('http://localhost:11434');
+  assert(conn.ok, 'Ollama connection check should succeed');
+  assert.equal(conn.version, '0.5.4');
+  console.log('  ✓ Ollama connection check passed (version: 0.5.4)');
+
+  // 10b. Models list
+  const ollamaModels = await fetchOllamaModels('http://localhost:11434');
+  assert.equal(ollamaModels.length, 2);
+  assert.equal(ollamaModels[0].id, 'llama3.2:latest');
+  assert.equal(ollamaModels[0].provider, 'ollama');
+  console.log('  ✓ Ollama models fetched via GET /api/tags: 2 models');
+
+  // 10c. Context length detection: num_ctx from parameters priority
+  const llamaInfo = await fetchOllamaModelInfo('http://localhost:11434', 'llama3.2:latest');
+  assert.equal(llamaInfo.contextLength, 8192, 'Should prioritize num_ctx from parameters (8192)');
+  console.log('  ✓ Context window from parameters num_ctx: 8192 tokens');
+
+  // 10d. Context length detection: <arch>.context_length fallback
+  const mistralInfo = await fetchOllamaModelInfo('http://localhost:11434', 'mistral:latest');
+  assert.equal(mistralInfo.contextLength, 32768, 'Should fall back to model_info context_length (32768)');
+  console.log('  ✓ Context window from model_info fallback: 32768 tokens');
+
+  // 10e. Agent chatting via Ollama without API key
+  const ollamaAgent = new Agent({
+    provider: 'ollama',
+    apiKey: '', // Empty API key must NOT block Ollama!
+    model: 'llama3.2:latest',
+    contextWindow: 8192,
+  });
+
+  assert.equal(ollamaAgent.getState().config.provider, 'ollama');
+  assert.equal(ollamaAgent.getState().config.apiKey, '');
+
+  const ollamaReply = await ollamaAgent.sendMessage('Привет, как дела?');
+  assert.equal(ollamaReply, 'Привет! Я локальная модель Ollama.');
+  console.log(`  ✓ Received Ollama response without API key: "${ollamaReply}"`);
+
+  const ollamaStats = ollamaAgent.getTokenStats();
+  assert.equal(ollamaStats.isLocal, true, 'isLocal must be true for Ollama');
+  assert.equal(ollamaStats.estimatedCost, 0, 'Cost for local Ollama models must be $0.00');
+  assert.equal(ollamaStats.conversation, 28, 'Prompt tokens must match prompt_eval_count (28)');
+  assert.equal(ollamaStats.response, 14, 'Response tokens must match eval_count (14)');
+  assert.equal(ollamaStats.total, 42, 'Total tokens must be 42');
+  console.log(`  ✓ Exact Ollama token stats: prompt=28, response=14, cost=$${ollamaStats.estimatedCost} (Local)`);
+
+  console.log('  PASSED: Ollama provider, connection, context extraction, and chat tests.\n');
+
+  console.log('🎉 ALL 10 TESTS PASSED SUCCESSFULLY! 100% SPEC COMPLIANCE.\n');
 }
 
 runTests().catch((err) => {

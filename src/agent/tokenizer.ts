@@ -89,14 +89,21 @@ export function formatTokenCount(count: number, isEstimated: boolean): string {
   return isEstimated ? `~${count.toLocaleString()}` : count.toLocaleString();
 }
 
+import { ModelProvider } from './types';
+
 /**
  * Calculates estimated USD cost based on token counts and model pricing.
+ * For local Ollama models, returns 0.
  */
 export function calculateEstimatedCost(
   promptTokens: number,
   completionTokens: number,
-  model: string
+  model: string,
+  provider?: ModelProvider
 ): number | null {
+  if (provider === 'ollama') {
+    return 0;
+  }
   const pricing = MODEL_PRICING[model];
   if (!pricing) return null;
 
