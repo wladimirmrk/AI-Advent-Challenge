@@ -59,6 +59,7 @@ import {
 import { sendOllamaChat, fetchOllamaModelInfo } from './ollama';
 
 export class Agent {
+  private chatId: string;
   private config: AgentConfig;
   private messages: Message[] = [];
   private summary: ConversationSummary;
@@ -74,16 +75,31 @@ export class Agent {
   private lastTrimInfo: TrimInfo | null = null;
   private listeners: Set<StateListener> = new Set();
   private executionQueue: Promise<unknown> = Promise.resolve();
+  private onMessageSent?: (content: string, role: 'user' | 'assistant') => void;
 
-  constructor(initialConfig?: Partial<AgentConfig>) {
+  constructor(
+    chatIdOrConfig: string | Partial<AgentConfig> = 'default',
+    initialConfig?: Partial<AgentConfig>
+  ) {
+    let resolvedChatId = 'default';
+    let resolvedConfig: Partial<AgentConfig> | undefined = initialConfig;
+
+    if (typeof chatIdOrConfig === 'string') {
+      resolvedChatId = chatIdOrConfig;
+    } else if (chatIdOrConfig && typeof chatIdOrConfig === 'object') {
+      resolvedConfig = chatIdOrConfig;
+    }
+
+    this.chatId = resolvedChatId;
+
     // 0. Ensure schema migrations have run
     migrateStorage();
 
     // 1. Load saved configuration from localStorage (or fallback to defaults and .env)
-    const storedConfig = loadConfig();
+    const storedConfig = loadConfig(this.chatId);
     this.config = {
       ...storedConfig,
-      ...initialConfig,
+      ...resolvedConfig,
     };
 
     // Auto-resolve context window if not explicitly provided
@@ -92,14 +108,14 @@ export class Agent {
     }
 
     // 2. Load sticky facts
-    this.facts = loadFacts();
+    this.facts = loadFacts(this.chatId);
 
     // 3. Load branches and active branch
-    this.branches = loadBranches();
-    this.activeBranchId = loadActiveBranchId();
+    this.branches = loadBranches(this.chatId);
+    this.activeBranchId = loadActiveBranchId(this.chatId);
 
     // 4. Load conversation history from localStorage
-    const savedMessages = loadMessages();
+    const savedMessages = loadMessages(this.chatId);
 
     // Ensure at least a default 'main' branch exists
     if (this.branches.length === 0) {
@@ -112,8 +128,8 @@ export class Agent {
         },
       ];
       this.activeBranchId = 'main';
-      saveBranches(this.branches);
-      saveActiveBranchId('main');
+      saveBranches(this.branches, this.chatId);
+      saveActiveBranchId('main', this.chatId);
       this.messages = savedMessages;
     } else {
       const activeBranch = this.branches.find((b) => b.id === this.activeBranchId) || this.branches[0];
@@ -123,13 +139,21 @@ export class Agent {
     }
 
     // 5. Load summary from localStorage
-    this.summary = loadSummary();
+    this.summary = loadSummary(this.chatId);
 
     // 6. Load user-added custom models from localStorage
     this.customModels = loadCustomModels();
 
     // 7. Initialize token statistics based on restored history and context strategy
     this.tokenStats = this.calculateInitialTokenStats();
+  }
+
+  public getChatId(): string {
+    return this.chatId;
+  }
+
+  public setOnMessageSent(callback: (content: string, role: 'user' | 'assistant') => void): void {
+    this.onMessageSent = callback;
   }
 
   // ==========================================
@@ -176,20 +200,20 @@ export class Agent {
 
   public setApiKey(apiKey: string): void {
     this.config.apiKey = apiKey.trim();
-    saveConfig(this.config);
+    saveConfig(this.config, this.chatId);
     this.error = null;
     this.notify();
   }
 
   public setOllamaUrl(url: string): void {
     this.config.ollamaUrl = url.trim();
-    saveConfig(this.config);
+    saveConfig(this.config, this.chatId);
     this.notify();
   }
 
   public setProvider(provider: ModelProvider): void {
     this.config.provider = provider;
-    saveConfig(this.config);
+    saveConfig(this.config, this.chatId);
     this.recalculateCurrentStats();
     this.notify();
   }
@@ -229,7 +253,7 @@ export class Agent {
 
     this.tokenStats.contextWindow = this.config.contextWindow;
     this.recalculateCurrentStats();
-    saveConfig(this.config);
+    saveConfig(this.config, this.chatId);
     this.notify();
   }
 
@@ -279,7 +303,7 @@ export class Agent {
   public setContextWindow(limit: number | null): void {
     this.config.contextWindow = limit;
     this.tokenStats.contextWindow = limit;
-    saveConfig(this.config);
+    saveConfig(this.config, this.chatId);
     this.notify();
   }
 
@@ -290,7 +314,7 @@ export class Agent {
     } else {
       this.config.mode = 'production';
     }
-    saveConfig(this.config);
+    saveConfig(this.config, this.chatId);
     this.recalculateCurrentStats();
     this.notify();
   }
@@ -302,14 +326,14 @@ export class Agent {
     } else if (this.config.strategy === 'demo') {
       this.config.strategy = 'sliding_window';
     }
-    saveConfig(this.config);
+    saveConfig(this.config, this.chatId);
     this.recalculateCurrentStats();
     this.notify();
   }
 
   public setSystemPrompt(systemPrompt: string): void {
     this.config.systemPrompt = systemPrompt;
-    saveConfig(this.config);
+    saveConfig(this.config, this.chatId);
     this.recalculateCurrentStats();
     this.notify();
   }
@@ -320,7 +344,7 @@ export class Agent {
   public setRecentMessagesCount(n: number): void {
     if (n > 0) {
       this.config.recentMessagesCount = Math.floor(n);
-      saveConfig(this.config);
+      saveConfig(this.config, this.chatId);
       this.recalculateCurrentStats();
       this.notify();
     }
@@ -332,7 +356,7 @@ export class Agent {
   public setSummaryThreshold(threshold: number): void {
     if (threshold > 0) {
       this.config.summaryThreshold = Math.floor(threshold);
-      saveConfig(this.config);
+      saveConfig(this.config, this.chatId);
       this.notify();
     }
   }
@@ -379,7 +403,7 @@ export class Agent {
       });
     }
 
-    saveFacts(this.facts);
+    saveFacts(this.facts, this.chatId);
     this.recalculateCurrentStats();
     this.notify();
   }
@@ -392,7 +416,7 @@ export class Agent {
         ...updates,
         updatedAt: Date.now(),
       };
-      saveFacts(this.facts);
+      saveFacts(this.facts, this.chatId);
       this.recalculateCurrentStats();
       this.notify();
     }
@@ -400,14 +424,14 @@ export class Agent {
 
   public removeFact(id: string): void {
     this.facts = this.facts.filter((f) => f.id !== id);
-    saveFacts(this.facts);
+    saveFacts(this.facts, this.chatId);
     this.recalculateCurrentStats();
     this.notify();
   }
 
   public clearFacts(): void {
     this.facts = [];
-    clearFacts();
+    clearFacts(this.chatId);
     this.recalculateCurrentStats();
     this.notify();
   }
@@ -469,7 +493,7 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
 
         if (newFacts.length > 0) {
           this.facts = newFacts;
-          saveFacts(this.facts);
+          saveFacts(this.facts, this.chatId);
         }
       }
     } catch (err) {
@@ -527,9 +551,9 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
     this.activeBranchId = newBranch.id;
     this.messages = [...forkedMessages];
 
-    saveBranches(this.branches);
-    saveActiveBranchId(this.activeBranchId);
-    saveMessages(this.messages);
+    saveBranches(this.branches, this.chatId);
+    saveActiveBranchId(this.activeBranchId, this.chatId);
+    saveMessages(this.messages, this.chatId);
 
     this.recalculateCurrentStats();
     this.notify();
@@ -551,9 +575,9 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
     this.activeBranchId = targetBranch.id;
     this.messages = [...targetBranch.messages];
 
-    saveBranches(this.branches);
-    saveActiveBranchId(this.activeBranchId);
-    saveMessages(this.messages);
+    saveBranches(this.branches, this.chatId);
+    saveActiveBranchId(this.activeBranchId, this.chatId);
+    saveMessages(this.messages, this.chatId);
 
     this.recalculateCurrentStats();
     this.notify();
@@ -565,7 +589,7 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
     const branch = this.branches.find((b) => b.id === branchId);
     if (branch) {
       branch.name = trimmed;
-      saveBranches(this.branches);
+      saveBranches(this.branches, this.chatId);
       this.notify();
     }
   }
@@ -581,11 +605,11 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
       const fallbackBranch = this.branches[0];
       this.activeBranchId = fallbackBranch.id;
       this.messages = [...fallbackBranch.messages];
-      saveActiveBranchId(this.activeBranchId);
-      saveMessages(this.messages);
+      saveActiveBranchId(this.activeBranchId, this.chatId);
+      saveMessages(this.messages, this.chatId);
     }
 
-    saveBranches(this.branches);
+    saveBranches(this.branches, this.chatId);
     this.recalculateCurrentStats();
     this.notify();
   }
@@ -603,11 +627,11 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
   }
 
   public loadHistory(): void {
-    this.messages = loadMessages();
-    this.summary = loadSummary();
-    this.facts = loadFacts();
-    this.branches = loadBranches();
-    this.activeBranchId = loadActiveBranchId();
+    this.messages = loadMessages(this.chatId);
+    this.summary = loadSummary(this.chatId);
+    this.facts = loadFacts(this.chatId);
+    this.branches = loadBranches(this.chatId);
+    this.activeBranchId = loadActiveBranchId(this.chatId);
     this.tokenStats = this.calculateInitialTokenStats();
     this.lastTrimInfo = null;
     this.error = null;
@@ -615,26 +639,26 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
   }
 
   public saveHistory(): void {
-    saveMessages(this.messages);
-    saveSummary(this.summary);
-    saveFacts(this.facts);
-    saveBranches(this.branches);
-    saveActiveBranchId(this.activeBranchId);
+    saveMessages(this.messages, this.chatId);
+    saveSummary(this.summary, this.chatId);
+    saveFacts(this.facts, this.chatId);
+    saveBranches(this.branches, this.chatId);
+    saveActiveBranchId(this.activeBranchId, this.chatId);
   }
 
   public clearHistory(): void {
     this.messages = [];
-    clearMessages();
+    clearMessages(this.chatId);
 
     // Clear messages for active branch as well
     const branchIdx = this.branches.findIndex((b) => b.id === this.activeBranchId);
     if (branchIdx >= 0) {
       this.branches[branchIdx].messages = [];
-      saveBranches(this.branches);
+      saveBranches(this.branches, this.chatId);
     }
 
     this.summary = { ...DEFAULT_SUMMARY };
-    clearSummary();
+    clearSummary(this.chatId);
     this.tokenStats = this.calculateInitialTokenStats();
     this.lastTrimInfo = null;
     this.error = null;
@@ -977,7 +1001,7 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
           version: (this.summary.version || 1) + 1,
         };
 
-        saveSummary(this.summary);
+        saveSummary(this.summary, this.chatId);
       }
     } catch (err) {
       // Graceful degradation: do NOT fail chat, do NOT modify history or existing summary
@@ -1049,6 +1073,15 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
     // Past messages before this new message
     const pastMessages = [...this.messages];
 
+    // Trigger onMessageSent if this is the first message in the chat
+    if (pastMessages.length === 0) {
+      try {
+        this.onMessageSent?.(trimmedInput, 'user');
+      } catch (cbErr) {
+        console.warn('[Agent] onMessageSent callback error:', cbErr);
+      }
+    }
+
     // 3. Prepare messages to send to LLM according to strategy
     let messagesToSend = this.getPreparedMessages(pastMessages, userMessage);
 
@@ -1070,7 +1103,7 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
       if (totalEstimatedContext > this.config.contextWindow) {
         this.error = `Context limit exceeded.\n\nConversation: ${totalEstimatedContext.toLocaleString()} tokens\nModel limit: ${this.config.contextWindow.toLocaleString()} tokens`;
         this.messages.push(userMessage);
-        saveMessages(this.messages);
+        saveMessages(this.messages, this.chatId);
         this.recalculateCurrentStats();
         this.notify();
         throw new Error(this.error);
@@ -1079,13 +1112,13 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
 
     // 5. Add user message immediately so it renders in the UI before network call
     this.messages.push(userMessage);
-    saveMessages(this.messages);
+    saveMessages(this.messages, this.chatId);
 
     // Sync active branch with the new user message
     const branchPreIdx = this.branches.findIndex((b) => b.id === this.activeBranchId);
     if (branchPreIdx >= 0) {
       this.branches[branchPreIdx].messages = [...this.messages];
-      saveBranches(this.branches);
+      saveBranches(this.branches, this.chatId);
     }
 
     // Update token stats for pre-request stage
@@ -1132,11 +1165,11 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
       };
 
       // 9. Persist conversation history to localStorage and update active branch
-      saveMessages(this.messages);
+      saveMessages(this.messages, this.chatId);
       const branchPostIdx = this.branches.findIndex((b) => b.id === this.activeBranchId);
       if (branchPostIdx >= 0) {
         this.branches[branchPostIdx].messages = [...this.messages];
-        saveBranches(this.branches);
+        saveBranches(this.branches, this.chatId);
       }
 
       this.isLoading = false;
@@ -1155,11 +1188,11 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
 
       // Roll back user message from history on LLM call error
       this.messages = this.messages.filter((m) => m.id !== userMessage.id);
-      saveMessages(this.messages);
+      saveMessages(this.messages, this.chatId);
       const branchErrIdx = this.branches.findIndex((b) => b.id === this.activeBranchId);
       if (branchErrIdx >= 0) {
         this.branches[branchErrIdx].messages = [...this.messages];
-        saveBranches(this.branches);
+        saveBranches(this.branches, this.chatId);
       }
       this.recalculateCurrentStats();
       this.notify();

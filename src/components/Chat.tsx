@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { agentInstance } from '../agent/Agent';
+import { Agent, agentInstance } from '../agent/Agent';
 import { AgentState, AgentConfig, ContextStrategy } from '../agent/types';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
@@ -8,65 +8,76 @@ import { Settings, OPENROUTER_PRESETS, OLLAMA_PRESETS } from './Settings';
 import { StrategySelector } from './StrategySelector';
 import { BranchBar } from './BranchBar';
 import { StickyFactsPanel } from './StickyFactsPanel';
-import { Bot, Settings as SettingsIcon, Trash2, Cpu } from 'lucide-react';
+import { Bot, Settings as SettingsIcon, Trash2, Cpu, PanelLeft } from 'lucide-react';
 
-export const Chat: React.FC = () => {
-  const [agentState, setAgentState] = useState<AgentState>(() => agentInstance.getState());
+interface ChatProps {
+  agent?: Agent;
+  onToggleSidebar?: () => void;
+  isSidebarOpen?: boolean;
+}
+
+export const Chat: React.FC<ChatProps> = ({
+  agent = agentInstance,
+  onToggleSidebar,
+  isSidebarOpen = false,
+}) => {
+  const [agentState, setAgentState] = useState<AgentState>(() => agent.getState());
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isFactsDrawerOpen, setIsFactsDrawerOpen] = useState(false);
 
   // Subscribe to Agent state changes (Agent -> React state -> UI)
   useEffect(() => {
-    const unsubscribe = agentInstance.subscribe((newState) => {
+    setAgentState(agent.getState());
+    const unsubscribe = agent.subscribe((newState) => {
       setAgentState(newState);
     });
     return unsubscribe;
-  }, []);
+  }, [agent]);
 
   const handleSendMessage = async (text: string) => {
-    await agentInstance.sendMessage(text);
+    await agent.sendMessage(text);
   };
 
   const handleClearHistory = () => {
     if (agentState.messages.length === 0) return;
     if (window.confirm('Clear all conversation history for the active branch?')) {
-      agentInstance.clearHistory();
+      agent.clearHistory();
     }
   };
 
   const handleStrategyChange = (newStrategy: ContextStrategy) => {
-    agentInstance.setStrategy(newStrategy);
+    agent.setStrategy(newStrategy);
     if (newStrategy === 'sticky_facts') {
       setIsFactsDrawerOpen(true);
     }
   };
 
   const handleSaveSettings = (newConfig: AgentConfig) => {
-    agentInstance.setApiKey(newConfig.apiKey);
-    agentInstance.setOllamaUrl(newConfig.ollamaUrl);
-    agentInstance.setProvider(newConfig.provider);
-    agentInstance.setModel(newConfig.model, newConfig.contextWindow, newConfig.provider);
-    agentInstance.setStrategy(newConfig.strategy);
-    agentInstance.setSystemPrompt(newConfig.systemPrompt);
-    agentInstance.setRecentMessagesCount(newConfig.recentMessagesCount);
-    agentInstance.setSummaryThreshold(newConfig.summaryThreshold);
+    agent.setApiKey(newConfig.apiKey);
+    agent.setOllamaUrl(newConfig.ollamaUrl);
+    agent.setProvider(newConfig.provider);
+    agent.setModel(newConfig.model, newConfig.contextWindow, newConfig.provider);
+    agent.setStrategy(newConfig.strategy);
+    agent.setSystemPrompt(newConfig.systemPrompt);
+    agent.setRecentMessagesCount(newConfig.recentMessagesCount);
+    agent.setSummaryThreshold(newConfig.summaryThreshold);
   };
 
   const handleBranchFromMessage = (messageId: string) => {
     const branchName = `Ветка ${agentState.branches.length + 1}`;
-    agentInstance.createBranch(branchName, messageId);
-    agentInstance.setStrategy('branching');
+    agent.createBranch(branchName, messageId);
+    agent.setStrategy('branching');
   };
 
   const handleSelectModel = (val: string) => {
     if (OPENROUTER_PRESETS.some((p) => p.id === val)) {
-      agentInstance.setModel(val, undefined, 'openrouter');
+      agent.setModel(val, undefined, 'openrouter');
     } else if (OLLAMA_PRESETS.some((p) => p.id === val)) {
-      agentInstance.setModel(val, undefined, 'ollama');
+      agent.setModel(val, undefined, 'ollama');
     } else {
       const custom = agentState.customModels.find((m) => m.id === val);
       const prov = custom?.provider || agentState.config.provider;
-      agentInstance.setModel(val, custom?.contextLength, prov);
+      agent.setModel(val, custom?.contextLength, prov);
     }
   };
 
@@ -84,6 +95,17 @@ export const Chat: React.FC = () => {
       {/* Top Navigation Bar */}
       <header className="chat-header">
         <div className="header-left">
+          {onToggleSidebar && (
+            <button
+              type="button"
+              className="sidebar-toggle-btn header-sidebar-toggle"
+              onClick={onToggleSidebar}
+              title={isSidebarOpen ? 'Свернуть панель' : 'Развернуть панель'}
+            >
+              <PanelLeft size={18} />
+            </button>
+          )}
+
           <div className="logo-badge">
             <Bot size={22} className="brand-icon" />
             <div className="brand-info">
@@ -149,7 +171,7 @@ export const Chat: React.FC = () => {
             strategy={agentState.config.strategy}
             onStrategyChange={handleStrategyChange}
             recentMessagesCount={agentState.config.recentMessagesCount}
-            onRecentMessagesCountChange={(n) => agentInstance.setRecentMessagesCount(n)}
+            onRecentMessagesCountChange={(n) => agent.setRecentMessagesCount(n)}
             factsCount={agentState.facts.length}
             isFactsOpen={isFactsDrawerOpen}
             onToggleFacts={() => setIsFactsDrawerOpen(!isFactsDrawerOpen)}
@@ -190,10 +212,10 @@ export const Chat: React.FC = () => {
           <BranchBar
             branches={agentState.branches}
             activeBranchId={agentState.activeBranchId}
-            onSwitchBranch={(id) => agentInstance.switchBranch(id)}
-            onCreateBranch={(name) => agentInstance.createBranch(name)}
-            onRenameBranch={(id, name) => agentInstance.renameBranch(id, name)}
-            onDeleteBranch={(id) => agentInstance.deleteBranch(id)}
+            onSwitchBranch={(id) => agent.switchBranch(id)}
+            onCreateBranch={(name) => agent.createBranch(name)}
+            onRenameBranch={(id, name) => agent.renameBranch(id, name)}
+            onDeleteBranch={(id) => agent.deleteBranch(id)}
             disabled={agentState.isLoading}
           />
         )}
@@ -206,7 +228,7 @@ export const Chat: React.FC = () => {
             lastTrimInfo={agentState.lastTrimInfo}
             strategy={agentState.config.strategy}
             recentMessagesCount={agentState.config.recentMessagesCount}
-            onClearError={() => agentInstance.clearError()}
+            onClearError={() => agent.clearError()}
             onSuggestionClick={(prompt) => handleSendMessage(prompt)}
             onBranchFromMessage={handleBranchFromMessage}
           />
@@ -216,10 +238,10 @@ export const Chat: React.FC = () => {
             onClose={() => setIsFactsDrawerOpen(false)}
             facts={agentState.facts}
             isExtracting={agentState.isExtractingFacts}
-            onAddFact={(k, v, cat) => agentInstance.addFact(k, v, cat)}
-            onUpdateFact={(id, upd) => agentInstance.updateFact(id, upd)}
-            onRemoveFact={(id) => agentInstance.removeFact(id)}
-            onClearFacts={() => agentInstance.clearFacts()}
+            onAddFact={(k, v, cat) => agent.addFact(k, v, cat)}
+            onUpdateFact={(id, upd) => agent.updateFact(id, upd)}
+            onRemoveFact={(id) => agent.removeFact(id)}
+            onClearFacts={() => agent.clearFacts()}
           />
         </div>
       </main>
@@ -246,8 +268,8 @@ export const Chat: React.FC = () => {
         config={agentState.config}
         customModels={agentState.customModels}
         onSave={handleSaveSettings}
-        onAddCustomModel={(model) => agentInstance.addCustomModel(model)}
-        onRemoveCustomModel={(modelId) => agentInstance.removeCustomModel(modelId)}
+        onAddCustomModel={(model) => agent.addCustomModel(model)}
+        onRemoveCustomModel={(modelId) => agent.removeCustomModel(modelId)}
       />
     </div>
   );

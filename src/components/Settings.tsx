@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AgentConfig, AgentMode, ContextStrategy, CustomModel, ModelProvider } from '../agent/types';
 import { MODEL_CONTEXT_LIMITS, fetchModelInfo } from '../agent/tokenizer';
-import { clearApiKey } from '../agent/storage';
+import { clearApiKey, loadDefaultModelConfig, saveDefaultModelConfig } from '../agent/storage';
 import {
   checkOllamaConnection,
   fetchOllamaModels,
@@ -11,6 +11,7 @@ import {
   X,
   Key,
   Cpu,
+  Bot,
   Layers,
   ShieldAlert,
   Trash2,
@@ -106,6 +107,32 @@ export const Settings: React.FC<SettingsProps> = ({
   const [isCheckingOllama, setIsCheckingOllama] = useState(false);
   const [isRefreshingModels, setIsRefreshingModels] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
+  const [defaultModel, setDefaultModel] = useState<string>(() => loadDefaultModelConfig().model);
+  const [defaultProvider, setDefaultProvider] = useState<ModelProvider>(() => loadDefaultModelConfig().provider);
+
+  useEffect(() => {
+    if (isOpen) {
+      setProvider(config.provider || 'openrouter');
+      setApiKey(config.apiKey);
+      setOllamaUrl(config.ollamaUrl || 'http://localhost:11434');
+      setModel(config.model);
+      setContextWindow(config.contextWindow !== null ? String(config.contextWindow) : '');
+      setMode(config.mode);
+      setStrategy(config.strategy || 'sliding_window');
+      setSystemPrompt(config.systemPrompt);
+      setRecentMessagesCount(String(config.recentMessagesCount ?? 10));
+      setSummaryThreshold(String(config.summaryThreshold ?? 10));
+      const def = loadDefaultModelConfig();
+      setDefaultModel(def.model);
+      setDefaultProvider(def.provider);
+      setSavedFeedback(false);
+      setFetchError(null);
+      setFetchSuccessMsg(null);
+      setOllamaFetchError(null);
+      setOllamaFetchSuccessMsg(null);
+      setRefreshMessage(null);
+    }
+  }, [isOpen, config]);
 
   if (!isOpen) return null;
 
@@ -114,6 +141,18 @@ export const Settings: React.FC<SettingsProps> = ({
     (m) => !m.provider || m.provider === 'openrouter'
   );
   const ollamaCustomModels = customModels.filter((m) => m.provider === 'ollama');
+
+  const handleSelectDefaultModel = (val: string) => {
+    setDefaultModel(val);
+    if (OLLAMA_PRESETS.some((p) => p.id === val)) {
+      setDefaultProvider('ollama');
+    } else if (OPENROUTER_PRESETS.some((p) => p.id === val)) {
+      setDefaultProvider('openrouter');
+    } else {
+      const custom = customModels.find((m) => m.id === val);
+      setDefaultProvider(custom?.provider || 'openrouter');
+    }
+  };
 
   const handleSelectOpenRouterPreset = (preset: (typeof OPENROUTER_PRESETS)[0]) => {
     setModel(preset.id);
@@ -288,6 +327,17 @@ export const Settings: React.FC<SettingsProps> = ({
       systemPrompt: systemPrompt.trim(),
       recentMessagesCount: isNaN(parsedN) || parsedN <= 0 ? 10 : parsedN,
       summaryThreshold: isNaN(parsedThreshold) || parsedThreshold <= 0 ? 10 : parsedThreshold,
+    });
+
+    const customMatch = customModels.find((m) => m.id === defaultModel);
+    const resolvedDefLimit =
+      MODEL_CONTEXT_LIMITS[defaultModel] ??
+      (customMatch?.contextLength ?? (defaultProvider === 'ollama' ? 32768 : 128000));
+
+    saveDefaultModelConfig({
+      model: defaultModel,
+      provider: defaultProvider,
+      contextWindow: resolvedDefLimit,
     });
 
     setSavedFeedback(true);
@@ -740,11 +790,73 @@ export const Settings: React.FC<SettingsProps> = ({
             </div>
           </div>
 
+          {/* DEFAULT MODEL FOR NEW CHATS */}
+          <div className="active-config-panel default-model-panel">
+            <div className="active-config-header">
+              <Bot size={16} />
+              <span>Модель по умолчанию для новых чатов</span>
+              <span className={`active-provider-pill ${defaultProvider}`}>
+                {defaultProvider === 'ollama' ? 'Local Ollama' : 'OpenRouter Cloud'}
+              </span>
+            </div>
+
+            <div className="active-config-fields">
+              <div className="form-group compact">
+                <label htmlFor="defaultModelSelect">
+                  Модель для автоматической активации при создании нового диалога:
+                </label>
+                <select
+                  id="defaultModelSelect"
+                  className="form-input"
+                  value={defaultModel}
+                  onChange={(e) => handleSelectDefaultModel(e.target.value)}
+                >
+                  <optgroup label="🌐 OpenRouter Presets">
+                    {OPENROUTER_PRESETS.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.label}
+                      </option>
+                    ))}
+                    {openrouterCustomModels.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name || m.id} (Custom)
+                      </option>
+                    ))}
+                  </optgroup>
+
+                  <optgroup label="💻 Local Ollama Presets">
+                    {OLLAMA_PRESETS.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.label}
+                      </option>
+                    ))}
+                    {ollamaCustomModels.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name || m.id} (Ollama Custom)
+                      </option>
+                    ))}
+                  </optgroup>
+
+                  {!OPENROUTER_PRESETS.some((p) => p.id === defaultModel) &&
+                    !OLLAMA_PRESETS.some((p) => p.id === defaultModel) &&
+                    !customModels.some((m) => m.id === defaultModel) && (
+                      <optgroup label="Active Custom">
+                        <option value={defaultModel}>{defaultModel}</option>
+                      </optgroup>
+                    )}
+                </select>
+                <span className="field-hint">
+                  При нажатии кнопки «+ Новый чат» этот выбор будет установлен в качестве начальной модели.
+                </span>
+              </div>
+            </div>
+          </div>
+
           {/* ACTIVE MODEL & CONTEXT CONFIGURATION */}
           <div className="active-config-panel">
             <div className="active-config-header">
               <Cpu size={16} />
-              <span>Active Model Selection</span>
+              <span>Active Model Selection (Текущий диалог)</span>
               <span className={`active-provider-pill ${provider}`}>
                 {provider === 'ollama' ? 'Local Ollama' : 'OpenRouter Cloud'}
               </span>

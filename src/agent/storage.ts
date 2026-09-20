@@ -15,10 +15,15 @@ import {
   ConversationSummary,
   FactItem,
   DialogueBranch,
+  ChatMetadata,
+  DefaultModelConfig,
 } from './types';
 import { resolveContextLimit } from './tokenizer';
 
 const STORAGE_KEYS = {
+  CHAT_LIST: 'agent_chat_list',
+  ACTIVE_CHAT_ID: 'agent_active_chat_id',
+  DEFAULT_MODEL: 'agent_default_model_config',
   MESSAGES: 'agent_messages',
   API_KEY: 'openrouter_api_key',
   OLLAMA_URL: 'agent_ollama_url',
@@ -31,6 +36,12 @@ const STORAGE_KEYS = {
   ACTIVE_BRANCH: 'agent_active_branch_id',
   STORAGE_VERSION: 'agent_storage_version',
 } as const;
+
+export const DEFAULT_MODEL_CONFIG: DefaultModelConfig = {
+  model: 'openai/gpt-4o-mini',
+  provider: 'openrouter',
+  contextWindow: 128000,
+};
 
 export const DEFAULT_CONFIG: AgentConfig = {
   provider: 'openrouter',
@@ -45,6 +56,40 @@ export const DEFAULT_CONFIG: AgentConfig = {
   summaryThreshold: 10,
 };
 
+export function loadDefaultModelConfig(): DefaultModelConfig {
+  try {
+    if (typeof localStorage === 'undefined') return { ...DEFAULT_MODEL_CONFIG };
+    const raw = localStorage.getItem(STORAGE_KEYS.DEFAULT_MODEL);
+    if (!raw) return { ...DEFAULT_MODEL_CONFIG };
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && typeof parsed.model === 'string' && parsed.model.trim()) {
+      const model = parsed.model.trim();
+      const provider = parsed.provider === 'ollama' ? 'ollama' : 'openrouter';
+      const contextWindow =
+        typeof parsed.contextWindow === 'number' || parsed.contextWindow === null
+          ? parsed.contextWindow
+          : resolveContextLimit(model);
+      return {
+        model,
+        provider,
+        contextWindow,
+      };
+    }
+  } catch (err) {
+    console.error('[Storage] Failed to load default model config:', err);
+  }
+  return { ...DEFAULT_MODEL_CONFIG };
+}
+
+export function saveDefaultModelConfig(config: DefaultModelConfig): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(STORAGE_KEYS.DEFAULT_MODEL, JSON.stringify(config));
+  } catch (err) {
+    console.error('[Storage] Failed to save default model config:', err);
+  }
+}
+
 export const DEFAULT_SUMMARY: ConversationSummary = {
   summary: '',
   lastSummarizedMessageId: null,
@@ -53,7 +98,22 @@ export const DEFAULT_SUMMARY: ConversationSummary = {
   version: 1,
 };
 
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
+
+function getChatKey(baseKey: string, chatId: string = 'default'): string {
+  return `${baseKey}_${chatId}`;
+}
+
+function getItemWithFallback(baseKey: string, chatId: string = 'default'): string | null {
+  if (typeof localStorage === 'undefined') return null;
+  const key = getChatKey(baseKey, chatId);
+  const val = localStorage.getItem(key);
+  if (val !== null) return val;
+  if (chatId === 'default') {
+    return localStorage.getItem(baseKey);
+  }
+  return null;
+}
 
 /**
  * Migration helper: safely migrates localStorage schema across versions.
@@ -69,7 +129,8 @@ export function migrateStorage(): void {
       // Ensure summary key exists separately without touching messages
       const existingSummary = localStorage.getItem(STORAGE_KEYS.SUMMARY);
       if (!existingSummary) {
-        saveSummary(DEFAULT_SUMMARY);
+        localStorage.setItem(STORAGE_KEYS.SUMMARY, JSON.stringify(DEFAULT_SUMMARY));
+        localStorage.setItem(`${STORAGE_KEYS.SUMMARY}_default`, JSON.stringify(DEFAULT_SUMMARY));
       }
     }
 
@@ -78,11 +139,55 @@ export function migrateStorage(): void {
       // Initialize facts and branches if needed
       const existingFacts = localStorage.getItem(STORAGE_KEYS.FACTS);
       if (!existingFacts) {
-        saveFacts([]);
+        localStorage.setItem(STORAGE_KEYS.FACTS, JSON.stringify([]));
+        localStorage.setItem(`${STORAGE_KEYS.FACTS}_default`, JSON.stringify([]));
       }
       const existingBranches = localStorage.getItem(STORAGE_KEYS.BRANCHES);
       if (!existingBranches) {
-        saveBranches([]);
+        localStorage.setItem(STORAGE_KEYS.BRANCHES, JSON.stringify([]));
+        localStorage.setItem(`${STORAGE_KEYS.BRANCHES}_default`, JSON.stringify([]));
+      }
+    }
+
+    if (currentVersion < 4) {
+      // Version 3 -> 4 migration:
+      // Initialize chat list and migrate existing data to 'default' chat
+      const existingChatList = localStorage.getItem(STORAGE_KEYS.CHAT_LIST);
+      if (!existingChatList) {
+        const rawMessages = localStorage.getItem(STORAGE_KEYS.MESSAGES);
+        const rawSummary = localStorage.getItem(STORAGE_KEYS.SUMMARY);
+        const rawFacts = localStorage.getItem(STORAGE_KEYS.FACTS);
+        const rawBranches = localStorage.getItem(STORAGE_KEYS.BRANCHES);
+        const rawActiveBranch = localStorage.getItem(STORAGE_KEYS.ACTIVE_BRANCH);
+        const rawConfig = localStorage.getItem(STORAGE_KEYS.CONFIG);
+
+        if (rawMessages && !localStorage.getItem(`${STORAGE_KEYS.MESSAGES}_default`)) {
+          localStorage.setItem(`${STORAGE_KEYS.MESSAGES}_default`, rawMessages);
+        }
+        if (rawSummary && !localStorage.getItem(`${STORAGE_KEYS.SUMMARY}_default`)) {
+          localStorage.setItem(`${STORAGE_KEYS.SUMMARY}_default`, rawSummary);
+        }
+        if (rawFacts && !localStorage.getItem(`${STORAGE_KEYS.FACTS}_default`)) {
+          localStorage.setItem(`${STORAGE_KEYS.FACTS}_default`, rawFacts);
+        }
+        if (rawBranches && !localStorage.getItem(`${STORAGE_KEYS.BRANCHES}_default`)) {
+          localStorage.setItem(`${STORAGE_KEYS.BRANCHES}_default`, rawBranches);
+        }
+        if (rawActiveBranch && !localStorage.getItem(`${STORAGE_KEYS.ACTIVE_BRANCH}_default`)) {
+          localStorage.setItem(`${STORAGE_KEYS.ACTIVE_BRANCH}_default`, rawActiveBranch);
+        }
+        if (rawConfig && !localStorage.getItem(`${STORAGE_KEYS.CONFIG}_default`)) {
+          localStorage.setItem(`${STORAGE_KEYS.CONFIG}_default`, rawConfig);
+        }
+
+        const defaultChat: ChatMetadata = {
+          id: 'default',
+          title: 'Основной чат',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        saveChatList([defaultChat]);
+        saveActiveChatId('default');
       }
     }
 
@@ -92,15 +197,116 @@ export function migrateStorage(): void {
   }
 }
 
-
 /**
- * Load saved messages from localStorage.
- * Returns an empty array if no messages are saved or on parse errors.
+ * Load list of chats from localStorage.
  */
-export function loadMessages(): Message[] {
+export function loadChatList(): ChatMetadata[] {
   try {
     if (typeof localStorage === 'undefined') return [];
-    const raw = localStorage.getItem(STORAGE_KEYS.MESSAGES);
+    const raw = localStorage.getItem(STORAGE_KEYS.CHAT_LIST);
+    if (!raw) {
+      const defaultChat: ChatMetadata = {
+        id: 'default',
+        title: 'Основной чат',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      saveChatList([defaultChat]);
+      return [defaultChat];
+    }
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return parsed;
+    }
+    const defaultChat: ChatMetadata = {
+      id: 'default',
+      title: 'Основной чат',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    saveChatList([defaultChat]);
+    return [defaultChat];
+  } catch (err) {
+    console.error('[Storage] Failed to load chat list:', err);
+    return [{
+      id: 'default',
+      title: 'Основной чат',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }];
+  }
+}
+
+/**
+ * Save list of chats to localStorage.
+ */
+export function saveChatList(chats: ChatMetadata[]): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(STORAGE_KEYS.CHAT_LIST, JSON.stringify(chats));
+  } catch (err) {
+    console.error('[Storage] Failed to save chat list:', err);
+  }
+}
+
+/**
+ * Load active chat ID from localStorage.
+ */
+export function loadActiveChatId(): string {
+  try {
+    if (typeof localStorage === 'undefined') return 'default';
+    const raw = localStorage.getItem(STORAGE_KEYS.ACTIVE_CHAT_ID);
+    return raw && raw.trim() ? raw.trim() : 'default';
+  } catch (err) {
+    console.error('[Storage] Failed to load active chat id:', err);
+    return 'default';
+  }
+}
+
+/**
+ * Save active chat ID to localStorage.
+ */
+export function saveActiveChatId(id: string): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(STORAGE_KEYS.ACTIVE_CHAT_ID, id.trim());
+  } catch (err) {
+    console.error('[Storage] Failed to save active chat id:', err);
+  }
+}
+
+/**
+ * Delete all persisted data associated with a specific chat.
+ */
+export function deleteChatStorage(chatId: string): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.removeItem(getChatKey(STORAGE_KEYS.MESSAGES, chatId));
+    localStorage.removeItem(getChatKey(STORAGE_KEYS.SUMMARY, chatId));
+    localStorage.removeItem(getChatKey(STORAGE_KEYS.FACTS, chatId));
+    localStorage.removeItem(getChatKey(STORAGE_KEYS.BRANCHES, chatId));
+    localStorage.removeItem(getChatKey(STORAGE_KEYS.ACTIVE_BRANCH, chatId));
+    localStorage.removeItem(getChatKey(STORAGE_KEYS.CONFIG, chatId));
+    if (chatId === 'default') {
+      localStorage.removeItem(STORAGE_KEYS.MESSAGES);
+      localStorage.removeItem(STORAGE_KEYS.SUMMARY);
+      localStorage.removeItem(STORAGE_KEYS.FACTS);
+      localStorage.removeItem(STORAGE_KEYS.BRANCHES);
+      localStorage.removeItem(STORAGE_KEYS.ACTIVE_BRANCH);
+      localStorage.removeItem(STORAGE_KEYS.CONFIG);
+    }
+  } catch (err) {
+    console.error('[Storage] Failed to delete chat storage:', err);
+  }
+}
+
+/**
+ * Load saved messages from localStorage for a specific chat.
+ */
+export function loadMessages(chatId: string = 'default'): Message[] {
+  try {
+    if (typeof localStorage === 'undefined') return [];
+    const raw = getItemWithFallback(STORAGE_KEYS.MESSAGES, chatId);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
@@ -114,37 +320,42 @@ export function loadMessages(): Message[] {
 }
 
 /**
- * Save messages array to localStorage.
+ * Save messages array to localStorage for a specific chat.
  */
-export function saveMessages(messages: Message[]): void {
+export function saveMessages(messages: Message[], chatId: string = 'default'): void {
   try {
     if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(STORAGE_KEYS.MESSAGES, JSON.stringify(messages));
+    localStorage.setItem(getChatKey(STORAGE_KEYS.MESSAGES, chatId), JSON.stringify(messages));
+    if (chatId === 'default') {
+      localStorage.setItem(STORAGE_KEYS.MESSAGES, JSON.stringify(messages));
+    }
   } catch (err) {
     console.error('[Storage] Failed to save messages to localStorage:', err);
   }
 }
 
 /**
- * Remove saved messages from localStorage.
+ * Remove saved messages from localStorage for a specific chat.
  */
-export function clearMessages(): void {
+export function clearMessages(chatId: string = 'default'): void {
   try {
     if (typeof localStorage === 'undefined') return;
-    localStorage.removeItem(STORAGE_KEYS.MESSAGES);
+    localStorage.removeItem(getChatKey(STORAGE_KEYS.MESSAGES, chatId));
+    if (chatId === 'default') {
+      localStorage.removeItem(STORAGE_KEYS.MESSAGES);
+    }
   } catch (err) {
     console.error('[Storage] Failed to clear messages from localStorage:', err);
   }
 }
 
 /**
- * Load saved summary from localStorage.
- * Returns DEFAULT_SUMMARY if not present or on error.
+ * Load saved summary from localStorage for a specific chat.
  */
-export function loadSummary(): ConversationSummary {
+export function loadSummary(chatId: string = 'default'): ConversationSummary {
   try {
     if (typeof localStorage === 'undefined') return { ...DEFAULT_SUMMARY };
-    const raw = localStorage.getItem(STORAGE_KEYS.SUMMARY);
+    const raw = getItemWithFallback(STORAGE_KEYS.SUMMARY, chatId);
     if (!raw) return { ...DEFAULT_SUMMARY };
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object') {
@@ -166,36 +377,42 @@ export function loadSummary(): ConversationSummary {
 }
 
 /**
- * Save summary to localStorage under a dedicated key separate from messages.
+ * Save summary to localStorage for a specific chat.
  */
-export function saveSummary(summary: ConversationSummary): void {
+export function saveSummary(summary: ConversationSummary, chatId: string = 'default'): void {
   try {
     if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(STORAGE_KEYS.SUMMARY, JSON.stringify(summary));
+    localStorage.setItem(getChatKey(STORAGE_KEYS.SUMMARY, chatId), JSON.stringify(summary));
+    if (chatId === 'default') {
+      localStorage.setItem(STORAGE_KEYS.SUMMARY, JSON.stringify(summary));
+    }
   } catch (err) {
     console.error('[Storage] Failed to save summary to localStorage:', err);
   }
 }
 
 /**
- * Remove saved summary from localStorage.
+ * Remove saved summary from localStorage for a specific chat.
  */
-export function clearSummary(): void {
+export function clearSummary(chatId: string = 'default'): void {
   try {
     if (typeof localStorage === 'undefined') return;
-    localStorage.removeItem(STORAGE_KEYS.SUMMARY);
+    localStorage.removeItem(getChatKey(STORAGE_KEYS.SUMMARY, chatId));
+    if (chatId === 'default') {
+      localStorage.removeItem(STORAGE_KEYS.SUMMARY);
+    }
   } catch (err) {
     console.error('[Storage] Failed to clear summary from localStorage:', err);
   }
 }
 
 /**
- * Load sticky facts from localStorage.
+ * Load sticky facts from localStorage for a specific chat.
  */
-export function loadFacts(): FactItem[] {
+export function loadFacts(chatId: string = 'default'): FactItem[] {
   try {
     if (typeof localStorage === 'undefined') return [];
-    const raw = localStorage.getItem(STORAGE_KEYS.FACTS);
+    const raw = getItemWithFallback(STORAGE_KEYS.FACTS, chatId);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
@@ -209,36 +426,42 @@ export function loadFacts(): FactItem[] {
 }
 
 /**
- * Save sticky facts to localStorage.
+ * Save sticky facts to localStorage for a specific chat.
  */
-export function saveFacts(facts: FactItem[]): void {
+export function saveFacts(facts: FactItem[], chatId: string = 'default'): void {
   try {
     if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(STORAGE_KEYS.FACTS, JSON.stringify(facts));
+    localStorage.setItem(getChatKey(STORAGE_KEYS.FACTS, chatId), JSON.stringify(facts));
+    if (chatId === 'default') {
+      localStorage.setItem(STORAGE_KEYS.FACTS, JSON.stringify(facts));
+    }
   } catch (err) {
     console.error('[Storage] Failed to save facts to localStorage:', err);
   }
 }
 
 /**
- * Clear sticky facts from localStorage.
+ * Clear sticky facts from localStorage for a specific chat.
  */
-export function clearFacts(): void {
+export function clearFacts(chatId: string = 'default'): void {
   try {
     if (typeof localStorage === 'undefined') return;
-    localStorage.removeItem(STORAGE_KEYS.FACTS);
+    localStorage.removeItem(getChatKey(STORAGE_KEYS.FACTS, chatId));
+    if (chatId === 'default') {
+      localStorage.removeItem(STORAGE_KEYS.FACTS);
+    }
   } catch (err) {
     console.error('[Storage] Failed to clear facts from localStorage:', err);
   }
 }
 
 /**
- * Load branches from localStorage.
+ * Load branches from localStorage for a specific chat.
  */
-export function loadBranches(): DialogueBranch[] {
+export function loadBranches(chatId: string = 'default'): DialogueBranch[] {
   try {
     if (typeof localStorage === 'undefined') return [];
-    const raw = localStorage.getItem(STORAGE_KEYS.BRANCHES);
+    const raw = getItemWithFallback(STORAGE_KEYS.BRANCHES, chatId);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
@@ -252,24 +475,27 @@ export function loadBranches(): DialogueBranch[] {
 }
 
 /**
- * Save branches to localStorage.
+ * Save branches to localStorage for a specific chat.
  */
-export function saveBranches(branches: DialogueBranch[]): void {
+export function saveBranches(branches: DialogueBranch[], chatId: string = 'default'): void {
   try {
     if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(STORAGE_KEYS.BRANCHES, JSON.stringify(branches));
+    localStorage.setItem(getChatKey(STORAGE_KEYS.BRANCHES, chatId), JSON.stringify(branches));
+    if (chatId === 'default') {
+      localStorage.setItem(STORAGE_KEYS.BRANCHES, JSON.stringify(branches));
+    }
   } catch (err) {
     console.error('[Storage] Failed to save branches to localStorage:', err);
   }
 }
 
 /**
- * Load active branch ID from localStorage.
+ * Load active branch ID from localStorage for a specific chat.
  */
-export function loadActiveBranchId(): string {
+export function loadActiveBranchId(chatId: string = 'default'): string {
   try {
     if (typeof localStorage === 'undefined') return 'main';
-    const raw = localStorage.getItem(STORAGE_KEYS.ACTIVE_BRANCH);
+    const raw = getItemWithFallback(STORAGE_KEYS.ACTIVE_BRANCH, chatId);
     return raw && raw.trim() ? raw.trim() : 'main';
   } catch (err) {
     console.error('[Storage] Failed to load active branch id:', err);
@@ -278,16 +504,20 @@ export function loadActiveBranchId(): string {
 }
 
 /**
- * Save active branch ID to localStorage.
+ * Save active branch ID to localStorage for a specific chat.
  */
-export function saveActiveBranchId(id: string): void {
+export function saveActiveBranchId(id: string, chatId: string = 'default'): void {
   try {
     if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(STORAGE_KEYS.ACTIVE_BRANCH, id.trim());
+    localStorage.setItem(getChatKey(STORAGE_KEYS.ACTIVE_BRANCH, chatId), id.trim());
+    if (chatId === 'default') {
+      localStorage.setItem(STORAGE_KEYS.ACTIVE_BRANCH, id.trim());
+    }
   } catch (err) {
     console.error('[Storage] Failed to save active branch id:', err);
   }
 }
+
 
 
 /**
@@ -375,15 +605,16 @@ export function saveOllamaUrl(url: string): void {
 }
 
 /**
- * Load saved agent configuration (model, contextWindow, mode, systemPrompt, provider, ollamaUrl).
+ * Load saved agent configuration (model, contextWindow, mode, systemPrompt, provider, ollamaUrl) for a specific chat.
  */
-export function loadConfig(): AgentConfig {
+export function loadConfig(chatId: string = 'default'): AgentConfig {
   const apiKey = loadApiKey();
   const ollamaUrl = loadOllamaUrl();
+  const defaultModelConfig = loadDefaultModelConfig();
 
   try {
     if (typeof localStorage !== 'undefined') {
-      const raw = localStorage.getItem(STORAGE_KEYS.CONFIG);
+      const raw = getItemWithFallback(STORAGE_KEYS.CONFIG, chatId);
       if (raw) {
         const parsed = JSON.parse(raw);
         return {
@@ -392,10 +623,10 @@ export function loadConfig(): AgentConfig {
           ollamaUrl: typeof parsed.ollamaUrl === 'string' && parsed.ollamaUrl.trim()
             ? parsed.ollamaUrl.trim()
             : ollamaUrl,
-          model: typeof parsed.model === 'string' ? parsed.model : DEFAULT_CONFIG.model,
+          model: typeof parsed.model === 'string' && parsed.model.trim() ? parsed.model.trim() : defaultModelConfig.model,
           contextWindow: typeof parsed.contextWindow === 'number' || parsed.contextWindow === null
             ? parsed.contextWindow
-            : DEFAULT_CONFIG.contextWindow,
+            : defaultModelConfig.contextWindow,
           mode: (parsed.mode === 'demo' || parsed.mode === 'production')
             ? (parsed.mode as AgentMode)
             : DEFAULT_CONFIG.mode,
@@ -422,22 +653,25 @@ export function loadConfig(): AgentConfig {
 
   return {
     ...DEFAULT_CONFIG,
+    provider: defaultModelConfig.provider,
+    model: defaultModelConfig.model,
+    contextWindow: defaultModelConfig.contextWindow,
     apiKey,
     ollamaUrl,
   };
 }
 
 /**
- * Save configuration to localStorage.
+ * Save configuration to localStorage for a specific chat.
  */
-export function saveConfig(config: AgentConfig): void {
+export function saveConfig(config: AgentConfig, chatId: string = 'default'): void {
   try {
     if (typeof localStorage === 'undefined') return;
     const { apiKey, ollamaUrl, ...settingsWithoutSensitive } = config;
     saveApiKey(apiKey);
     saveOllamaUrl(ollamaUrl);
     localStorage.setItem(
-      STORAGE_KEYS.CONFIG,
+      getChatKey(STORAGE_KEYS.CONFIG, chatId),
       JSON.stringify({
         ...settingsWithoutSensitive,
         ollamaUrl,

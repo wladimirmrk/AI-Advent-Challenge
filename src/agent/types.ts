@@ -107,3 +107,16 @@ export interface AgentState {
 
 export type StateListener = (state: AgentState) => void;
 
+export interface ChatMetadata {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface DefaultModelConfig {
+  model: string;
+  provider: ModelProvider;
+  contextWindow: number | null;
+}
+
