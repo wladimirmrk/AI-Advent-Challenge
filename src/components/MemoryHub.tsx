@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
   WorkingMemory,
   LongTermMemory,
@@ -47,6 +48,18 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
   const [activeTab, setActiveTab] = useState<ActiveTab>('working');
   const [isContextModalOpen, setIsContextModalOpen] = useState(false);
   const [copiedContext, setCopiedContext] = useState(false);
+
+  // Close context modal on Escape key
+  useEffect(() => {
+    if (!isContextModalOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsContextModalOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isContextModalOpen]);
 
   // Working Memory input state
   const [goalInput, setGoalInput] = useState(workingMemory.goal || '');
@@ -798,75 +811,84 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
         )}
       </div>
 
-      {/* INSPECT EFFECTIVE CONTEXT MODAL */}
-      {isContextModalOpen && (
-        <div className="modal-overlay" onClick={() => setIsContextModalOpen(false)}>
+      {/* INSPECT EFFECTIVE CONTEXT MODAL (PORTAL TO DOCUMENT.BODY) */}
+      {isContextModalOpen &&
+        createPortal(
           <div
-            className="context-modal-container"
-            onClick={(e) => e.stopPropagation()}
-            role="dialog"
-            aria-modal="true"
+            className="context-modal-backdrop"
+            onClick={() => setIsContextModalOpen(false)}
+            role="presentation"
           >
-            <div className="modal-header">
-              <div className="modal-title-group">
-                <Eye size={18} className="modal-icon" />
-                <h3>Inspect Effective LLM Context (3 Layers)</h3>
+            <div
+              className="context-modal-container"
+              onClick={(e) => e.stopPropagation()}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="inspect-context-title"
+            >
+              <div className="modal-header">
+                <div className="modal-title-group">
+                  <Eye size={18} className="modal-icon" />
+                  <h3 id="inspect-context-title">Inspect Effective LLM Context (3 Layers)</h3>
+                </div>
+                <div className="modal-header-actions">
+                  <button
+                    type="button"
+                    className="copy-context-btn"
+                    onClick={handleCopyContext}
+                    title="Скопировать полный контекст"
+                  >
+                    {copiedContext ? <Check size={14} /> : <Copy size={14} />}
+                    <span>{copiedContext ? 'Скопировано!' : 'Копировать'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="modal-close-btn"
+                    onClick={() => setIsContextModalOpen(false)}
+                    aria-label="Закрыть модальное окно"
+                    title="Закрыть (Esc)"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
               </div>
-              <div className="modal-header-actions">
-                <button
-                  type="button"
-                  className="copy-context-btn"
-                  onClick={handleCopyContext}
-                  title="Скопировать полный контекст"
-                >
-                  {copiedContext ? <Check size={14} /> : <Copy size={14} />}
-                  <span>{copiedContext ? 'Скопировано!' : 'Копировать'}</span>
-                </button>
-                <button
-                  type="button"
-                  className="modal-close-btn"
-                  onClick={() => setIsContextModalOpen(false)}
-                >
-                  <X size={18} />
-                </button>
-              </div>
-            </div>
 
-            <div className="modal-body context-modal-body">
-              <p className="context-modal-hint">
-                Ниже показано буквальное содержимое запроса, которое передаётся в языковую модель при следующем обращении. Слои памяти скомпонованы в строгом порядке: <strong>System Prompt → Long-Term Memory → Working Memory → Short-Term History</strong>.
-              </p>
+              <div className="context-modal-body">
+                <p className="context-modal-hint">
+                  Ниже показано буквальное содержимое запроса, которое передаётся в языковую модель при следующем обращении. Слои памяти скомпонованы в строгом порядке: <strong>System Prompt → Long-Term Memory → Working Memory → Short-Term History</strong>.
+                </p>
 
-              <div className="context-messages-display">
-                {preparedContext.map((item, idx) => {
-                  let layerBadge = 'Short-Term';
-                  let layerClass = 'layer-short-term';
-                  if (item.content.includes('[LONG-TERM MEMORY')) {
-                    layerBadge = 'Long-Term Memory';
-                    layerClass = 'layer-long-term';
-                  } else if (item.content.includes('[WORKING MEMORY')) {
-                    layerBadge = 'Working Memory';
-                    layerClass = 'layer-working';
-                  } else if (item.role === 'system') {
-                    layerBadge = 'System Persona';
-                    layerClass = 'layer-system';
-                  }
+                <div className="context-messages-display">
+                  {preparedContext.map((item, idx) => {
+                    let layerBadge = 'Short-Term';
+                    let layerClass = 'layer-short-term';
+                    if (item.content.includes('[LONG-TERM MEMORY')) {
+                      layerBadge = 'Long-Term Memory';
+                      layerClass = 'layer-long-term';
+                    } else if (item.content.includes('[WORKING MEMORY')) {
+                      layerBadge = 'Working Memory';
+                      layerClass = 'layer-working';
+                    } else if (item.role === 'system') {
+                      layerBadge = 'System Persona';
+                      layerClass = 'layer-system';
+                    }
 
-                  return (
-                    <div key={idx} className={`context-block ${layerClass}`}>
-                      <div className="context-block-header">
-                        <span className="block-layer-badge">{layerBadge}</span>
-                        <span className="block-role-tag">role: {item.role}</span>
+                    return (
+                      <div key={idx} className={`context-block ${layerClass}`}>
+                        <div className="context-block-header">
+                          <span className="block-layer-badge">{layerBadge}</span>
+                          <span className="block-role-tag">role: {item.role}</span>
+                        </div>
+                        <pre className="context-block-pre">{item.content}</pre>
                       </div>
-                      <pre className="context-block-pre">{item.content}</pre>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
             </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body
+        )}
     </aside>
   );
 };

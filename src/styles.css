@@ -3418,24 +3418,84 @@ select, option, optgroup {
   line-height: 1.35;
 }
 
-/* Effective Context Modal */
+/* Effective Context Modal Backdrop & Container */
+.context-modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(5px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  padding: 20px;
+}
+
 .context-modal-container {
   background: var(--bg-surface, #1e1e24);
   border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 12px;
-  width: 720px;
+  width: 820px;
   max-width: 92vw;
   max-height: 85vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.6);
-  animation: modalFadeIn 0.2s ease-out;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.7);
+  animation: modalScale 0.2s ease-out;
+  overflow: hidden;
+}
+
+.context-modal-container .modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  flex-shrink: 0;
+}
+
+.context-modal-container .modal-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.context-modal-container .modal-title-group h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #f8fafc;
+}
+
+.context-modal-container .modal-icon {
+  color: #60a5fa;
 }
 
 .modal-header-actions {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.modal-close-btn {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.modal-close-btn:hover {
+  color: #f8fafc;
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .copy-context-btn {
@@ -3459,9 +3519,10 @@ select, option, optgroup {
 }
 
 .context-modal-body {
-  padding: 16px;
+  padding: 18px 20px;
   overflow-y: auto;
   flex: 1;
+  min-height: 0;
 }
 
 .context-modal-hint {
@@ -3545,12 +3606,16 @@ select, option, optgroup {
 
 .context-block-pre {
   margin: 0;
+  margin-top: 4px;
   font-size: 11px;
   font-family: 'Fira Code', monospace, Consolas;
   color: #e2e8f0;
   white-space: pre-wrap;
   word-break: break-word;
-  line-height: 1.4;
+  line-height: 1.45;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 6px;
+  padding: 8px 10px;
 }
 
 
