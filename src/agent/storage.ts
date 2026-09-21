@@ -17,6 +17,12 @@ import {
   DialogueBranch,
   ChatMetadata,
   DefaultModelConfig,
+  WorkingMemory,
+  PlanItem,
+  LongTermMemory,
+  UserProfile,
+  DecisionItem,
+  KnowledgeItem,
 } from './types';
 import { resolveContextLimit } from './tokenizer';
 
@@ -34,6 +40,8 @@ const STORAGE_KEYS = {
   FACTS: 'agent_sticky_facts',
   BRANCHES: 'agent_branches',
   ACTIVE_BRANCH: 'agent_active_branch_id',
+  WORKING_MEMORY: 'agent_working_memory',
+  LONG_TERM_MEMORY: 'agent_long_term_memory',
   STORAGE_VERSION: 'agent_storage_version',
 } as const;
 
@@ -54,6 +62,25 @@ export const DEFAULT_CONFIG: AgentConfig = {
   systemPrompt: 'You are a helpful, concise AI assistant.',
   recentMessagesCount: 10,
   summaryThreshold: 10,
+};
+
+export const DEFAULT_WORKING_MEMORY: WorkingMemory = {
+  goal: '',
+  plan: [],
+  scratchpad: '',
+  updatedAt: 0,
+};
+
+export const DEFAULT_LONG_TERM_MEMORY: LongTermMemory = {
+  profile: {
+    name: '',
+    role: '',
+    preferences: [],
+    customNotes: '',
+  },
+  decisions: [],
+  knowledge: [],
+  updatedAt: 0,
 };
 
 export function loadDefaultModelConfig(): DefaultModelConfig {
@@ -98,7 +125,7 @@ export const DEFAULT_SUMMARY: ConversationSummary = {
   version: 1,
 };
 
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 function getChatKey(baseKey: string, chatId: string = 'default'): string {
   return `${baseKey}_${chatId}`;
@@ -188,6 +215,20 @@ export function migrateStorage(): void {
         };
         saveChatList([defaultChat]);
         saveActiveChatId('default');
+      }
+    }
+
+    if (currentVersion < 5) {
+      // Version 4 -> 5 migration:
+      // Initialize working memory and long-term memory if not present
+      const existingLongTerm = localStorage.getItem(STORAGE_KEYS.LONG_TERM_MEMORY);
+      if (!existingLongTerm) {
+        localStorage.setItem(STORAGE_KEYS.LONG_TERM_MEMORY, JSON.stringify(DEFAULT_LONG_TERM_MEMORY));
+      }
+      const existingWorking = getItemWithFallback(STORAGE_KEYS.WORKING_MEMORY, 'default');
+      if (!existingWorking) {
+        localStorage.setItem(getChatKey(STORAGE_KEYS.WORKING_MEMORY, 'default'), JSON.stringify(DEFAULT_WORKING_MEMORY));
+        localStorage.setItem(STORAGE_KEYS.WORKING_MEMORY, JSON.stringify(DEFAULT_WORKING_MEMORY));
       }
     }
 
@@ -287,6 +328,7 @@ export function deleteChatStorage(chatId: string): void {
     localStorage.removeItem(getChatKey(STORAGE_KEYS.BRANCHES, chatId));
     localStorage.removeItem(getChatKey(STORAGE_KEYS.ACTIVE_BRANCH, chatId));
     localStorage.removeItem(getChatKey(STORAGE_KEYS.CONFIG, chatId));
+    localStorage.removeItem(getChatKey(STORAGE_KEYS.WORKING_MEMORY, chatId));
     if (chatId === 'default') {
       localStorage.removeItem(STORAGE_KEYS.MESSAGES);
       localStorage.removeItem(STORAGE_KEYS.SUMMARY);
@@ -294,6 +336,7 @@ export function deleteChatStorage(chatId: string): void {
       localStorage.removeItem(STORAGE_KEYS.BRANCHES);
       localStorage.removeItem(STORAGE_KEYS.ACTIVE_BRANCH);
       localStorage.removeItem(STORAGE_KEYS.CONFIG);
+      localStorage.removeItem(STORAGE_KEYS.WORKING_MEMORY);
     }
   } catch (err) {
     console.error('[Storage] Failed to delete chat storage:', err);
@@ -771,4 +814,150 @@ export function saveOllamaModels(models: CustomModel[]): void {
     console.error('[Storage] Failed to save Ollama models to localStorage:', err);
   }
 }
+
+// ==========================================
+// Working Memory Storage (Per-Chat / Per-Task)
+// ==========================================
+
+/**
+ * Load working memory for a specific chat from localStorage.
+ */
+export function loadWorkingMemory(chatId: string = 'default'): WorkingMemory {
+  try {
+    if (typeof localStorage === 'undefined') return { ...DEFAULT_WORKING_MEMORY };
+    const raw = getItemWithFallback(STORAGE_KEYS.WORKING_MEMORY, chatId);
+    if (!raw) return { ...DEFAULT_WORKING_MEMORY };
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      return {
+        goal: typeof parsed.goal === 'string' ? parsed.goal : '',
+        plan: Array.isArray(parsed.plan)
+          ? parsed.plan.filter(
+              (p: unknown) =>
+                p &&
+                typeof p === 'object' &&
+                typeof (p as PlanItem).id === 'string' &&
+                typeof (p as PlanItem).text === 'string'
+            )
+          : [],
+        scratchpad: typeof parsed.scratchpad === 'string' ? parsed.scratchpad : '',
+        updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : 0,
+      };
+    }
+  } catch (err) {
+    console.error('[Storage] Failed to load working memory from localStorage:', err);
+  }
+  return { ...DEFAULT_WORKING_MEMORY };
+}
+
+/**
+ * Save working memory for a specific chat to localStorage.
+ */
+export function saveWorkingMemory(memory: WorkingMemory, chatId: string = 'default'): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(getChatKey(STORAGE_KEYS.WORKING_MEMORY, chatId), JSON.stringify(memory));
+    if (chatId === 'default') {
+      localStorage.setItem(STORAGE_KEYS.WORKING_MEMORY, JSON.stringify(memory));
+    }
+  } catch (err) {
+    console.error('[Storage] Failed to save working memory to localStorage:', err);
+  }
+}
+
+/**
+ * Clear working memory for a specific chat in localStorage.
+ */
+export function clearWorkingMemory(chatId: string = 'default'): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.removeItem(getChatKey(STORAGE_KEYS.WORKING_MEMORY, chatId));
+    if (chatId === 'default') {
+      localStorage.removeItem(STORAGE_KEYS.WORKING_MEMORY);
+    }
+  } catch (err) {
+    console.error('[Storage] Failed to clear working memory from localStorage:', err);
+  }
+}
+
+// ==========================================
+// Long-Term Memory Storage (Global Across Chats)
+// ==========================================
+
+/**
+ * Load global long-term memory (user profile, decisions, knowledge base) from localStorage.
+ */
+export function loadLongTermMemory(): LongTermMemory {
+  try {
+    if (typeof localStorage === 'undefined') return { ...DEFAULT_LONG_TERM_MEMORY };
+    const raw = localStorage.getItem(STORAGE_KEYS.LONG_TERM_MEMORY);
+    if (!raw) return { ...DEFAULT_LONG_TERM_MEMORY };
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      const profile: UserProfile = {
+        name: typeof parsed.profile?.name === 'string' ? parsed.profile.name : '',
+        role: typeof parsed.profile?.role === 'string' ? parsed.profile.role : '',
+        preferences: Array.isArray(parsed.profile?.preferences)
+          ? parsed.profile.preferences.filter((p: unknown) => typeof p === 'string')
+          : [],
+        customNotes: typeof parsed.profile?.customNotes === 'string' ? parsed.profile.customNotes : '',
+      };
+
+      const decisions: DecisionItem[] = Array.isArray(parsed.decisions)
+        ? parsed.decisions.filter(
+            (d: unknown) =>
+              d &&
+              typeof d === 'object' &&
+              typeof (d as DecisionItem).id === 'string' &&
+              typeof (d as DecisionItem).title === 'string'
+          )
+        : [];
+
+      const knowledge: KnowledgeItem[] = Array.isArray(parsed.knowledge)
+        ? parsed.knowledge.filter(
+            (k: unknown) =>
+              k &&
+              typeof k === 'object' &&
+              typeof (k as KnowledgeItem).id === 'string' &&
+              typeof (k as KnowledgeItem).key === 'string'
+          )
+        : [];
+
+      return {
+        profile,
+        decisions,
+        knowledge,
+        updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : 0,
+      };
+    }
+  } catch (err) {
+    console.error('[Storage] Failed to load long-term memory from localStorage:', err);
+  }
+  return { ...DEFAULT_LONG_TERM_MEMORY };
+}
+
+/**
+ * Save global long-term memory to localStorage.
+ */
+export function saveLongTermMemory(memory: LongTermMemory): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(STORAGE_KEYS.LONG_TERM_MEMORY, JSON.stringify(memory));
+  } catch (err) {
+    console.error('[Storage] Failed to save long-term memory to localStorage:', err);
+  }
+}
+
+/**
+ * Clear global long-term memory in localStorage.
+ */
+export function clearLongTermMemory(): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.removeItem(STORAGE_KEYS.LONG_TERM_MEMORY);
+  } catch (err) {
+    console.error('[Storage] Failed to clear long-term memory from localStorage:', err);
+  }
+}
+
 

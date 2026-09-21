@@ -8,7 +8,8 @@ import { Settings, OPENROUTER_PRESETS, OLLAMA_PRESETS } from './Settings';
 import { StrategySelector } from './StrategySelector';
 import { BranchBar } from './BranchBar';
 import { StickyFactsPanel } from './StickyFactsPanel';
-import { Bot, Settings as SettingsIcon, Trash2, Cpu, PanelLeft } from 'lucide-react';
+import { MemoryHub } from './MemoryHub';
+import { Bot, Settings as SettingsIcon, Trash2, Cpu, PanelLeft, Brain } from 'lucide-react';
 
 interface ChatProps {
   agent?: Agent;
@@ -24,6 +25,7 @@ export const Chat: React.FC<ChatProps> = ({
   const [agentState, setAgentState] = useState<AgentState>(() => agent.getState());
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isFactsDrawerOpen, setIsFactsDrawerOpen] = useState(false);
+  const [isMemoryHubOpen, setIsMemoryHubOpen] = useState(false);
 
   // Subscribe to Agent state changes (Agent -> React state -> UI)
   useEffect(() => {
@@ -180,6 +182,22 @@ export const Chat: React.FC<ChatProps> = ({
         </div>
 
         <div className="header-right">
+          <button
+            type="button"
+            className={`action-btn memory-hub-btn ${isMemoryHubOpen ? 'active' : ''}`}
+            onClick={() => setIsMemoryHubOpen(!isMemoryHubOpen)}
+            title="Memory Hub: 3 явных слоя памяти (Short-Term, Working, Long-Term)"
+          >
+            <Brain size={16} />
+            <span className="btn-text">Memory Hub</span>
+            <span className="memory-badge-count">
+              {(agentState.workingMemory.goal ? 1 : 0) +
+                agentState.workingMemory.plan.length +
+                agentState.longTermMemory.decisions.length +
+                agentState.longTermMemory.knowledge.length}
+            </span>
+          </button>
+
           {agentState.messages.length > 0 && (
             <button
               type="button"
@@ -243,12 +261,27 @@ export const Chat: React.FC<ChatProps> = ({
             onRemoveFact={(id) => agent.removeFact(id)}
             onClearFacts={() => agent.clearFacts()}
           />
+
+          <MemoryHub
+            isOpen={isMemoryHubOpen}
+            onClose={() => setIsMemoryHubOpen(false)}
+            workingMemory={agentState.workingMemory}
+            longTermMemory={agentState.longTermMemory}
+            memoryTokensBreakdown={agentState.memoryTokensBreakdown}
+            recentMessagesCount={agentState.config.recentMessagesCount}
+            messages={agentState.messages}
+            agent={agent}
+          />
         </div>
       </main>
 
       {/* Token Usage Stats Bar */}
       <section className="stats-section">
-        <TokenStats stats={agentState.tokenStats} />
+        <TokenStats
+          stats={agentState.tokenStats}
+          breakdown={agentState.memoryTokensBreakdown}
+          onOpenMemoryHub={() => setIsMemoryHubOpen(true)}
+        />
       </section>
 
       {/* Input Field Section */}

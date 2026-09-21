@@ -28,6 +28,14 @@ import {
   ConversationSummary,
   FactItem,
   DialogueBranch,
+  WorkingMemory,
+  PlanItem,
+  LongTermMemory,
+  UserProfile,
+  DecisionItem,
+  KnowledgeItem,
+  MemoryTokensBreakdown,
+  MemoryTargetLayer,
 } from './types';
 import {
   loadMessages,
@@ -47,8 +55,16 @@ import {
   saveBranches,
   loadActiveBranchId,
   saveActiveBranchId,
+  loadWorkingMemory,
+  saveWorkingMemory,
+  clearWorkingMemory,
+  loadLongTermMemory,
+  saveLongTermMemory,
+  clearLongTermMemory,
   migrateStorage,
   DEFAULT_SUMMARY,
+  DEFAULT_WORKING_MEMORY,
+  DEFAULT_LONG_TERM_MEMORY,
 } from './storage';
 import {
   estimateTokens,
@@ -66,6 +82,8 @@ export class Agent {
   private facts: FactItem[] = [];
   private branches: DialogueBranch[] = [];
   private activeBranchId = 'main';
+  private workingMemory: WorkingMemory = { ...DEFAULT_WORKING_MEMORY };
+  private longTermMemory: LongTermMemory = { ...DEFAULT_LONG_TERM_MEMORY };
   private tokenStats: TokenStats;
   private customModels: CustomModel[] = [];
   private isLoading = false;
@@ -144,7 +162,11 @@ export class Agent {
     // 6. Load user-added custom models from localStorage
     this.customModels = loadCustomModels();
 
-    // 7. Initialize token statistics based on restored history and context strategy
+    // 7. Load Working Memory (per-chat) and Long-Term Memory (global)
+    this.workingMemory = loadWorkingMemory(this.chatId);
+    this.longTermMemory = loadLongTermMemory();
+
+    // 8. Initialize token statistics based on restored history and context strategy
     this.tokenStats = this.calculateInitialTokenStats();
   }
 
@@ -191,6 +213,20 @@ export class Agent {
       facts: [...this.facts],
       branches: [...this.branches],
       activeBranchId: this.activeBranchId,
+      workingMemory: {
+        ...this.workingMemory,
+        plan: this.workingMemory.plan.map((p) => ({ ...p })),
+      },
+      longTermMemory: {
+        profile: {
+          ...this.longTermMemory.profile,
+          preferences: [...this.longTermMemory.profile.preferences],
+        },
+        decisions: this.longTermMemory.decisions.map((d) => ({ ...d })),
+        knowledge: this.longTermMemory.knowledge.map((k) => ({ ...k, tags: [...k.tags] })),
+        updatedAt: this.longTermMemory.updatedAt,
+      },
+      memoryTokensBreakdown: this.getMemoryTokensBreakdown(),
     };
   }
 
@@ -615,6 +651,330 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
   }
 
   // ==========================================
+  // Working Memory Management (Per-Chat Task Context)
+  // ==========================================
+
+  public getWorkingMemory(): WorkingMemory {
+    return {
+      ...this.workingMemory,
+      plan: this.workingMemory.plan.map((p) => ({ ...p })),
+    };
+  }
+
+  public setWorkingGoal(goal: string): void {
+    this.workingMemory = {
+      ...this.workingMemory,
+      goal: goal.trim(),
+      updatedAt: Date.now(),
+    };
+    saveWorkingMemory(this.workingMemory, this.chatId);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public addPlanItem(text: string): void {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const newItem: PlanItem = {
+      id: `plan-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      text: trimmed,
+      done: false,
+    };
+    this.workingMemory = {
+      ...this.workingMemory,
+      plan: [...this.workingMemory.plan, newItem],
+      updatedAt: Date.now(),
+    };
+    saveWorkingMemory(this.workingMemory, this.chatId);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public togglePlanItem(id: string): void {
+    this.workingMemory = {
+      ...this.workingMemory,
+      plan: this.workingMemory.plan.map((p) => (p.id === id ? { ...p, done: !p.done } : p)),
+      updatedAt: Date.now(),
+    };
+    saveWorkingMemory(this.workingMemory, this.chatId);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public removePlanItem(id: string): void {
+    this.workingMemory = {
+      ...this.workingMemory,
+      plan: this.workingMemory.plan.filter((p) => p.id !== id),
+      updatedAt: Date.now(),
+    };
+    saveWorkingMemory(this.workingMemory, this.chatId);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public updateScratchpad(text: string): void {
+    this.workingMemory = {
+      ...this.workingMemory,
+      scratchpad: text,
+      updatedAt: Date.now(),
+    };
+    saveWorkingMemory(this.workingMemory, this.chatId);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public setWorkingMemory(updates: Partial<WorkingMemory>): void {
+    this.workingMemory = {
+      ...this.workingMemory,
+      ...updates,
+      updatedAt: Date.now(),
+    };
+    saveWorkingMemory(this.workingMemory, this.chatId);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public clearWorkingMemory(): void {
+    this.workingMemory = { ...DEFAULT_WORKING_MEMORY };
+    clearWorkingMemory(this.chatId);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  // ==========================================
+  // Long-Term Memory Management (Global Profile & Knowledge)
+  // ==========================================
+
+  public getLongTermMemory(): LongTermMemory {
+    this.longTermMemory = loadLongTermMemory();
+    return {
+      profile: {
+        ...this.longTermMemory.profile,
+        preferences: [...this.longTermMemory.profile.preferences],
+      },
+      decisions: this.longTermMemory.decisions.map((d) => ({ ...d })),
+      knowledge: this.longTermMemory.knowledge.map((k) => ({ ...k, tags: [...k.tags] })),
+      updatedAt: this.longTermMemory.updatedAt,
+    };
+  }
+
+  public updateUserProfile(updates: Partial<UserProfile>): void {
+    this.longTermMemory = loadLongTermMemory();
+    this.longTermMemory = {
+      ...this.longTermMemory,
+      profile: {
+        ...this.longTermMemory.profile,
+        ...updates,
+      },
+      updatedAt: Date.now(),
+    };
+    saveLongTermMemory(this.longTermMemory);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public addDecision(title: string, rationale: string = ''): void {
+    const trimmedTitle = title.trim();
+    if (!trimmedTitle) return;
+    this.longTermMemory = loadLongTermMemory();
+    const newItem: DecisionItem = {
+      id: `dec-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      title: trimmedTitle,
+      rationale: rationale.trim(),
+      date: Date.now(),
+    };
+    this.longTermMemory = {
+      ...this.longTermMemory,
+      decisions: [...this.longTermMemory.decisions, newItem],
+      updatedAt: Date.now(),
+    };
+    saveLongTermMemory(this.longTermMemory);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public removeDecision(id: string): void {
+    this.longTermMemory = loadLongTermMemory();
+    this.longTermMemory = {
+      ...this.longTermMemory,
+      decisions: this.longTermMemory.decisions.filter((d) => d.id !== id),
+      updatedAt: Date.now(),
+    };
+    saveLongTermMemory(this.longTermMemory);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public addKnowledge(key: string, content: string, tags: string[] = []): void {
+    const trimmedKey = key.trim();
+    const trimmedContent = content.trim();
+    if (!trimmedKey || !trimmedContent) return;
+
+    this.longTermMemory = loadLongTermMemory();
+    const existingIdx = this.longTermMemory.knowledge.findIndex(
+      (k) => k.key.toLowerCase() === trimmedKey.toLowerCase()
+    );
+
+    let updatedKnowledge: KnowledgeItem[];
+    if (existingIdx >= 0) {
+      updatedKnowledge = [...this.longTermMemory.knowledge];
+      updatedKnowledge[existingIdx] = {
+        ...updatedKnowledge[existingIdx],
+        content: trimmedContent,
+        tags: tags.length > 0 ? tags : updatedKnowledge[existingIdx].tags,
+        updatedAt: Date.now(),
+      };
+    } else {
+      updatedKnowledge = [
+        ...this.longTermMemory.knowledge,
+        {
+          id: `know-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          key: trimmedKey,
+          content: trimmedContent,
+          tags,
+          updatedAt: Date.now(),
+        },
+      ];
+    }
+
+    this.longTermMemory = {
+      ...this.longTermMemory,
+      knowledge: updatedKnowledge,
+      updatedAt: Date.now(),
+    };
+    saveLongTermMemory(this.longTermMemory);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public removeKnowledge(id: string): void {
+    this.longTermMemory = loadLongTermMemory();
+    this.longTermMemory = {
+      ...this.longTermMemory,
+      knowledge: this.longTermMemory.knowledge.filter((k) => k.id !== id),
+      updatedAt: Date.now(),
+    };
+    saveLongTermMemory(this.longTermMemory);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public setLongTermMemory(memory: Partial<LongTermMemory>): void {
+    this.longTermMemory = loadLongTermMemory();
+    this.longTermMemory = {
+      ...this.longTermMemory,
+      ...memory,
+      updatedAt: Date.now(),
+    };
+    saveLongTermMemory(this.longTermMemory);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public clearLongTermMemory(): void {
+    this.longTermMemory = { ...DEFAULT_LONG_TERM_MEMORY };
+    clearLongTermMemory();
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  // ==========================================
+  // Explicit Memory Routing
+  // ==========================================
+
+  public routeMemoryItem(
+    target: MemoryTargetLayer,
+    item: {
+      text: string;
+      key?: string;
+      title?: string;
+      rationale?: string;
+      category?: string;
+      tags?: string[];
+    }
+  ): void {
+    if (target === 'working') {
+      if (item.category === 'plan') {
+        this.addPlanItem(item.text);
+      } else if (item.category === 'goal' || (!this.workingMemory.goal && item.text && item.category !== 'scratchpad')) {
+        this.setWorkingGoal(item.text);
+      } else {
+        const existingNotes = this.workingMemory.scratchpad ? `${this.workingMemory.scratchpad}\n` : '';
+        this.updateScratchpad(`${existingNotes}• ${item.text}`);
+      }
+    } else if (target === 'long_term') {
+      if (item.category === 'decision') {
+        this.addDecision(item.title || item.key || item.text, item.rationale || '');
+      } else if (item.category === 'profile') {
+        const existingNotes = this.longTermMemory.profile.customNotes
+          ? `${this.longTermMemory.profile.customNotes}\n`
+          : '';
+        this.updateUserProfile({
+          customNotes: `${existingNotes}• ${item.text}`,
+        });
+      } else {
+        this.addKnowledge(item.key || 'Fact', item.text, item.tags || []);
+      }
+    } else {
+      // Short-term: handled via standard dialogue message flow
+      this.notify();
+    }
+  }
+
+  public async autoClassifyAndRoute(
+    userContent: string,
+    assistantContent: string
+  ): Promise<{ layer: MemoryTargetLayer; summary: string } | null> {
+    try {
+      const prompt = [
+        {
+          role: 'system',
+          content: `You are an explicit memory layer router for an AI agent.
+Analyze the latest exchange between User and Assistant, and decide if there is critical information that belongs to:
+1. "working": Active task goal, plan step, or current working constraints.
+2. "long_term": User profile (identity/role/preferences), architectural decision, or permanent domain knowledge.
+3. "none": Normal conversation or clarifications that belong purely to short-term chat.
+
+Latest exchange:
+User: ${userContent}
+Assistant: ${assistantContent}
+
+Respond ONLY with valid JSON:
+{
+  "layer": "working" | "long_term" | "none",
+  "category": "goal" | "plan" | "scratchpad" | "profile" | "decision" | "knowledge",
+  "key": "short title or key (optional)",
+  "content": "concise extracted content",
+  "summary": "1-line explanation of what was extracted"
+}
+Do NOT use markdown code fences. Pure JSON only.`,
+        },
+      ];
+
+      const res = await this.callLLM(prompt);
+      const cleaned = res.content.trim().replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
+      const parsed = JSON.parse(cleaned);
+
+      if (parsed && (parsed.layer === 'working' || parsed.layer === 'long_term') && parsed.content) {
+        this.routeMemoryItem(parsed.layer, {
+          text: parsed.content,
+          key: parsed.key,
+          title: parsed.key,
+          category: parsed.category,
+        });
+        return {
+          layer: parsed.layer,
+          summary: parsed.summary || parsed.content,
+        };
+      }
+      return null;
+    } catch (err) {
+      console.warn('[Agent] autoClassifyAndRoute error (graceful degradation):', err);
+      return null;
+    }
+  }
+
+  // ==========================================
   // History & Persistence
   // ==========================================
 
@@ -632,6 +992,8 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
     this.facts = loadFacts(this.chatId);
     this.branches = loadBranches(this.chatId);
     this.activeBranchId = loadActiveBranchId(this.chatId);
+    this.workingMemory = loadWorkingMemory(this.chatId);
+    this.longTermMemory = loadLongTermMemory();
     this.tokenStats = this.calculateInitialTokenStats();
     this.lastTrimInfo = null;
     this.error = null;
@@ -644,6 +1006,8 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
     saveFacts(this.facts, this.chatId);
     saveBranches(this.branches, this.chatId);
     saveActiveBranchId(this.activeBranchId, this.chatId);
+    saveWorkingMemory(this.workingMemory, this.chatId);
+    saveLongTermMemory(this.longTermMemory);
   }
 
   public clearHistory(): void {
@@ -671,8 +1035,133 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
   }
 
   // ==========================================
-  // Token Calculation Helpers
+  // Token Calculation Helpers & Memory Formatting
   // ==========================================
+
+  /**
+   * Formats the Long-Term memory section (User profile, decisions, knowledge base)
+   * into a cohesive system prompt augmentation.
+   */
+  public formatLongTermMemoryPrompt(): string {
+    const parts: string[] = [];
+    const { profile, decisions, knowledge } = this.longTermMemory;
+
+    // 1. User Profile
+    const profileParts: string[] = [];
+    if (profile.name && profile.name.trim()) profileParts.push(`Name: ${profile.name.trim()}`);
+    if (profile.role && profile.role.trim()) profileParts.push(`Role: ${profile.role.trim()}`);
+    if (profile.preferences && profile.preferences.length > 0) {
+      profileParts.push(`Preferences: ${profile.preferences.join(', ')}`);
+    }
+    if (profile.customNotes && profile.customNotes.trim()) {
+      profileParts.push(`Notes: ${profile.customNotes.trim()}`);
+    }
+
+    if (profileParts.length > 0) {
+      parts.push(`User Profile:\n${profileParts.map((p) => `  - ${p}`).join('\n')}`);
+    }
+
+    // 2. Architectural / Established Decisions
+    if (decisions && decisions.length > 0) {
+      const formattedDecisions = decisions
+        .map((d) => `  - [Decision] ${d.title}${d.rationale ? `: ${d.rationale}` : ''}`)
+        .join('\n');
+      parts.push(`Established Decisions & Guidelines:\n${formattedDecisions}`);
+    }
+
+    // 3. Knowledge Base
+    if (knowledge && knowledge.length > 0) {
+      const formattedKnowledge = knowledge
+        .map(
+          (k) =>
+            `  - [Knowledge] ${k.key}: ${k.content}${
+              k.tags && k.tags.length > 0 ? ` (Tags: ${k.tags.join(', ')})` : ''
+            }`
+        )
+        .join('\n');
+      parts.push(`Permanent Knowledge Base:\n${formattedKnowledge}`);
+    }
+
+    if (parts.length === 0) return '';
+    return `[LONG-TERM MEMORY: USER PROFILE & ESTABLISHED KNOWLEDGE]\n${parts.join('\n\n')}`;
+  }
+
+  /**
+   * Formats the Working memory section (Active task goal, plan/checklist, scratchpad)
+   * into a cohesive system prompt augmentation.
+   */
+  public formatWorkingMemoryPrompt(): string {
+    const parts: string[] = [];
+    const { goal, plan, scratchpad } = this.workingMemory;
+
+    if (goal && goal.trim()) {
+      parts.push(`Current Task Goal: ${goal.trim()}`);
+    }
+
+    if (plan && plan.length > 0) {
+      const formattedPlan = plan
+        .map((p) => `  - [${p.done ? 'x' : ' '}] ${p.text}`)
+        .join('\n');
+      parts.push(`Task Execution Plan & Subtasks:\n${formattedPlan}`);
+    }
+
+    if (scratchpad && scratchpad.trim()) {
+      parts.push(`Working Notes / Scratchpad:\n${scratchpad.trim()}`);
+    }
+
+    if (parts.length === 0) return '';
+    return `[WORKING MEMORY: CURRENT TASK CONTEXT]\n${parts.join('\n\n')}`;
+  }
+
+  /**
+   * Calculates token contributions broken down by memory layer.
+   */
+  public getMemoryTokensBreakdown(messagesList: Message[] = this.messages): MemoryTokensBreakdown {
+    const systemContent =
+      this.config.systemPrompt && this.config.systemPrompt.trim()
+        ? this.config.systemPrompt.trim()
+        : '';
+    const systemTokens = systemContent ? estimateTokens(systemContent) + 4 : 0;
+
+    const longTermText = this.formatLongTermMemoryPrompt();
+    const longTermTokens = longTermText ? estimateTokens(longTermText) + 4 : 0;
+
+    const workingText = this.formatWorkingMemoryPrompt();
+    const workingTokens = workingText ? estimateTokens(workingText) + 4 : 0;
+
+    let strategyExtraTokens = 0;
+    if (this.config.strategy === 'summary' && this.summary.summary.trim()) {
+      strategyExtraTokens =
+        estimateTokens(`Summary of previous conversation:\n${this.summary.summary.trim()}`) + 4;
+    } else if (this.config.strategy === 'sticky_facts' && this.facts.length > 0) {
+      const factsText = this.facts
+        .map((f) => `- [${f.category || 'fact'}] ${f.key}: ${f.value}`)
+        .join('\n');
+      strategyExtraTokens =
+        estimateTokens(`Key-Value Memory (Sticky Facts from conversation):\n${factsText}`) + 4;
+    }
+
+    const recent =
+      this.config.strategy === 'demo' || this.config.strategy === 'branching'
+        ? messagesList
+        : messagesList.slice(-this.config.recentMessagesCount);
+
+    let messagesTokens = 0;
+    for (const msg of recent) {
+      messagesTokens += estimateTokens(msg.content) + 4;
+    }
+
+    const shortTermTokens = messagesTokens + strategyExtraTokens;
+    const totalContextTokens = systemTokens + longTermTokens + workingTokens + shortTermTokens;
+
+    return {
+      systemTokens,
+      longTermTokens,
+      workingTokens,
+      shortTermTokens,
+      totalContextTokens,
+    };
+  }
 
   private calculateInitialTokenStats(): TokenStats {
     const formattedMessages = this.getPreparedMessages(this.messages);
@@ -684,7 +1173,12 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
       total: conversationTokens,
       contextWindow: this.config.contextWindow,
       isEstimated: true,
-      estimatedCost: calculateEstimatedCost(conversationTokens, 0, this.config.model, this.config.provider),
+      estimatedCost: calculateEstimatedCost(
+        conversationTokens,
+        0,
+        this.config.model,
+        this.config.provider
+      ),
       isLocal: this.config.provider === 'ollama',
     };
   }
@@ -697,18 +1191,24 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
       conversation: conversationTokens,
       total: conversationTokens + this.tokenStats.response,
       contextWindow: this.config.contextWindow,
-      estimatedCost: calculateEstimatedCost(conversationTokens, this.tokenStats.response, this.config.model, this.config.provider),
+      estimatedCost: calculateEstimatedCost(
+        conversationTokens,
+        this.tokenStats.response,
+        this.config.model,
+        this.config.provider
+      ),
       isLocal: this.config.provider === 'ollama',
     };
   }
 
   /**
-   * Prepares the messages array for LLM context according to active strategy:
-   * - sliding_window: system prompt + last N messages
-   * - sticky_facts: system prompt + Key-Value facts + last N messages
-   * - branching: system prompt + last N messages of active branch
-   * - summary: system prompt + incremental summary + last N messages
-   * - demo: system prompt + full message history (Demo Overflow)
+   * Prepares the messages array for LLM context with explicit memory layering:
+   * 1. System Prompt (Base identity)
+   * 2. Long-Term Memory (Permanent Profile, Architectural Decisions, Knowledge)
+   * 3. Working Memory (Current Task Goal, Plan Checklist, Scratchpad)
+   * 4. Strategy Augmentation (Summary / Sticky Facts if active)
+   * 5. Short-Term Memory (Recent dialogue messages)
+   * 6. New user message (if provided)
    */
   public getPreparedMessages(
     messagesList: Message[],
@@ -724,9 +1224,28 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
       });
     }
 
-    const strategy = this.config.strategy || (this.config.mode === 'demo' ? 'demo' : 'sliding_window');
+    // 2. Long-Term Memory
+    const longTermPrompt = this.formatLongTermMemoryPrompt();
+    if (longTermPrompt) {
+      prepared.push({
+        role: 'system',
+        content: longTermPrompt,
+      });
+    }
 
-    // 2. Strategy-specific context augmentation
+    // 3. Working Memory
+    const workingPrompt = this.formatWorkingMemoryPrompt();
+    if (workingPrompt) {
+      prepared.push({
+        role: 'system',
+        content: workingPrompt,
+      });
+    }
+
+    const strategy =
+      this.config.strategy || (this.config.mode === 'demo' ? 'demo' : 'sliding_window');
+
+    // 4. Strategy-specific context augmentation
     if (strategy === 'summary') {
       if (this.summary && this.summary.summary && this.summary.summary.trim()) {
         prepared.push({

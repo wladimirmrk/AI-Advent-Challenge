@@ -89,6 +89,58 @@ export interface CustomModel {
   provider?: ModelProvider;
 }
 
+export interface PlanItem {
+  id: string;
+  text: string;
+  done: boolean;
+}
+
+export interface WorkingMemory {
+  goal: string;
+  plan: PlanItem[];
+  scratchpad: string;
+  updatedAt: number;
+}
+
+export interface UserProfile {
+  name: string;
+  role: string;
+  preferences: string[];
+  customNotes: string;
+}
+
+export interface DecisionItem {
+  id: string;
+  title: string;
+  rationale: string;
+  date: number;
+}
+
+export interface KnowledgeItem {
+  id: string;
+  key: string;
+  content: string;
+  tags: string[];
+  updatedAt: number;
+}
+
+export interface LongTermMemory {
+  profile: UserProfile;
+  decisions: DecisionItem[];
+  knowledge: KnowledgeItem[];
+  updatedAt: number;
+}
+
+export interface MemoryTokensBreakdown {
+  systemTokens: number;
+  longTermTokens: number;
+  workingTokens: number;
+  shortTermTokens: number;
+  totalContextTokens: number;
+}
+
+export type MemoryTargetLayer = 'short_term' | 'working' | 'long_term';
+
 export interface AgentState {
   messages: Message[];
   tokenStats: TokenStats;
@@ -103,6 +155,9 @@ export interface AgentState {
   facts: FactItem[];
   branches: DialogueBranch[];
   activeBranchId: string;
+  workingMemory: WorkingMemory;
+  longTermMemory: LongTermMemory;
+  memoryTokensBreakdown: MemoryTokensBreakdown;
 }
 
 export type StateListener = (state: AgentState) => void;
@@ -119,4 +174,5 @@ export interface DefaultModelConfig {
   provider: ModelProvider;
   contextWindow: number | null;
 }
+
 

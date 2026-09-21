@@ -1,13 +1,15 @@
 import React from 'react';
-import { TokenStats as TokenStatsType } from '../agent/types';
+import { TokenStats as TokenStatsType, MemoryTokensBreakdown } from '../agent/types';
 import { formatTokenCount } from '../agent/tokenizer';
-import { Cpu, DollarSign } from 'lucide-react';
+import { Cpu, DollarSign, Brain } from 'lucide-react';
 
 interface TokenStatsProps {
   stats: TokenStatsType;
+  breakdown?: MemoryTokensBreakdown;
+  onOpenMemoryHub?: () => void;
 }
 
-export const TokenStats: React.FC<TokenStatsProps> = ({ stats }) => {
+export const TokenStats: React.FC<TokenStatsProps> = ({ stats, breakdown, onOpenMemoryHub }) => {
   const {
     currentRequest,
     conversation,
@@ -38,16 +40,34 @@ export const TokenStats: React.FC<TokenStatsProps> = ({ stats }) => {
           )}
         </div>
 
-        {stats.isLocal ? (
-          <div className="cost-tag local" title="Local Ollama model runs on your machine for free">
-            <span>$0.00 (Local)</span>
-          </div>
-        ) : estimatedCost !== null ? (
-          <div className="cost-tag" title="Estimated cost based on model token pricing">
-            <DollarSign size={12} />
-            <span>~${estimatedCost < 0.0001 ? '<0.0001' : estimatedCost.toFixed(4)}</span>
-          </div>
-        ) : null}
+        <div className="stats-header-right">
+          {breakdown && onOpenMemoryHub && (
+            <button
+              type="button"
+              className="memory-layer-quick-btn"
+              onClick={onOpenMemoryHub}
+              title="Открыть Memory Hub и инспектор слоев памяти"
+            >
+              <Brain size={13} />
+              <span className="layer-tag">L-Term: ~{breakdown.longTermTokens}</span>
+              <span className="layer-sep">|</span>
+              <span className="layer-tag">Work: ~{breakdown.workingTokens}</span>
+              <span className="layer-sep">|</span>
+              <span className="layer-tag">S-Term: ~{breakdown.shortTermTokens}</span>
+            </button>
+          )}
+
+          {stats.isLocal ? (
+            <div className="cost-tag local" title="Local Ollama model runs on your machine for free">
+              <span>$0.00 (Local)</span>
+            </div>
+          ) : estimatedCost !== null ? (
+            <div className="cost-tag" title="Estimated cost based on model token pricing">
+              <DollarSign size={12} />
+              <span>~${estimatedCost < 0.0001 ? '<0.0001' : estimatedCost.toFixed(4)}</span>
+            </div>
+          ) : null}
+        </div>
       </div>
 
       <div className="stats-grid">

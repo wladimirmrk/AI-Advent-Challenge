@@ -1170,7 +1170,14 @@ async function runTests() {
   console.log('  PASSED: Context Strategy Switcher.\n');
 
   console.log('🎉 ALL 21 TESTS PASSED SUCCESSFULLY! 100% SPEC COMPLIANCE.\n');
+
+  // ----------------------------------------------------
+  // Run Week 3 Memory Layer Tests
+  // ----------------------------------------------------
+  await runMemoryTests();
 }
+
+import { runMemoryTests } from './test-memory';
 
 runTests().catch((err) => {
   console.error('❌ Test failed:', err);
