@@ -95,7 +95,21 @@ export interface PlanItem {
   done: boolean;
 }
 
-export type TaskStage = 'idle' | 'planning' | 'execution' | 'validation' | 'done';
+export type TaskStage = 'idle' | 'planning' | 'plan_approved' | 'execution' | 'validation' | 'done';
+
+export interface TransitionResult {
+  success: boolean;
+  from: TaskStage;
+  to: TaskStage;
+  reason?: string;
+}
+
+export interface StateCheckResult {
+  status: 'VALID' | 'INVALID_TRANSITION';
+  currentStage: TaskStage;
+  requestedStage?: TaskStage;
+  reason?: string;
+}
 
 export interface TaskState {
   stage: TaskStage;
@@ -103,6 +117,7 @@ export interface TaskState {
   currentStepTitle?: string;
   expectedAction: string;
   isPaused: boolean;
+  lastTransitionError?: string;
   updatedAt: number;
 }
 

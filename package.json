@@ -7,13 +7,14 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "tsx tests/test-agent.ts && tsx tests/test-memory.ts && tsx tests/test-multichat.ts && tsx tests/test-personalization.ts && tsx tests/test-fsm.ts && tsx tests/test-invariants.ts",
+    "test": "tsx tests/test-agent.ts && tsx tests/test-memory.ts && tsx tests/test-multichat.ts && tsx tests/test-personalization.ts && tsx tests/test-fsm.ts && tsx tests/test-invariants.ts && tsx tests/test-day15-transitions.ts",
     "test:agent": "tsx tests/test-agent.ts",
     "test:memory": "tsx tests/test-memory.ts",
     "test:multichat": "tsx tests/test-multichat.ts",
     "test:personalization": "tsx tests/test-personalization.ts",
     "test:fsm": "tsx tests/test-fsm.ts",
-    "test:invariants": "tsx tests/test-invariants.ts"
+    "test:invariants": "tsx tests/test-invariants.ts",
+    "test:day15": "tsx tests/test-day15-transitions.ts"
   },
   "dependencies": {
     "lucide-react": "^1.16.0",

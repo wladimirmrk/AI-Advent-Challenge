@@ -390,6 +390,22 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
     setActiveTab('working');
   };
 
+  const handleLoadDay15Demo = () => {
+    agent.clearWorkingMemory();
+    agent.setWorkingGoal('Создание безопасного сервиса биллинга с контролируемым FSM');
+    agent.addPlanItem('Шаг 1: Спроектировать схему транзакций PostgreSQL');
+    agent.addPlanItem('Шаг 2: Реализовать двухфазный коммит списания средств');
+    agent.addPlanItem('Шаг 3: Написать интеграционные тесты идемпотентности');
+    agent.updateScratchpad('Внимание: соблюдать жесткий жизненный цикл! Запрещен перескок в execution до утверждения плана.');
+
+    // Start in PLANNING stage
+    agent.setTaskStage('planning', 'Сформировать и утвердить план перед началом реализации', true);
+    setGoalInput('Создание безопасного сервиса биллинга с контролируемым FSM');
+    setScratchpadText('Внимание: соблюдать жесткий жизненный цикл! Запрещен перескок в execution до утверждения плана.');
+    setExpectedActionInput('Сформировать и утвердить план перед началом реализации');
+    setActiveTab('working');
+  };
+
   const preparedContext = agent.getPreparedMessages(agent.getHistory());
   const formattedContextText = preparedContext
     .map((m) => `=== [ROLE: ${m.role.toUpperCase()}] ===\n${m.content}`)
@@ -479,6 +495,15 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
           >
             <Sparkles size={13} />
             <span>Демо День 13 (FSM)</span>
+          </button>
+          <button
+            type="button"
+            className="preset-btn day15-preset-btn"
+            onClick={handleLoadDay15Demo}
+            title="Загрузить демонстрационный сценарий контролируемых переходов состояний (День 15)"
+          >
+            <Sparkles size={13} />
+            <span>Демо День 15 (Переходы)</span>
           </button>
         </div>
       </div>
@@ -669,20 +694,29 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
               <div className="fsm-stages-selector">
                 <span className="fsm-field-label">Этап задачи:</span>
                 <div className="fsm-stage-btn-group">
-                  {(['idle', 'planning', 'execution', 'validation', 'done'] as TaskStage[]).map((st) => (
-                    <button
-                      key={st}
-                      type="button"
-                      className={`fsm-stage-btn ${workingMemory.taskState?.stage === st ? 'active' : ''}`}
-                      onClick={() => agent.setTaskStage(st)}
-                    >
-                      {st === 'idle' && '⚪ Idle'}
-                      {st === 'planning' && '📝 Planning'}
-                      {st === 'execution' && '⚙️ Execution'}
-                      {st === 'validation' && '🔍 Validation'}
-                      {st === 'done' && '✅ Done'}
-                    </button>
-                  ))}
+                  {(['idle', 'planning', 'plan_approved', 'execution', 'validation', 'done'] as TaskStage[]).map((st) => {
+                    const isCurrent = workingMemory.taskState?.stage === st;
+                    const check = isCurrent ? { success: true, from: st, to: st, reason: undefined } : agent.canTransitionTo(st);
+                    return (
+                      <button
+                        key={st}
+                        type="button"
+                        className={`fsm-stage-btn ${isCurrent ? 'active' : ''} ${!check.success ? 'disabled' : ''}`}
+                        onClick={() => {
+                          if (isCurrent) return;
+                          agent.setTaskStage(st);
+                        }}
+                        title={!check.success ? check.reason : `Перейти на этап: ${st}`}
+                      >
+                        {st === 'idle' && '⚪ Idle'}
+                        {st === 'planning' && '📝 Planning'}
+                        {st === 'plan_approved' && '📋 Approved'}
+                        {st === 'execution' && '⚙️ Execution'}
+                        {st === 'validation' && '🔍 Validation'}
+                        {st === 'done' && '✅ Done'}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 

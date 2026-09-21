@@ -5040,6 +5040,231 @@ input:checked + .slider:before {
   border: 1px solid rgba(16, 185, 129, 0.3);
 }
 
+/* ==========================================
+ * Day 15: Controlled State Transitions Styles
+ * ========================================== */
+
+.task-step-item.allowed {
+  border: 1px dashed rgba(52, 211, 153, 0.4);
+}
+
+.task-step-item.allowed:hover {
+  background: rgba(52, 211, 153, 0.12);
+  color: #34d399;
+}
+
+.task-step-item.disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+  filter: grayscale(0.5);
+}
+
+.task-step-item.disabled:hover {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-muted, #94a3b8);
+}
+
+/* Alert Banner for Blocked Transition */
+.task-transition-error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  margin-bottom: 8px;
+  animation: fadeIn 0.2s ease;
+}
+
+.error-banner-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.error-banner-dismiss {
+  background: transparent;
+  border: none;
+  color: #fca5a5;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.error-banner-dismiss:hover {
+  background: rgba(239, 68, 68, 0.25);
+}
+
+/* Contextual Lifecycle State Transition Buttons */
+.task-btn-contextual {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: all 0.15s ease;
+}
+
+.task-btn-contextual.plan-approve {
+  background: #10b981;
+  color: #ffffff;
+  box-shadow: 0 1px 4px rgba(16, 185, 129, 0.35);
+}
+
+.task-btn-contextual.plan-approve:hover:not(:disabled) {
+  background: #059669;
+}
+
+.task-btn-contextual:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.task-btn-contextual.execute-start {
+  background: #3b82f6;
+  color: #ffffff;
+  box-shadow: 0 1px 4px rgba(59, 130, 246, 0.35);
+}
+
+.task-btn-contextual.execute-start:hover {
+  background: #2563eb;
+}
+
+.task-btn-contextual.validate-start {
+  background: #8b5cf6;
+  color: #ffffff;
+  box-shadow: 0 1px 4px rgba(139, 92, 246, 0.35);
+}
+
+.task-btn-contextual.validate-start:hover {
+  background: #7c3aed;
+}
+
+.task-btn-contextual.finish-done {
+  background: #059669;
+  color: #ffffff;
+  box-shadow: 0 1px 4px rgba(5, 150, 105, 0.35);
+}
+
+.task-btn-contextual.finish-done:hover {
+  background: #047857;
+}
+
+.task-btn-contextual.rework {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+.task-btn-contextual.rework:hover {
+  background: rgba(245, 158, 11, 0.25);
+}
+
+/* State Check Card Component */
+.state-check-card {
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  transition: all 0.2s ease;
+}
+
+.state-check-card.status-invalid {
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-left: 3px solid #ef4444;
+}
+
+.state-check-card.status-valid {
+  background: rgba(16, 185, 129, 0.06);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+  border-left: 3px solid #10b981;
+}
+
+.state-check-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+}
+
+.state-check-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.state-icon-invalid {
+  color: #ef4444;
+}
+
+.state-icon-valid {
+  color: #10b981;
+}
+
+.state-check-title {
+  font-weight: 600;
+  color: var(--text-main, #f8fafc);
+}
+
+.state-stage-badge {
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text-muted, #94a3b8);
+}
+
+.state-toggle-action {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted, #94a3b8);
+  font-size: 11px;
+}
+
+.state-check-body {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.state-detail-line {
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.state-label {
+  color: var(--text-muted, #94a3b8);
+}
+
+.state-val-warn {
+  color: #f87171;
+  font-weight: 600;
+}
+
+.state-val-reason {
+  color: #fca5a5;
+}
+
+.state-val-ok {
+  color: #6ee7b7;
+}
+
+
 
 
 

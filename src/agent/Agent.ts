@@ -40,7 +40,13 @@ import {
   MemoryTargetLayer,
   InvariantItem,
   InvariantCategory,
+  TransitionResult,
+  StateCheckResult,
 } from './types';
+import {
+  canTransition,
+  STAGE_LABELS,
+} from './transitions';
 import {
   loadMessages,
   saveMessages,
@@ -802,14 +808,49 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
     };
   }
 
-  public setTaskStage(stage: TaskStage, expectedAction?: string): void {
+  public canTransitionTo(targetStage: TaskStage): TransitionResult {
+    const current = this.workingMemory.taskState?.stage || 'idle';
+    return canTransition(current, targetStage, {
+      planLength: this.workingMemory.plan.length,
+      isPaused: this.workingMemory.taskState?.isPaused,
+    });
+  }
+
+  public setTaskStage(
+    stage: TaskStage,
+    expectedAction?: string,
+    force: boolean = false
+  ): TransitionResult {
     const prev = this.workingMemory.taskState || { ...DEFAULT_TASK_STATE };
+
+    if (!force) {
+      const check = this.canTransitionTo(stage);
+      if (!check.success) {
+        console.warn(
+          `[Agent] Rejected invalid stage transition: ${prev.stage} -> ${stage}. Reason: ${check.reason}`
+        );
+        this.workingMemory = {
+          ...this.workingMemory,
+          taskState: {
+            ...prev,
+            lastTransitionError: check.reason,
+            updatedAt: Date.now(),
+          },
+          updatedAt: Date.now(),
+        };
+        saveWorkingMemory(this.workingMemory, this.chatId);
+        this.notify();
+        return check;
+      }
+    }
+
     this.workingMemory = {
       ...this.workingMemory,
       taskState: {
         ...prev,
         stage,
         expectedAction: expectedAction !== undefined ? expectedAction.trim() : prev.expectedAction,
+        lastTransitionError: undefined,
         updatedAt: Date.now(),
       },
       updatedAt: Date.now(),
@@ -817,6 +858,32 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
     saveWorkingMemory(this.workingMemory, this.chatId);
     this.recalculateCurrentStats();
     this.notify();
+    return { success: true, from: prev.stage, to: stage };
+  }
+
+  /**
+   * Helper to formally approve the plan (transitions planning -> plan_approved)
+   */
+  public approvePlan(action?: string): TransitionResult {
+    const defaultAction =
+      this.workingMemory.plan[0]?.text || 'Начать реализацию утвержденного плана';
+    return this.setTaskStage('plan_approved', action || defaultAction);
+  }
+
+  /**
+   * Helper to reject validation and return to execution
+   */
+  public rejectToExecution(reason?: string): TransitionResult {
+    const action = reason ? `Исправить замечания: ${reason}` : 'Доработать выявленные дефекты';
+    return this.setTaskStage('execution', action);
+  }
+
+  /**
+   * Helper to return to planning phase for requirement or plan adjustment
+   */
+  public rejectToPlanning(reason?: string): TransitionResult {
+    const action = reason ? `Скорректировать план: ${reason}` : 'Пересмотреть план действий';
+    return this.setTaskStage('planning', action);
   }
 
   public setTaskStep(stepIndex: number, expectedAction?: string): void {
@@ -941,6 +1008,8 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
 
   /**
    * Deterministic fallback advancement between stages and steps
+   * Respects Day 15 controlled lifecycle:
+   * idle -> planning -> plan_approved -> execution -> validation -> done
    */
   public advanceTaskStateAutomatically(): void {
     const state = this.workingMemory.taskState || { ...DEFAULT_TASK_STATE };
@@ -962,6 +1031,11 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
         }
       }
 
+      // If plan now has items, advance to plan_approved
+      if (this.workingMemory.plan.length > 0) {
+        this.setTaskStage('plan_approved', 'План сформирован и готов к утверждению/исполнению');
+      }
+    } else if (state.stage === 'plan_approved') {
       const plan = this.workingMemory.plan;
       const firstAction = plan[0]?.text || 'Выполнить первый шаг плана';
       this.setTaskStage('execution', firstAction);
@@ -1034,6 +1108,8 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
 
     if (state.stage === 'planning') {
       prompt = `[Авто-выполнение: Планирование] Составь структурированный чек-лист подзадач для цели "${this.workingMemory.goal || 'Текущая задача'}". Опиши конкретные шаги реализации без лишних вводных слов.`;
+    } else if (state.stage === 'plan_approved') {
+      prompt = `[Авто-выполнение: Утверждение плана] План шагов согласован. Переходи к выполнению первого шага плана: "${plan[0]?.text || 'Первый шаг'}".`;
     } else if (state.stage === 'execution') {
       const stepNum = state.currentStepIndex + 1;
       const currentItem = plan[state.currentStepIndex];
@@ -1055,13 +1131,38 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
     }
   }
 
-  public updateTaskState(partial: Partial<TaskState>): void {
+  public updateTaskState(partial: Partial<TaskState>): TransitionResult | void {
     const prev = this.workingMemory.taskState || { ...DEFAULT_TASK_STATE };
+
+    // If stage transition is attempted, validate it through Guardrail
+    if (partial.stage && partial.stage !== prev.stage) {
+      const check = this.canTransitionTo(partial.stage);
+      if (!check.success) {
+        console.warn(
+          `[Agent] Blocked invalid stage update: ${prev.stage} -> ${partial.stage}. Reason: ${check.reason}`
+        );
+        this.workingMemory = {
+          ...this.workingMemory,
+          taskState: {
+            ...prev,
+            lastTransitionError: check.reason,
+            isPaused: partial.isPaused !== undefined ? partial.isPaused : prev.isPaused,
+            updatedAt: Date.now(),
+          },
+          updatedAt: Date.now(),
+        };
+        saveWorkingMemory(this.workingMemory, this.chatId);
+        this.notify();
+        return check;
+      }
+    }
+
     this.workingMemory = {
       ...this.workingMemory,
       taskState: {
         ...prev,
         ...partial,
+        lastTransitionError: undefined,
         updatedAt: Date.now(),
       },
       updatedAt: Date.now(),
@@ -1091,7 +1192,7 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
     if (!match) return null;
     const attrStr = match[1];
 
-    const stageMatch = attrStr.match(/stage=["']?(idle|planning|execution|validation|done)["']?/i);
+    const stageMatch = attrStr.match(/stage=["']?(idle|planning|plan_approved|execution|validation|done)["']?/i);
     const stepMatch = attrStr.match(/step=["']?(\d+)["']?/i);
     const actionMatch = attrStr.match(/action=["']([^"']+)["']/i);
     const pausedMatch = attrStr.match(/paused=["']?(true|false)["']?/i);
@@ -1112,6 +1213,31 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
     }
 
     return Object.keys(updates).length > 0 ? updates : null;
+  }
+
+  /**
+   * Helper to parse <state_check>...</state_check> cognitive guardrail tags from model output
+   */
+  public parseStateCheckTags(content: string): StateCheckResult | null {
+    if (!content) return null;
+    const match = content.match(/<state_check>([\s\S]*?)<\/state_check>/i);
+    if (!match) return null;
+    const body = match[1];
+
+    const statusMatch = body.match(/status:\s*(VALID|INVALID_TRANSITION)/i);
+    const currentMatch = body.match(/current_stage:\s*([a-z_]+)/i);
+    const requestedMatch = body.match(/requested_stage:\s*([a-z_]+)/i);
+    const reasonMatch = body.match(/reason:\s*(.+)$/im);
+
+    if (statusMatch) {
+      return {
+        status: statusMatch[1].toUpperCase() === 'INVALID_TRANSITION' ? 'INVALID_TRANSITION' : 'VALID',
+        currentStage: (currentMatch ? currentMatch[1].toLowerCase() : 'idle') as TaskStage,
+        requestedStage: requestedMatch ? (requestedMatch[1].toLowerCase() as TaskStage) : undefined,
+        reason: reasonMatch ? reasonMatch[1].trim() : undefined,
+      };
+    }
+    return null;
   }
 
   // ==========================================
@@ -1827,7 +1953,7 @@ Do NOT use markdown code fences. Pure JSON only.`,
       parts.push(`Current Task Goal: ${goal.trim()}`);
     }
 
-    // Task State Machine Section (Day 13)
+    // Task State Machine Section (Day 13 + Day 15 Controlled Lifecycle)
     const activeFsm = taskState || DEFAULT_TASK_STATE;
     if (activeFsm.stage !== 'idle') {
       const activeStepItem = plan && plan[activeFsm.currentStepIndex];
@@ -1838,20 +1964,46 @@ Do NOT use markdown code fences. Pure JSON only.`,
         ? 'PAUSED ⏸️ (Waiting for user resumption)'
         : 'ACTIVE ▶️ (In progress)';
 
+      const stageDesc = STAGE_LABELS[activeFsm.stage] || activeFsm.stage;
+
       const fsmLines = [
-        `[TASK STATE MACHINE]`,
-        `Stage: ${activeFsm.stage.toUpperCase()}`,
+        `[TASK STATE MACHINE] - CONTROLLED LIFECYCLE (DAY 15)`,
+        `Current Stage: ${activeFsm.stage.toUpperCase()} ("${stageDesc}")`,
         `Current Step: #${activeFsm.currentStepIndex + 1} (${activeStepName})`,
         `Expected Action: ${activeFsm.expectedAction || 'Execute current active step'}`,
         `Execution Status: ${statusText}`,
+        activeFsm.lastTransitionError ? `Last Blocked Transition: ${activeFsm.lastTransitionError}` : '',
         ``,
-        `CRITICAL STATE MACHINE RULES:`,
+        `MANDATORY LIFECYCLE TRANSITION RULES:`,
+        `1. STRICT STAGE ORDER: IDLE -> PLANNING -> PLAN_APPROVED -> EXECUTION -> VALIDATION -> DONE.`,
+        `2. PERMITTED RETURN LOOPS: VALIDATION -> EXECUTION (if defects/bugs found), EXECUTION/PLAN_APPROVED -> PLANNING (if requirements or plan change).`,
+        `3. STRICT PROHIBITIONS (FORBIDDEN JUMPS):`,
+        `   - NEVER write code or execute implementation tasks during PLANNING or IDLE. Execution is STRICTLY FORBIDDEN until the plan is approved (PLAN_APPROVED stage).`,
+        `   - NEVER mark a task DONE or conclude work without thorough checks in the VALIDATION stage. Direct finalization from EXECUTION or PLANNING is FORBIDDEN.`,
+        `   - NEVER skip stages. Transitions must strictly follow allowed paths.`,
+        ``,
+        `4. COGNITIVE GUARDRAIL PROTOCOL (<state_check>):`,
+        `   - In EVERY response while a task is active, evaluate if the user or context is trying to perform an illegal stage leap (e.g. asking for code before plan approval, or asking to finish without validation).`,
+        `   - If an ILLEGAL LEAP is attempted, you MUST REFUSE to skip the stage and emit:`,
+        `     <state_check>`,
+        `     status: INVALID_TRANSITION`,
+        `     current_stage: ${activeFsm.stage}`,
+        `     requested_stage: [attempted stage, e.g. execution, done]`,
+        `     reason: [Specific explanation why skipping this stage violates lifecycle policy]`,
+        `     </state_check>`,
+        `     Followed by a polite, constructive refusal explaining what must be completed first.`,
+        `   - If the transition or current action is VALID and follows the lifecycle, emit:`,
+        `     <state_check>`,
+        `     status: VALID`,
+        `     current_stage: ${activeFsm.stage}`,
+        `     </state_check>`,
+        ``,
         activeFsm.isPaused
           ? `- The task is currently PAUSED. Await user unpause or specific instructions before advancing work.`
           : `- The task is ACTIVE. Focus directly and immediately on the "Expected Action" for the "Current Step".`,
         `- NEVER restart or re-explain previous steps, general project context, or completed work unless explicitly asked. Resume execution directly from the current step.`,
-        `- When advancing steps or stages, include the tag <task_update stage="planning|execution|validation|done" step="number" action="next expected action" /> in your response.`,
-      ];
+        `- When advancing steps or stages, include the tag <task_update stage="planning|plan_approved|execution|validation|done" step="number" action="next expected action" /> in your response.`,
+      ].filter(Boolean);
       parts.push(fsmLines.join('\n'));
     }
 

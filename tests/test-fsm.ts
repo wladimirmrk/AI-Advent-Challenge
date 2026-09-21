@@ -49,10 +49,14 @@ export async function runTaskFsmTests() {
   // ----------------------------------------------------
   // Test F2: Stage transitions
   // ----------------------------------------------------
-  console.log('Test F2: Stage transitions (idle -> planning -> execution -> validation -> done)');
+  console.log('Test F2: Stage transitions (idle -> planning -> plan_approved -> execution -> validation -> done)');
   agent1.setTaskStage('planning', 'Декомпозировать требования к сервису');
   assert.equal(agent1.getTaskState().stage, 'planning');
   assert.equal(agent1.getTaskState().expectedAction, 'Декомпозировать требования к сервису');
+  agent1.addPlanItem('Шаг 1: Подготовить архитектуру');
+
+  agent1.approvePlan('План утвержден');
+  assert.equal(agent1.getTaskState().stage, 'plan_approved');
 
   agent1.setTaskStage('execution', 'Написать хэндлер авторизации');
   assert.equal(agent1.getTaskState().stage, 'execution');
@@ -63,19 +67,20 @@ export async function runTaskFsmTests() {
 
   agent1.setTaskStage('done', 'Задача завершена');
   assert.equal(agent1.getTaskState().stage, 'done');
-  console.log('  ✓ All 5 stages transitioned and verified successfully');
+  console.log('  ✓ All stages transitioned and verified successfully');
   console.log('  PASSED: Test F2.\n');
 
   // ----------------------------------------------------
   // Test F3: Step and Expected Action Tracking
   // ----------------------------------------------------
   console.log('Test F3: Step tracking and expected action synchronization with plan');
+  agent1.clearWorkingMemory();
   agent1.setWorkingGoal('Создать сервис платежей');
   agent1.addPlanItem('Шаг 1: Описать схему БД транзакций');
   agent1.addPlanItem('Шаг 2: Реализовать интеграцию с платежным шлюзом');
   agent1.addPlanItem('Шаг 3: Написать тесты для идемпотентности');
 
-  agent1.setTaskStage('execution');
+  agent1.setTaskStage('execution', undefined, true);
   agent1.setTaskStep(1, 'Реализовать вызов POST /v1/charges');
 
   const updatedState = agent1.getTaskState();
@@ -151,7 +156,7 @@ export async function runTaskFsmTests() {
   const agentChatA = new Agent('chat-fsm-A');
   const agentChatB = new Agent('chat-fsm-B');
 
-  agentChatA.setTaskStage('execution', 'Выполнить шаг А');
+  agentChatA.setTaskStage('execution', 'Выполнить шаг А', true);
   agentChatA.setTaskStep(2);
   agentChatA.pauseTask();
 
@@ -192,7 +197,11 @@ export async function runTaskFsmTests() {
   agentAuto.addPlanItem('Шаг 2: Хэндлеры');
   agentAuto.setTaskStage('planning');
 
-  // Planning -> Execution step 0
+  // Planning -> Plan Approved
+  agentAuto.advanceTaskStateAutomatically();
+  assert.equal(agentAuto.getTaskState().stage, 'plan_approved');
+
+  // Plan Approved -> Execution step 0
   agentAuto.advanceTaskStateAutomatically();
   assert.equal(agentAuto.getTaskState().stage, 'execution');
   assert.equal(agentAuto.getTaskState().currentStepIndex, 0);
@@ -220,7 +229,7 @@ export async function runTaskFsmTests() {
   console.log('Test F8: Pause interception and instant auto-run loop halt');
   const agentLoop = new Agent('chat-fsm-loop');
   agentLoop.setWorkingGoal('Фоновый воркер');
-  agentLoop.setTaskStage('execution', 'Выполнять тяжелую задачу');
+  agentLoop.setTaskStage('execution', 'Выполнять тяжелую задачу', true);
   agentLoop.startAutoExecution();
 
   assert.equal(agentLoop.isTaskAutoRunning(), true, 'isAutoRunning must be true after start');

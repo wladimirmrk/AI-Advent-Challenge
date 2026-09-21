@@ -22,6 +22,112 @@ interface InvariantCheckResult {
   raw: string;
 }
 
+interface StateCheckData {
+  status: 'VALID' | 'INVALID_TRANSITION';
+  currentStage?: string;
+  requestedStage?: string;
+  reason?: string;
+  raw: string;
+}
+
+function parseStateCheck(content: string): {
+  stateCheck: StateCheckData | null;
+  cleanedContent: string;
+} {
+  const match = content.match(/<state_check>([\s\S]*?)<\/state_check>/i);
+  if (!match) {
+    return { stateCheck: null, cleanedContent: content };
+  }
+
+  const raw = match[0];
+  const inner = match[1];
+
+  let status: 'VALID' | 'INVALID_TRANSITION' = 'VALID';
+  if (/status:\s*INVALID_TRANSITION/i.test(inner)) {
+    status = 'INVALID_TRANSITION';
+  }
+
+  const currentMatch = inner.match(/current_stage:\s*([a-z_]+)/i);
+  const requestedMatch = inner.match(/requested_stage:\s*([a-z_]+)/i);
+  const reasonMatch = inner.match(/reason:\s*([^\r\n]+)/i);
+
+  const cleanedContent = content.replace(raw, '').trim();
+
+  return {
+    stateCheck: {
+      status,
+      currentStage: currentMatch ? currentMatch[1] : undefined,
+      requestedStage: requestedMatch ? requestedMatch[1] : undefined,
+      reason: reasonMatch ? reasonMatch[1].trim() : undefined,
+      raw,
+    },
+    cleanedContent,
+  };
+}
+
+const StateCheckCard: React.FC<{ check: StateCheckData }> = ({ check }) => {
+  const isInvalid = check.status === 'INVALID_TRANSITION';
+  const [isOpen, setIsOpen] = useState(isInvalid);
+
+  return (
+    <div className={`state-check-card ${isInvalid ? 'status-invalid' : 'status-valid'}`}>
+      <div
+        className="state-check-header"
+        onClick={() => setIsOpen(!isOpen)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            setIsOpen(!isOpen);
+          }
+        }}
+      >
+        <div className="state-check-title-row">
+          {isInvalid ? (
+            <AlertTriangle size={15} className="state-icon-invalid" />
+          ) : (
+            <ShieldCheck size={15} className="state-icon-valid" />
+          )}
+          <span className="state-check-title">
+            {isInvalid
+              ? '🚫 Попытка перескока этапа заблокирована (Guardrail)'
+              : '🎯 Жизненный цикл FSM: этап соблюдён'}
+          </span>
+          {check.currentStage && (
+            <span className="state-stage-badge">Этап: {check.currentStage}</span>
+          )}
+        </div>
+        <div className="state-toggle-action">
+          <span className="state-toggle-hint">{isOpen ? 'Скрыть' : 'Подробнее'}</span>
+          {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </div>
+      </div>
+
+      {isOpen && (
+        <div className="state-check-body">
+          {check.requestedStage && (
+            <div className="state-detail-line">
+              <strong className="state-label">Запрошен перескок на этап:</strong>{' '}
+              <span className="state-val-warn">{check.requestedStage}</span>
+            </div>
+          )}
+          {check.reason && (
+            <div className="state-detail-line">
+              <strong className="state-label">Причина блокировки:</strong>{' '}
+              <span className="state-val-reason">{check.reason}</span>
+            </div>
+          )}
+          {!isInvalid && (
+            <div className="state-detail-line">
+              <span className="state-val-ok">Действие выполняется строго в рамках утвержденного этапа жизненного цикла задачи.</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 function parseInvariantCheck(content: string): {
   check: InvariantCheckResult | null;
   cleanedContent: string;
@@ -262,9 +368,11 @@ export const MessageList: React.FC<MessageListProps> = ({
 
                       {(() => {
                         if (msg.role === 'assistant') {
-                          const { check, cleanedContent } = parseInvariantCheck(msg.content);
+                          const { stateCheck, cleanedContent: afterStateCleaned } = parseStateCheck(msg.content);
+                          const { check, cleanedContent } = parseInvariantCheck(afterStateCleaned);
                           return (
                             <>
+                              {stateCheck && <StateCheckCard check={stateCheck} />}
                               {check && <InvariantCheckCard check={check} />}
                               <div className="message-content">
                                 {cleanedContent}
