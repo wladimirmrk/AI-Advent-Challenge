@@ -30,6 +30,8 @@ import {
   DialogueBranch,
   WorkingMemory,
   PlanItem,
+  TaskState,
+  TaskStage,
   LongTermMemory,
   UserProfile,
   DecisionItem,
@@ -69,6 +71,7 @@ import {
   BUILTIN_PROFILES,
   migrateStorage,
   DEFAULT_SUMMARY,
+  DEFAULT_TASK_STATE,
   DEFAULT_WORKING_MEMORY,
   DEFAULT_LONG_TERM_MEMORY,
 } from './storage';
@@ -99,6 +102,10 @@ export class Agent {
   private isExtractingFacts = false;
   private error: string | null = null;
   private lastTrimInfo: TrimInfo | null = null;
+  private isAutoRunning = false;
+  private autoRunTimer: ReturnType<typeof setTimeout> | null = null;
+  private maxAutoSteps = 10;
+  private currentAutoStepCount = 0;
   private listeners: Set<StateListener> = new Set();
   private executionQueue: Promise<unknown> = Promise.resolve();
   private onMessageSent?: (content: string, role: 'user' | 'assistant') => void;
@@ -240,6 +247,7 @@ export class Agent {
       workingMemory: {
         ...this.workingMemory,
         plan: this.workingMemory.plan.map((p) => ({ ...p })),
+        taskState: { ...(this.workingMemory.taskState || DEFAULT_TASK_STATE) },
       },
       longTermMemory: {
         profile: {
@@ -258,6 +266,7 @@ export class Agent {
       })),
       activeProfileId: this.activeProfileId,
       memoryTokensBreakdown: this.getMemoryTokensBreakdown(),
+      isAutoRunning: this.isAutoRunning,
     };
   }
 
@@ -689,6 +698,7 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
     return {
       ...this.workingMemory,
       plan: this.workingMemory.plan.map((p) => ({ ...p })),
+      taskState: { ...(this.workingMemory.taskState || DEFAULT_TASK_STATE) },
     };
   }
 
@@ -770,6 +780,328 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
     clearWorkingMemory(this.chatId);
     this.recalculateCurrentStats();
     this.notify();
+  }
+
+  // ==========================================
+  // Task State Machine (FSM) Management (Day 13)
+  // ==========================================
+
+  public getTaskState(): TaskState {
+    return {
+      ...(this.workingMemory.taskState || DEFAULT_TASK_STATE),
+    };
+  }
+
+  public setTaskStage(stage: TaskStage, expectedAction?: string): void {
+    const prev = this.workingMemory.taskState || { ...DEFAULT_TASK_STATE };
+    this.workingMemory = {
+      ...this.workingMemory,
+      taskState: {
+        ...prev,
+        stage,
+        expectedAction: expectedAction !== undefined ? expectedAction.trim() : prev.expectedAction,
+        updatedAt: Date.now(),
+      },
+      updatedAt: Date.now(),
+    };
+    saveWorkingMemory(this.workingMemory, this.chatId);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public setTaskStep(stepIndex: number, expectedAction?: string): void {
+    const prev = this.workingMemory.taskState || { ...DEFAULT_TASK_STATE };
+    const clampedIndex = Math.max(0, stepIndex);
+    const stepTitle = this.workingMemory.plan[clampedIndex]?.text || undefined;
+    this.workingMemory = {
+      ...this.workingMemory,
+      taskState: {
+        ...prev,
+        currentStepIndex: clampedIndex,
+        currentStepTitle: stepTitle,
+        expectedAction: expectedAction !== undefined ? expectedAction.trim() : prev.expectedAction,
+        updatedAt: Date.now(),
+      },
+      updatedAt: Date.now(),
+    };
+    saveWorkingMemory(this.workingMemory, this.chatId);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public setTaskExpectedAction(action: string): void {
+    const prev = this.workingMemory.taskState || { ...DEFAULT_TASK_STATE };
+    this.workingMemory = {
+      ...this.workingMemory,
+      taskState: {
+        ...prev,
+        expectedAction: action.trim(),
+        updatedAt: Date.now(),
+      },
+      updatedAt: Date.now(),
+    };
+    saveWorkingMemory(this.workingMemory, this.chatId);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public isTaskAutoRunning(): boolean {
+    return this.isAutoRunning;
+  }
+
+  public startAutoExecution(): void {
+    if (this.autoRunTimer) {
+      clearTimeout(this.autoRunTimer);
+      this.autoRunTimer = null;
+    }
+
+    const state = this.workingMemory.taskState || { ...DEFAULT_TASK_STATE };
+    if (state.stage === 'done') {
+      return;
+    }
+
+    if (state.stage === 'idle') {
+      this.setTaskStage('planning', 'Сформировать план шагов для цели');
+    } else if (state.isPaused) {
+      this.workingMemory = {
+        ...this.workingMemory,
+        taskState: {
+          ...this.workingMemory.taskState,
+          isPaused: false,
+          updatedAt: Date.now(),
+        },
+        updatedAt: Date.now(),
+      };
+      saveWorkingMemory(this.workingMemory, this.chatId);
+    }
+
+    this.isAutoRunning = true;
+    this.currentAutoStepCount = 0;
+    this.recalculateCurrentStats();
+    this.notify();
+
+    this.scheduleNextAutoStep(100);
+  }
+
+  public stopAutoExecution(): void {
+    if (this.autoRunTimer) {
+      clearTimeout(this.autoRunTimer);
+      this.autoRunTimer = null;
+    }
+    this.isAutoRunning = false;
+    this.notify();
+  }
+
+  public pauseTask(): void {
+    this.stopAutoExecution();
+    const prev = this.workingMemory.taskState || { ...DEFAULT_TASK_STATE };
+    this.workingMemory = {
+      ...this.workingMemory,
+      taskState: {
+        ...prev,
+        isPaused: true,
+        updatedAt: Date.now(),
+      },
+      updatedAt: Date.now(),
+    };
+    saveWorkingMemory(this.workingMemory, this.chatId);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public async resumeTask(autoTrigger: boolean = true): Promise<string | void> {
+    const prev = this.workingMemory.taskState || { ...DEFAULT_TASK_STATE };
+    this.workingMemory = {
+      ...this.workingMemory,
+      taskState: {
+        ...prev,
+        isPaused: false,
+        updatedAt: Date.now(),
+      },
+      updatedAt: Date.now(),
+    };
+    saveWorkingMemory(this.workingMemory, this.chatId);
+    this.recalculateCurrentStats();
+    this.notify();
+
+    if (autoTrigger) {
+      this.startAutoExecution();
+    }
+  }
+
+  /**
+   * Deterministic fallback advancement between stages and steps
+   */
+  public advanceTaskStateAutomatically(): void {
+    const state = this.workingMemory.taskState || { ...DEFAULT_TASK_STATE };
+
+    if (state.stage === 'planning') {
+      // If plan is empty, attempt to extract numbered steps from recent assistant message
+      if (this.workingMemory.plan.length === 0 && this.messages.length > 0) {
+        const lastMsg = this.messages[this.messages.length - 1];
+        if (lastMsg && lastMsg.role === 'assistant') {
+          const stepMatches = lastMsg.content.match(/^\s*(?:\d+[\.\)]|[-*])\s+(.+)$/gm);
+          if (stepMatches && stepMatches.length > 0) {
+            for (const sm of stepMatches.slice(0, 5)) {
+              const cleaned = sm.replace(/^\s*(?:\d+[\.\)]|[-*])\s+/, '').trim();
+              if (cleaned.length > 3) {
+                this.addPlanItem(cleaned);
+              }
+            }
+          }
+        }
+      }
+
+      const plan = this.workingMemory.plan;
+      const firstAction = plan[0]?.text || 'Выполнить первый шаг плана';
+      this.setTaskStage('execution', firstAction);
+      this.setTaskStep(0, firstAction);
+    } else if (state.stage === 'execution') {
+      const plan = this.workingMemory.plan;
+      const currentIdx = state.currentStepIndex;
+      if (plan[currentIdx] && !plan[currentIdx].done) {
+        this.togglePlanItem(plan[currentIdx].id);
+      }
+
+      const nextIdx = currentIdx + 1;
+      if (nextIdx < plan.length) {
+        const nextAction = plan[nextIdx].text;
+        this.setTaskStep(nextIdx, nextAction);
+      } else {
+        // All steps executed -> advance to validation
+        this.setTaskStage('validation', 'Проверить корректность выполнения всех шагов плана');
+      }
+    } else if (state.stage === 'validation') {
+      this.setTaskStage('done', 'Задача полностью выполнена и верифицирована');
+      this.stopAutoExecution();
+    }
+  }
+
+  private scheduleNextAutoStep(delayMs: number = 1200): void {
+    if (this.autoRunTimer) {
+      clearTimeout(this.autoRunTimer);
+      this.autoRunTimer = null;
+    }
+
+    if (
+      !this.isAutoRunning ||
+      this.workingMemory.taskState.isPaused ||
+      this.workingMemory.taskState.stage === 'done' ||
+      this.workingMemory.taskState.stage === 'idle'
+    ) {
+      this.isAutoRunning = false;
+      this.notify();
+      return;
+    }
+
+    if (this.currentAutoStepCount >= this.maxAutoSteps) {
+      console.warn('[Agent] Max auto steps safety limit reached:', this.maxAutoSteps);
+      this.stopAutoExecution();
+      return;
+    }
+
+    this.autoRunTimer = setTimeout(() => {
+      this.executeAutoStep();
+    }, delayMs);
+  }
+
+  private async executeAutoStep(): Promise<void> {
+    if (
+      !this.isAutoRunning ||
+      this.workingMemory.taskState.isPaused ||
+      this.workingMemory.taskState.stage === 'done' ||
+      this.workingMemory.taskState.stage === 'idle'
+    ) {
+      this.isAutoRunning = false;
+      this.notify();
+      return;
+    }
+
+    this.currentAutoStepCount++;
+    const state = this.workingMemory.taskState;
+    const plan = this.workingMemory.plan;
+    let prompt = '';
+
+    if (state.stage === 'planning') {
+      prompt = `[Авто-выполнение: Планирование] Составь структурированный чек-лист подзадач для цели "${this.workingMemory.goal || 'Текущая задача'}". Опиши конкретные шаги реализации без лишних вводных слов.`;
+    } else if (state.stage === 'execution') {
+      const stepNum = state.currentStepIndex + 1;
+      const currentItem = plan[state.currentStepIndex];
+      const actionText = state.expectedAction || currentItem?.text || `Шаг #${stepNum}`;
+      prompt = `[Авто-выполнение: Шаг #${stepNum}] Приступай к выполнению действия: "${actionText}". Выполни его по существу без повторных объяснений контекста.`;
+    } else if (state.stage === 'validation') {
+      prompt = `[Авто-выполнение: Валидация] Проведи проверку и валидацию результатов выполнения всех шагов задачи "${this.workingMemory.goal || 'Текущая задача'}". Убедись в корректности и отсутствии ошибок.`;
+    }
+
+    if (prompt) {
+      try {
+        await this.sendMessage(prompt);
+      } catch (err) {
+        console.error('[Agent] Auto step execution stopped:', err);
+        this.stopAutoExecution();
+      }
+    } else {
+      this.stopAutoExecution();
+    }
+  }
+
+  public updateTaskState(partial: Partial<TaskState>): void {
+    const prev = this.workingMemory.taskState || { ...DEFAULT_TASK_STATE };
+    this.workingMemory = {
+      ...this.workingMemory,
+      taskState: {
+        ...prev,
+        ...partial,
+        updatedAt: Date.now(),
+      },
+      updatedAt: Date.now(),
+    };
+    saveWorkingMemory(this.workingMemory, this.chatId);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public resetTaskState(): void {
+    this.workingMemory = {
+      ...this.workingMemory,
+      taskState: { ...DEFAULT_TASK_STATE, updatedAt: Date.now() },
+      updatedAt: Date.now(),
+    };
+    saveWorkingMemory(this.workingMemory, this.chatId);
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  /**
+   * Helper to parse <task_update stage="..." step="..." action="..." paused="..." /> from model output
+   */
+  public parseTaskUpdateTags(content: string): Partial<TaskState> | null {
+    if (!content) return null;
+    const match = content.match(/<task_update\s+([^>]+)\/?>/i);
+    if (!match) return null;
+    const attrStr = match[1];
+
+    const stageMatch = attrStr.match(/stage=["']?(idle|planning|execution|validation|done)["']?/i);
+    const stepMatch = attrStr.match(/step=["']?(\d+)["']?/i);
+    const actionMatch = attrStr.match(/action=["']([^"']+)["']/i);
+    const pausedMatch = attrStr.match(/paused=["']?(true|false)["']?/i);
+
+    const updates: Partial<TaskState> = {};
+    if (stageMatch) {
+      updates.stage = stageMatch[1].toLowerCase() as TaskStage;
+    }
+    if (stepMatch) {
+      const stepNum = parseInt(stepMatch[1], 10);
+      updates.currentStepIndex = Math.max(0, stepNum - 1);
+    }
+    if (actionMatch) {
+      updates.expectedAction = actionMatch[1].trim();
+    }
+    if (pausedMatch) {
+      updates.isPaused = pausedMatch[1].toLowerCase() === 'true';
+    }
+
+    return Object.keys(updates).length > 0 ? updates : null;
   }
 
   // ==========================================
@@ -1348,15 +1680,43 @@ Do NOT use markdown code fences. Pure JSON only.`,
    */
   public formatWorkingMemoryPrompt(): string {
     const parts: string[] = [];
-    const { goal, plan, scratchpad } = this.workingMemory;
+    const { goal, plan, scratchpad, taskState } = this.workingMemory;
 
     if (goal && goal.trim()) {
       parts.push(`Current Task Goal: ${goal.trim()}`);
     }
 
+    // Task State Machine Section (Day 13)
+    const activeFsm = taskState || DEFAULT_TASK_STATE;
+    if (activeFsm.stage !== 'idle') {
+      const activeStepItem = plan && plan[activeFsm.currentStepIndex];
+      const activeStepName = activeStepItem
+        ? activeStepItem.text
+        : (activeFsm.currentStepTitle || `Step #${activeFsm.currentStepIndex + 1}`);
+      const statusText = activeFsm.isPaused
+        ? 'PAUSED ⏸️ (Waiting for user resumption)'
+        : 'ACTIVE ▶️ (In progress)';
+
+      const fsmLines = [
+        `[TASK STATE MACHINE]`,
+        `Stage: ${activeFsm.stage.toUpperCase()}`,
+        `Current Step: #${activeFsm.currentStepIndex + 1} (${activeStepName})`,
+        `Expected Action: ${activeFsm.expectedAction || 'Execute current active step'}`,
+        `Execution Status: ${statusText}`,
+        ``,
+        `CRITICAL STATE MACHINE RULES:`,
+        activeFsm.isPaused
+          ? `- The task is currently PAUSED. Await user unpause or specific instructions before advancing work.`
+          : `- The task is ACTIVE. Focus directly and immediately on the "Expected Action" for the "Current Step".`,
+        `- NEVER restart or re-explain previous steps, general project context, or completed work unless explicitly asked. Resume execution directly from the current step.`,
+        `- When advancing steps or stages, include the tag <task_update stage="planning|execution|validation|done" step="number" action="next expected action" /> in your response.`,
+      ];
+      parts.push(fsmLines.join('\n'));
+    }
+
     if (plan && plan.length > 0) {
       const formattedPlan = plan
-        .map((p) => `  - [${p.done ? 'x' : ' '}] ${p.text}`)
+        .map((p, idx) => `  - [${p.done ? 'x' : ' '}] Step ${idx + 1}: ${p.text}${activeFsm.stage !== 'idle' && activeFsm.currentStepIndex === idx ? ' <-- [CURRENT ACTIVE STEP]' : ''}`)
         .join('\n');
       parts.push(`Task Execution Plan & Subtasks:\n${formattedPlan}`);
     }
@@ -1927,6 +2287,14 @@ Do NOT use markdown code fences. Pure JSON only.`,
 
       this.messages.push(assistantMessage);
 
+      // 7.1 If assistant emitted <task_update ... />, apply state transition; otherwise advance automatically
+      const taskUpdate = this.parseTaskUpdateTags(res.content);
+      if (taskUpdate) {
+        this.updateTaskState(taskUpdate);
+      } else if (this.isAutoRunning || this.workingMemory.taskState.stage !== 'idle') {
+        this.advanceTaskStateAutomatically();
+      }
+
       // 8. Update exact token stats
       this.tokenStats = {
         currentRequest: userMessageTokens,
@@ -1953,6 +2321,18 @@ Do NOT use markdown code fences. Pure JSON only.`,
       // 10. If in Sticky Facts strategy, trigger background fact extraction
       if (this.config.strategy === 'sticky_facts') {
         this.extractFactsInBackground(userMessage.content, assistantMessage.content);
+      }
+
+      // 11. Schedule next auto step if autonomous execution loop is active
+      if (
+        this.isAutoRunning &&
+        !this.workingMemory.taskState.isPaused &&
+        this.workingMemory.taskState.stage !== 'done' &&
+        this.workingMemory.taskState.stage !== 'idle'
+      ) {
+        this.scheduleNextAutoStep(1200);
+      } else if (this.workingMemory.taskState.stage === 'done') {
+        this.stopAutoExecution();
       }
 
       return res.content;

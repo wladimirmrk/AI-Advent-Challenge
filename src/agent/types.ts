@@ -95,10 +95,22 @@ export interface PlanItem {
   done: boolean;
 }
 
+export type TaskStage = 'idle' | 'planning' | 'execution' | 'validation' | 'done';
+
+export interface TaskState {
+  stage: TaskStage;
+  currentStepIndex: number;
+  currentStepTitle?: string;
+  expectedAction: string;
+  isPaused: boolean;
+  updatedAt: number;
+}
+
 export interface WorkingMemory {
   goal: string;
   plan: PlanItem[];
   scratchpad: string;
+  taskState: TaskState;
   updatedAt: number;
 }
 
@@ -165,6 +177,7 @@ export interface AgentState {
   userProfiles: UserProfile[];
   activeProfileId: string;
   memoryTokensBreakdown: MemoryTokensBreakdown;
+  isAutoRunning: boolean;
 }
 
 export type StateListener = (state: AgentState) => void;

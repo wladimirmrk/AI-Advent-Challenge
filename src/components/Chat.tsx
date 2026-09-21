@@ -9,6 +9,7 @@ import { StrategySelector } from './StrategySelector';
 import { BranchBar } from './BranchBar';
 import { StickyFactsPanel } from './StickyFactsPanel';
 import { MemoryHub } from './MemoryHub';
+import { TaskStatusBar } from './TaskStatusBar';
 import { Bot, Settings as SettingsIcon, Trash2, Cpu, PanelLeft, Brain, User } from 'lucide-react';
 
 interface ChatProps {
@@ -281,6 +282,17 @@ export const Chat: React.FC<ChatProps> = ({
             disabled={agentState.isLoading}
           />
         )}
+
+        <TaskStatusBar
+          agent={agent}
+          taskState={agentState.workingMemory.taskState}
+          workingMemory={agentState.workingMemory}
+          isAutoRunning={agentState.isAutoRunning}
+          onOpenMemoryHub={() => {
+            setIsMemoryHubOpen(true);
+            setMemoryHubTab('working');
+          }}
+        />
 
         <div className="chat-body-container">
           <MessageList

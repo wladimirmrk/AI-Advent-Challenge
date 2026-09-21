@@ -4047,5 +4047,494 @@ select, option, optgroup {
   font-style: normal;
 }
 
+/* ==========================================================================
+   Day 13: Task State Machine (FSM) Styles
+   ========================================================================== */
+
+.task-status-bar {
+  background: var(--bg-surface-elevated, #1a202c);
+  border-bottom: 1px solid var(--border-color, #2d3748);
+  padding: 8px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 12px;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.task-status-bar.idle {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px;
+  background: rgba(30, 41, 59, 0.6);
+}
+
+.task-status-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.task-fsm-badge.idle {
+  background: rgba(148, 163, 184, 0.15);
+  color: #94a3b8;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.task-idle-hint {
+  color: var(--text-muted, #94a3b8);
+  font-size: 12px;
+}
+
+.task-status-bar.paused {
+  border-bottom-color: rgba(245, 158, 11, 0.4);
+  background: rgba(245, 158, 11, 0.06);
+}
+
+/* Stepper Bar */
+.task-stepper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.task-step-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-muted, #94a3b8);
+  user-select: none;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.task-step-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-main, #f8fafc);
+}
+
+.task-step-item.current {
+  background: rgba(59, 130, 246, 0.2);
+  color: #60a5fa;
+  font-weight: 600;
+  border: 1px solid rgba(59, 130, 246, 0.4);
+}
+
+.task-step-item.completed {
+  color: #34d399;
+}
+
+.task-step-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.task-step-label {
+  font-size: 11.5px;
+}
+
+.task-step-divider {
+  width: 12px;
+  height: 1px;
+  background: var(--border-color, #334155);
+  margin-left: 2px;
+}
+
+/* Details Row */
+.task-detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.task-detail-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.task-state-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.task-state-pill.pill-active {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.task-state-pill.pill-autorun {
+  background: rgba(14, 165, 233, 0.2);
+  color: #38bdf8;
+  border: 1px solid rgba(14, 165, 233, 0.45);
+}
+
+.task-status-bar.auto-running {
+  border-bottom-color: rgba(14, 165, 233, 0.4);
+  background: rgba(14, 165, 233, 0.05);
+}
+
+.task-state-pill.pill-paused {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+.pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 1.8s infinite;
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(0.95);
+    opacity: 0.7;
+  }
+  50% {
+    transform: scale(1.25);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0.95);
+    opacity: 0.7;
+  }
+}
+
+.task-current-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.task-step-number {
+  color: var(--text-muted, #94a3b8);
+  font-weight: 500;
+}
+
+.task-step-title {
+  color: var(--text-main, #f8fafc);
+  font-weight: 500;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-expected-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(99, 102, 241, 0.12);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  padding: 1px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  max-width: 300px;
+}
+
+.expected-label {
+  color: #a5b4fc;
+  font-weight: 500;
+}
+
+.expected-val {
+  color: #e0e7ff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Action Buttons */
+.task-status-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.task-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #2563eb;
+  color: #ffffff;
+  border: none;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.task-btn-primary:hover {
+  background: #1d4ed8;
+}
+
+.task-btn-resume {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #059669;
+  color: #ffffff;
+  border: none;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(5, 150, 105, 0.4);
+  transition: background 0.15s;
+}
+
+.task-btn-resume:hover {
+  background: #047857;
+}
+
+.task-btn-autorun {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #0284c7;
+  color: #ffffff;
+  border: none;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(2, 132, 199, 0.4);
+  transition: background 0.15s;
+}
+
+.task-btn-autorun:hover {
+  background: #0369a1;
+}
+
+.task-btn-pause {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  padding: 4px 9px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.task-btn-pause:hover {
+  background: rgba(245, 158, 11, 0.25);
+}
+
+.task-btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-muted, #94a3b8);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.task-btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-main, #f8fafc);
+}
+
+.task-btn-icon {
+  background: transparent;
+  border: none;
+  color: var(--text-muted, #94a3b8);
+  padding: 4px;
+  cursor: pointer;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.task-btn-icon:hover {
+  color: var(--text-main, #f8fafc);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* FSM Card in Memory Hub */
+.working-card.fsm-card {
+  background: rgba(30, 41, 59, 0.5);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.working-card.fsm-card.is-paused {
+  border-color: rgba(245, 158, 11, 0.4);
+  background: rgba(245, 158, 11, 0.04);
+}
+
+.fsm-card-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fsm-badge-tag {
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: 9999px;
+  font-weight: 600;
+}
+
+.fsm-badge-tag.active {
+  background: rgba(16, 185, 129, 0.2);
+  color: #34d399;
+}
+
+.fsm-badge-tag.paused {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+}
+
+.fsm-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-fsm-resume {
+  background: #059669;
+  color: #ffffff;
+  border: none;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-fsm-pause {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.fsm-field-label {
+  font-size: 11.5px;
+  color: var(--text-muted, #94a3b8);
+  min-width: 120px;
+  flex-shrink: 0;
+}
+
+.fsm-stages-selector,
+.fsm-step-selector-row,
+.fsm-action-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fsm-stage-btn-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.fsm-stage-btn {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-muted, #94a3b8);
+  padding: 3px 8px;
+  border-radius: 5px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.fsm-stage-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-main, #f8fafc);
+}
+
+.fsm-stage-btn.active {
+  background: rgba(99, 102, 241, 0.25);
+  border-color: #6366f1;
+  color: #818cf8;
+  font-weight: 600;
+}
+
+.fsm-select {
+  flex: 1;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+.fsm-action-input-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+
+.fsm-action-input-group .hub-input-sm {
+  flex: 1;
+}
+
+.fsm-preset-btn {
+  background: rgba(168, 85, 247, 0.15) !important;
+  color: #c084fc !important;
+  border: 1px solid rgba(168, 85, 247, 0.3) !important;
+}
+
+.fsm-preset-btn:hover {
+  background: rgba(168, 85, 247, 0.25) !important;
+}
+
+
 
 

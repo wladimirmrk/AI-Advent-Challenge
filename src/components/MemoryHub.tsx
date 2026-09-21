@@ -5,6 +5,7 @@ import {
   LongTermMemory,
   MemoryTokensBreakdown,
   Message,
+  TaskStage,
 } from '../agent/types';
 import { Agent } from '../agent/Agent';
 import {
@@ -22,6 +23,8 @@ import {
   Check,
   Shield,
   RotateCcw,
+  Play,
+  Pause,
 } from 'lucide-react';
 
 interface MemoryHubProps {
@@ -103,6 +106,13 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
   const [newPlanText, setNewPlanText] = useState('');
   const [scratchpadText, setScratchpadText] = useState(workingMemory.scratchpad || '');
   const [isScratchpadDirty, setIsScratchpadDirty] = useState(false);
+  const [expectedActionInput, setExpectedActionInput] = useState(
+    workingMemory.taskState?.expectedAction || ''
+  );
+
+  useEffect(() => {
+    setExpectedActionInput(workingMemory.taskState?.expectedAction || '');
+  }, [workingMemory.taskState?.expectedAction]);
 
   // Long-Term Memory / Personalization Profile input state
   const activeProfile = agent.getActiveProfile();
@@ -301,6 +311,30 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
     setProfileNotes('Фокус на отказоустойчивости, gRPC и PostgreSQL.');
   };
 
+  const handleLoadFsmDemo = () => {
+    // 1. Set Working memory task and checklist with full FSM state
+    agent.clearWorkingMemory();
+    agent.setWorkingGoal('Разработка микросервиса аутентификации на Go');
+    agent.addPlanItem('Шаг 1: Описать proto-контракты и схему таблиц users & sessions');
+    const p1 = agent.getWorkingMemory().plan[0];
+    if (p1) agent.togglePlanItem(p1.id);
+
+    agent.addPlanItem('Шаг 2: Реализовать генерацию и валидацию JWT токенов (RS256)');
+    agent.addPlanItem('Шаг 3: Написать модульные тесты для эндпоинта /api/auth/login');
+    agent.addPlanItem('Шаг 4: Провести валидацию безопасности и нагрузочный тест');
+    agent.updateScratchpad('Использовать golang-jwt/jwt/v5. Хранить refresh токены в Redis с TTL 30 дней.');
+
+    // Configure FSM: execution stage, active step 2, paused to test resume without re-explaining
+    agent.setTaskStage('execution');
+    agent.setTaskStep(1, 'Реализовать функцию GenerateRS256Token() и обработчик логина');
+    agent.pauseTask();
+
+    setGoalInput('Разработка микросервиса аутентификации на Go');
+    setScratchpadText('Использовать golang-jwt/jwt/v5. Хранить refresh токены в Redis с TTL 30 дней.');
+    setExpectedActionInput('Реализовать функцию GenerateRS256Token() и обработчик логина');
+    setActiveTab('working');
+  };
+
   const preparedContext = agent.getPreparedMessages(agent.getHistory());
   const formattedContextText = preparedContext
     .map((m) => `=== [ROLE: ${m.role.toUpperCase()}] ===\n${m.content}`)
@@ -369,6 +403,15 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
           >
             <Sparkles size={13} />
             <span>Load Demo Preset</span>
+          </button>
+          <button
+            type="button"
+            className="preset-btn fsm-preset-btn"
+            onClick={handleLoadFsmDemo}
+            title="Загрузить готовый демонстрационный сценарий FSM (День 13)"
+          >
+            <Sparkles size={13} />
+            <span>Демо День 13 (FSM)</span>
           </button>
         </div>
       </div>
@@ -500,6 +543,116 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
                 Контекст текущей выполняемой задачи. Изолирована в рамках текущего чата.
                 Включает цель задачи, чеклист плана и оперативные заметки.
               </p>
+            </div>
+
+            {/* Task State Machine (FSM) Card (Day 13) */}
+            <div className={`working-card fsm-card ${workingMemory.taskState?.isPaused ? 'is-paused' : ''}`}>
+              <div className="card-header">
+                <div className="fsm-card-title-group">
+                  <span className="card-title">⚙️ Конечный автомат задачи (FSM)</span>
+                  <span className={`fsm-badge-tag ${workingMemory.taskState?.isPaused ? 'paused' : 'active'}`}>
+                    {workingMemory.taskState?.isPaused ? '⏸ Пауза' : '▶ Активен'}
+                  </span>
+                </div>
+                <div className="fsm-header-actions">
+                  {workingMemory.taskState?.isPaused ? (
+                    <button
+                      type="button"
+                      className="primary-btn-sm btn-fsm-resume"
+                      onClick={() => agent.resumeTask(true)}
+                      title="Снять с паузы и продолжить без повторных объяснений"
+                    >
+                      <Play size={12} />
+                      Продолжить
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="secondary-btn-sm btn-fsm-pause"
+                      onClick={() => agent.pauseTask()}
+                      title="Поставить задачу на паузу"
+                    >
+                      <Pause size={12} />
+                      Пауза
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="card-edit-btn"
+                    onClick={() => agent.resetTaskState()}
+                    title="Сбросить состояние FSM к начальному"
+                  >
+                    Сброс
+                  </button>
+                </div>
+              </div>
+
+              {/* Stage selector buttons */}
+              <div className="fsm-stages-selector">
+                <span className="fsm-field-label">Этап задачи:</span>
+                <div className="fsm-stage-btn-group">
+                  {(['idle', 'planning', 'execution', 'validation', 'done'] as TaskStage[]).map((st) => (
+                    <button
+                      key={st}
+                      type="button"
+                      className={`fsm-stage-btn ${workingMemory.taskState?.stage === st ? 'active' : ''}`}
+                      onClick={() => agent.setTaskStage(st)}
+                    >
+                      {st === 'idle' && '⚪ Idle'}
+                      {st === 'planning' && '📝 Planning'}
+                      {st === 'execution' && '⚙️ Execution'}
+                      {st === 'validation' && '🔍 Validation'}
+                      {st === 'done' && '✅ Done'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Active Step Selection */}
+              <div className="fsm-step-selector-row">
+                <span className="fsm-field-label">Текущий шаг:</span>
+                {workingMemory.plan.length > 0 ? (
+                  <select
+                    className="hub-select fsm-select"
+                    value={workingMemory.taskState?.currentStepIndex ?? 0}
+                    onChange={(e) => agent.setTaskStep(parseInt(e.target.value, 10))}
+                  >
+                    {workingMemory.plan.map((item, idx) => (
+                      <option key={item.id} value={idx}>
+                        Шаг {idx + 1}: {item.text.slice(0, 50)}...
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="placeholder-text-sm">В плане пока нет шагов (добавьте шаги в список ниже)</span>
+                )}
+              </div>
+
+              {/* Expected Action Input */}
+              <div className="fsm-action-input-row">
+                <span className="fsm-field-label">Ожидаемое действие:</span>
+                <div className="fsm-action-input-group">
+                  <input
+                    type="text"
+                    className="hub-input-sm"
+                    value={expectedActionInput}
+                    onChange={(e) => setExpectedActionInput(e.target.value)}
+                    onBlur={() => {
+                      if (expectedActionInput !== workingMemory.taskState?.expectedAction) {
+                        agent.setTaskExpectedAction(expectedActionInput);
+                      }
+                    }}
+                    placeholder="Например: Реализовать функцию валидации JWT"
+                  />
+                  <button
+                    type="button"
+                    className="secondary-btn-sm"
+                    onClick={() => agent.setTaskExpectedAction(expectedActionInput)}
+                  >
+                    Сохранить
+                  </button>
+                </div>
+              </div>
             </div>
 
             {/* Task Goal Card */}

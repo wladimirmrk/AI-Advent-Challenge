@@ -19,6 +19,8 @@ import {
   DefaultModelConfig,
   WorkingMemory,
   PlanItem,
+  TaskState,
+  TaskStage,
   LongTermMemory,
   UserProfile,
   DecisionItem,
@@ -123,10 +125,19 @@ export const DEFAULT_CONFIG: AgentConfig = {
   summaryThreshold: 10,
 };
 
+export const DEFAULT_TASK_STATE: TaskState = {
+  stage: 'idle',
+  currentStepIndex: 0,
+  expectedAction: '',
+  isPaused: false,
+  updatedAt: 0,
+};
+
 export const DEFAULT_WORKING_MEMORY: WorkingMemory = {
   goal: '',
   plan: [],
   scratchpad: '',
+  taskState: { ...DEFAULT_TASK_STATE },
   updatedAt: 0,
 };
 
@@ -892,6 +903,21 @@ export function loadWorkingMemory(chatId: string = 'default'): WorkingMemory {
     if (!raw) return { ...DEFAULT_WORKING_MEMORY };
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object') {
+      const validStages: TaskStage[] = ['idle', 'planning', 'execution', 'validation', 'done'];
+      const rawTaskState = (parsed as Record<string, unknown>).taskState as Record<string, unknown> | undefined;
+      const taskState: TaskState = rawTaskState && typeof rawTaskState === 'object'
+        ? {
+            stage: typeof rawTaskState.stage === 'string' && validStages.includes(rawTaskState.stage as TaskStage)
+              ? (rawTaskState.stage as TaskStage)
+              : 'idle',
+            currentStepIndex: typeof rawTaskState.currentStepIndex === 'number' ? Math.max(0, Math.floor(rawTaskState.currentStepIndex)) : 0,
+            currentStepTitle: typeof rawTaskState.currentStepTitle === 'string' ? rawTaskState.currentStepTitle : undefined,
+            expectedAction: typeof rawTaskState.expectedAction === 'string' ? rawTaskState.expectedAction : '',
+            isPaused: Boolean(rawTaskState.isPaused),
+            updatedAt: typeof rawTaskState.updatedAt === 'number' ? rawTaskState.updatedAt : 0,
+          }
+        : { ...DEFAULT_TASK_STATE };
+
       return {
         goal: typeof parsed.goal === 'string' ? parsed.goal : '',
         plan: Array.isArray(parsed.plan)
@@ -904,6 +930,7 @@ export function loadWorkingMemory(chatId: string = 'default'): WorkingMemory {
             )
           : [],
         scratchpad: typeof parsed.scratchpad === 'string' ? parsed.scratchpad : '',
+        taskState,
         updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : 0,
       };
     }
