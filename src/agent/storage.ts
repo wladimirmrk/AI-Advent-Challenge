@@ -42,8 +42,67 @@ const STORAGE_KEYS = {
   ACTIVE_BRANCH: 'agent_active_branch_id',
   WORKING_MEMORY: 'agent_working_memory',
   LONG_TERM_MEMORY: 'agent_long_term_memory',
+  USER_PROFILES: 'agent_user_profiles',
+  ACTIVE_PROFILE_ID: 'agent_active_profile_id',
   STORAGE_VERSION: 'agent_storage_version',
 } as const;
+
+export const BUILTIN_PROFILES: UserProfile[] = [
+  {
+    id: 'junior_frontend',
+    name: 'Денис',
+    role: 'Junior Frontend Developer (React / JavaScript)',
+    style: 'Дружелюбный, менторский, с подробными и простыми объяснениями концепций',
+    format: 'Пошаговый (Step-by-step), с понятными примерами кода',
+    constraints: [
+      'Писать код только на React / JS',
+      'Подробно комментировать ключевые строки кода',
+      'Отвечать на русском языке',
+      'Не использовать сложные абстракции и сторонние стейт-менеджеры без необходимости',
+    ],
+    customNotes: 'Только начинает путь в веб-разработке, ценит понятные аналогии из реальной жизни.',
+    isBuiltin: true,
+  },
+  {
+    id: 'senior_architect',
+    name: 'Алексей',
+    role: 'Senior Software Architect / Staff Engineer',
+    style: 'Предельно лаконичный, строгий, академический, без воды и вводных фраз',
+    format: 'Структурированные bullet-points, архитектурные схемы (ASCII/Markdown), таблицы сравнения',
+    constraints: [
+      'Строгая типизация TypeScript strict / Clean Architecture',
+      'Код без банальных комментариев',
+      'Фокус на масштабируемости, паттернах проектирования и edge-cases',
+      'Никакой воды и лишних приветствий',
+    ],
+    customNotes: 'Проектирует высоконагруженные распределенные системы, ценит время и точность формулировок.',
+    isBuiltin: true,
+  },
+  {
+    id: 'tech_writer_pm',
+    name: 'Елена',
+    role: 'Technical Writer & Product Manager',
+    style: 'Деловой, структурированный, ориентированный на бизнес-ценность и пользователей',
+    format: 'Таблицы спецификаций, bullet-points, User Stories, Acceptance Criteria',
+    constraints: [
+      'Не писать программный код и технические листинги, если прямо не запрошено',
+      'Писать понятным языком без глубокого жаргона разработки',
+      'Фокус на бизнес-логике, требованиях и пользе для пользователя',
+    ],
+    customNotes: 'Отвечает за документацию, роадмапы и прозрачность процессов в продуктовой команде.',
+    isBuiltin: true,
+  },
+];
+
+export const DEFAULT_USER_PROFILE: UserProfile = {
+  id: '',
+  name: '',
+  role: '',
+  style: '',
+  format: '',
+  constraints: [],
+  customNotes: '',
+};
 
 export const DEFAULT_MODEL_CONFIG: DefaultModelConfig = {
   model: 'openai/gpt-4o-mini',
@@ -72,12 +131,7 @@ export const DEFAULT_WORKING_MEMORY: WorkingMemory = {
 };
 
 export const DEFAULT_LONG_TERM_MEMORY: LongTermMemory = {
-  profile: {
-    name: '',
-    role: '',
-    preferences: [],
-    customNotes: '',
-  },
+  profile: { ...DEFAULT_USER_PROFILE },
   decisions: [],
   knowledge: [],
   updatedAt: 0,
@@ -125,7 +179,7 @@ export const DEFAULT_SUMMARY: ConversationSummary = {
   version: 1,
 };
 
-export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_SCHEMA_VERSION = 6;
 
 function getChatKey(baseKey: string, chatId: string = 'default'): string {
   return `${baseKey}_${chatId}`;
@@ -229,6 +283,15 @@ export function migrateStorage(): void {
       if (!existingWorking) {
         localStorage.setItem(getChatKey(STORAGE_KEYS.WORKING_MEMORY, 'default'), JSON.stringify(DEFAULT_WORKING_MEMORY));
         localStorage.setItem(STORAGE_KEYS.WORKING_MEMORY, JSON.stringify(DEFAULT_WORKING_MEMORY));
+      }
+    }
+
+    if (currentVersion < 6) {
+      // Version 5 -> 6 migration:
+      // Initialize user profiles library if not present
+      const existingProfiles = localStorage.getItem(STORAGE_KEYS.USER_PROFILES);
+      if (!existingProfiles) {
+        localStorage.setItem(STORAGE_KEYS.USER_PROFILES, JSON.stringify(BUILTIN_PROFILES));
       }
     }
 
@@ -894,13 +957,21 @@ export function loadLongTermMemory(): LongTermMemory {
     if (!raw) return { ...DEFAULT_LONG_TERM_MEMORY };
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object') {
+      const rawProfile = parsed.profile;
       const profile: UserProfile = {
-        name: typeof parsed.profile?.name === 'string' ? parsed.profile.name : '',
-        role: typeof parsed.profile?.role === 'string' ? parsed.profile.role : '',
-        preferences: Array.isArray(parsed.profile?.preferences)
-          ? parsed.profile.preferences.filter((p: unknown) => typeof p === 'string')
+        id: typeof rawProfile?.id === 'string' ? rawProfile.id : '',
+        name: typeof rawProfile?.name === 'string' ? rawProfile.name : '',
+        role: typeof rawProfile?.role === 'string' ? rawProfile.role : '',
+        style: typeof rawProfile?.style === 'string' ? rawProfile.style : '',
+        format: typeof rawProfile?.format === 'string' ? rawProfile.format : '',
+        constraints: Array.isArray(rawProfile?.constraints)
+          ? rawProfile.constraints.filter((c: unknown) => typeof c === 'string')
           : [],
-        customNotes: typeof parsed.profile?.customNotes === 'string' ? parsed.profile.customNotes : '',
+        customNotes: typeof rawProfile?.customNotes === 'string' ? rawProfile.customNotes : '',
+        preferences: Array.isArray(rawProfile?.preferences)
+          ? rawProfile.preferences.filter((p: unknown) => typeof p === 'string')
+          : [],
+        isBuiltin: Boolean(rawProfile?.isBuiltin),
       };
 
       const decisions: DecisionItem[] = Array.isArray(parsed.decisions)
@@ -958,6 +1029,99 @@ export function clearLongTermMemory(): void {
   } catch (err) {
     console.error('[Storage] Failed to clear long-term memory from localStorage:', err);
   }
+}
+
+// ==========================================
+// User Profiles & Personalization Storage
+// ==========================================
+
+/**
+ * Load global user profiles library from localStorage.
+ */
+export function loadUserProfiles(): UserProfile[] {
+  try {
+    if (typeof localStorage === 'undefined') return BUILTIN_PROFILES.map((p) => ({ ...p }));
+    const raw = localStorage.getItem(STORAGE_KEYS.USER_PROFILES);
+    if (!raw) {
+      saveUserProfiles(BUILTIN_PROFILES);
+      return BUILTIN_PROFILES.map((p) => ({ ...p }));
+    }
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return parsed.map((p) => ({
+        id: typeof p.id === 'string' ? p.id : `profile-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        name: typeof p.name === 'string' ? p.name : '',
+        role: typeof p.role === 'string' ? p.role : '',
+        style: typeof p.style === 'string' ? p.style : '',
+        format: typeof p.format === 'string' ? p.format : '',
+        constraints: Array.isArray(p.constraints)
+          ? p.constraints.filter((c: unknown) => typeof c === 'string')
+          : [],
+        customNotes: typeof p.customNotes === 'string' ? p.customNotes : '',
+        preferences: Array.isArray(p.preferences)
+          ? p.preferences.filter((pref: unknown) => typeof pref === 'string')
+          : [],
+        isBuiltin: Boolean(p.isBuiltin),
+      }));
+    }
+  } catch (err) {
+    console.error('[Storage] Failed to load user profiles from localStorage:', err);
+  }
+  return BUILTIN_PROFILES.map((p) => ({ ...p }));
+}
+
+/**
+ * Save global user profiles library to localStorage.
+ */
+export function saveUserProfiles(profiles: UserProfile[]): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(STORAGE_KEYS.USER_PROFILES, JSON.stringify(profiles));
+  } catch (err) {
+    console.error('[Storage] Failed to save user profiles to localStorage:', err);
+  }
+}
+
+/**
+ * Load active profile ID for a specific chat from localStorage.
+ */
+export function loadActiveProfileId(chatId: string = 'default'): string {
+  try {
+    if (typeof localStorage === 'undefined') return '';
+    const raw = getItemWithFallback(STORAGE_KEYS.ACTIVE_PROFILE_ID, chatId);
+    if (raw && typeof raw === 'string' && raw.trim()) {
+      return raw.trim();
+    }
+  } catch (err) {
+    console.error('[Storage] Failed to load active profile ID from localStorage:', err);
+  }
+  return '';
+}
+
+/**
+ * Save active profile ID for a specific chat in localStorage.
+ */
+export function saveActiveProfileId(profileId: string, chatId: string = 'default'): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(getChatKey(STORAGE_KEYS.ACTIVE_PROFILE_ID, chatId), profileId);
+    if (chatId === 'default') {
+      localStorage.setItem(STORAGE_KEYS.ACTIVE_PROFILE_ID, profileId);
+    }
+  } catch (err) {
+    console.error('[Storage] Failed to save active profile ID to localStorage:', err);
+  }
+}
+
+/**
+ * Reset builtin profiles to their defaults while preserving user-created custom profiles.
+ */
+export function resetBuiltinProfiles(): UserProfile[] {
+  const current = loadUserProfiles();
+  const custom = current.filter((p) => !p.isBuiltin);
+  const updated = [...BUILTIN_PROFILES.map((p) => ({ ...p })), ...custom];
+  saveUserProfiles(updated);
+  return updated;
 }
 
 

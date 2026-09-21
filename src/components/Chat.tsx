@@ -9,7 +9,7 @@ import { StrategySelector } from './StrategySelector';
 import { BranchBar } from './BranchBar';
 import { StickyFactsPanel } from './StickyFactsPanel';
 import { MemoryHub } from './MemoryHub';
-import { Bot, Settings as SettingsIcon, Trash2, Cpu, PanelLeft, Brain } from 'lucide-react';
+import { Bot, Settings as SettingsIcon, Trash2, Cpu, PanelLeft, Brain, User } from 'lucide-react';
 
 interface ChatProps {
   agent?: Agent;
@@ -26,6 +26,7 @@ export const Chat: React.FC<ChatProps> = ({
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isFactsDrawerOpen, setIsFactsDrawerOpen] = useState(false);
   const [isMemoryHubOpen, setIsMemoryHubOpen] = useState(false);
+  const [memoryHubTab, setMemoryHubTab] = useState<'working' | 'short_term' | 'long_term'>('working');
 
   // Subscribe to Agent state changes (Agent -> React state -> UI)
   useEffect(() => {
@@ -166,6 +167,49 @@ export const Chat: React.FC<ChatProps> = ({
                 )}
             </select>
           </div>
+
+          {/* Quick Profile Switcher / Badge */}
+          <div className="profile-selector-wrapper" title="Активный профиль пользователя">
+            <User size={14} className="profile-select-icon" />
+            <select
+              className="profile-select-dropdown"
+              value={agentState.activeProfileId}
+              onChange={(e) => {
+                if (e.target.value === '__open_hub__') {
+                  setMemoryHubTab('long_term');
+                  setIsMemoryHubOpen(true);
+                } else {
+                  agent.setActiveProfile(e.target.value);
+                }
+              }}
+              disabled={agentState.isLoading}
+              title="Переключить профиль пользователя для этого чата"
+            >
+              <optgroup label="⭐ Системные пресеты">
+                {(agentState.userProfiles || [])
+                  .filter((p) => p.isBuiltin)
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>
+                      👤 {p.name} ({p.role.split('(')[0].trim()})
+                    </option>
+                  ))}
+              </optgroup>
+              {(agentState.userProfiles || []).some((p) => !p.isBuiltin) && (
+                <optgroup label="🛠️ Мои профили">
+                  {(agentState.userProfiles || [])
+                    .filter((p) => !p.isBuiltin)
+                    .map((p) => (
+                      <option key={p.id} value={p.id}>
+                        👤 {p.name} ({p.role.split('(')[0].trim() || 'Custom'})
+                      </option>
+                    ))}
+                </optgroup>
+              )}
+              <optgroup label="⚙️ Настройка">
+                <option value="__open_hub__">⚙️ Управление профилями в Memory Hub...</option>
+              </optgroup>
+            </select>
+          </div>
         </div>
 
         <div className="header-center">
@@ -265,6 +309,7 @@ export const Chat: React.FC<ChatProps> = ({
           <MemoryHub
             isOpen={isMemoryHubOpen}
             onClose={() => setIsMemoryHubOpen(false)}
+            initialTab={memoryHubTab}
             workingMemory={agentState.workingMemory}
             longTermMemory={agentState.longTermMemory}
             memoryTokensBreakdown={agentState.memoryTokensBreakdown}

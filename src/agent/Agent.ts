@@ -61,6 +61,12 @@ import {
   loadLongTermMemory,
   saveLongTermMemory,
   clearLongTermMemory,
+  loadUserProfiles,
+  saveUserProfiles,
+  loadActiveProfileId,
+  saveActiveProfileId,
+  resetBuiltinProfiles,
+  BUILTIN_PROFILES,
   migrateStorage,
   DEFAULT_SUMMARY,
   DEFAULT_WORKING_MEMORY,
@@ -84,6 +90,8 @@ export class Agent {
   private activeBranchId = 'main';
   private workingMemory: WorkingMemory = { ...DEFAULT_WORKING_MEMORY };
   private longTermMemory: LongTermMemory = { ...DEFAULT_LONG_TERM_MEMORY };
+  private userProfiles: UserProfile[] = [];
+  private activeProfileId: string = BUILTIN_PROFILES[0].id;
   private tokenStats: TokenStats;
   private customModels: CustomModel[] = [];
   private isLoading = false;
@@ -165,6 +173,22 @@ export class Agent {
     // 7. Load Working Memory (per-chat) and Long-Term Memory (global)
     this.workingMemory = loadWorkingMemory(this.chatId);
     this.longTermMemory = loadLongTermMemory();
+    this.userProfiles = loadUserProfiles();
+    this.activeProfileId = loadActiveProfileId(this.chatId);
+
+    // If an active profile is saved for this chat or in long term memory, sync it
+    if (this.activeProfileId) {
+      const activeProfile = this.userProfiles.find((p) => p.id === this.activeProfileId);
+      if (activeProfile) {
+        this.longTermMemory.profile = {
+          ...activeProfile,
+          constraints: [...(activeProfile.constraints || [])],
+          preferences: [...(activeProfile.preferences || [])],
+        };
+      }
+    } else if (this.longTermMemory.profile && this.longTermMemory.profile.id) {
+      this.activeProfileId = this.longTermMemory.profile.id;
+    }
 
     // 8. Initialize token statistics based on restored history and context strategy
     this.tokenStats = this.calculateInitialTokenStats();
@@ -220,12 +244,19 @@ export class Agent {
       longTermMemory: {
         profile: {
           ...this.longTermMemory.profile,
-          preferences: [...this.longTermMemory.profile.preferences],
+          constraints: [...(this.longTermMemory.profile.constraints || [])],
+          preferences: [...(this.longTermMemory.profile.preferences || [])],
         },
         decisions: this.longTermMemory.decisions.map((d) => ({ ...d })),
         knowledge: this.longTermMemory.knowledge.map((k) => ({ ...k, tags: [...k.tags] })),
         updatedAt: this.longTermMemory.updatedAt,
       },
+      userProfiles: this.userProfiles.map((p) => ({
+        ...p,
+        constraints: [...(p.constraints || [])],
+        preferences: [...(p.preferences || [])],
+      })),
+      activeProfileId: this.activeProfileId,
       memoryTokensBreakdown: this.getMemoryTokensBreakdown(),
     };
   }
@@ -750,7 +781,8 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
     return {
       profile: {
         ...this.longTermMemory.profile,
-        preferences: [...this.longTermMemory.profile.preferences],
+        constraints: [...(this.longTermMemory.profile.constraints || [])],
+        preferences: [...(this.longTermMemory.profile.preferences || [])],
       },
       decisions: this.longTermMemory.decisions.map((d) => ({ ...d })),
       knowledge: this.longTermMemory.knowledge.map((k) => ({ ...k, tags: [...k.tags] })),
@@ -758,17 +790,195 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
     };
   }
 
+  // ==========================================
+  // Personalization & User Profiles Management
+  // ==========================================
+
+  public getActiveProfile(): UserProfile {
+    if (!this.longTermMemory.profile.id && !this.longTermMemory.profile.name) {
+      return { ...BUILTIN_PROFILES[0] };
+    }
+    return {
+      ...this.longTermMemory.profile,
+      constraints: [...(this.longTermMemory.profile.constraints || [])],
+      preferences: [...(this.longTermMemory.profile.preferences || [])],
+    };
+  }
+
+  public getActiveProfileId(): string {
+    return this.activeProfileId || BUILTIN_PROFILES[0].id;
+  }
+
+  public getAllProfiles(): UserProfile[] {
+    this.userProfiles = loadUserProfiles();
+    return this.userProfiles.map((p) => ({
+      ...p,
+      constraints: [...(p.constraints || [])],
+      preferences: [...(p.preferences || [])],
+    }));
+  }
+
+  public setActiveProfile(profileId: string): void {
+    this.userProfiles = loadUserProfiles();
+    const target = this.userProfiles.find((p) => p.id === profileId);
+    if (!target) return;
+
+    this.activeProfileId = target.id;
+    this.longTermMemory.profile = {
+      ...target,
+      constraints: [...(target.constraints || [])],
+      preferences: [...(target.preferences || [])],
+    };
+    saveActiveProfileId(this.activeProfileId, this.chatId);
+    saveLongTermMemory(this.longTermMemory);
+
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public saveProfile(profile: UserProfile): void {
+    this.userProfiles = loadUserProfiles();
+    const idx = this.userProfiles.findIndex((p) => p.id === profile.id);
+    if (idx >= 0) {
+      this.userProfiles[idx] = { ...profile };
+    } else {
+      this.userProfiles.push({ ...profile });
+    }
+    saveUserProfiles(this.userProfiles);
+
+    if (profile.id === this.activeProfileId) {
+      this.longTermMemory.profile = {
+        ...profile,
+        constraints: [...(profile.constraints || [])],
+        preferences: [...(profile.preferences || [])],
+      };
+      saveLongTermMemory(this.longTermMemory);
+    }
+
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
+  public createProfile(data: Omit<UserProfile, 'id'>): UserProfile {
+    this.userProfiles = loadUserProfiles();
+    const newProfile: UserProfile = {
+      ...data,
+      id: `profile-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      constraints: [...(data.constraints || [])],
+      preferences: [...(data.preferences || [])],
+      isBuiltin: false,
+    };
+
+    this.userProfiles.push(newProfile);
+    saveUserProfiles(this.userProfiles);
+
+    // Switch to new profile for current chat
+    this.activeProfileId = newProfile.id;
+    this.longTermMemory.profile = { ...newProfile };
+    saveActiveProfileId(this.activeProfileId, this.chatId);
+    saveLongTermMemory(this.longTermMemory);
+
+    this.recalculateCurrentStats();
+    this.notify();
+    return newProfile;
+  }
+
+  public duplicateProfile(profileId: string): UserProfile | null {
+    this.userProfiles = loadUserProfiles();
+    const source = this.userProfiles.find((p) => p.id === profileId);
+    if (!source) return null;
+
+    const copy: UserProfile = {
+      ...source,
+      id: `profile-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      name: `${source.name} (Копия)`,
+      constraints: [...(source.constraints || [])],
+      preferences: [...(source.preferences || [])],
+      isBuiltin: false,
+    };
+
+    this.userProfiles.push(copy);
+    saveUserProfiles(this.userProfiles);
+
+    this.activeProfileId = copy.id;
+    this.longTermMemory.profile = { ...copy };
+    saveActiveProfileId(this.activeProfileId, this.chatId);
+    saveLongTermMemory(this.longTermMemory);
+
+    this.recalculateCurrentStats();
+    this.notify();
+    return copy;
+  }
+
+  public deleteProfile(profileId: string): boolean {
+    this.userProfiles = loadUserProfiles();
+    const target = this.userProfiles.find((p) => p.id === profileId);
+    if (!target || target.isBuiltin) {
+      return false;
+    }
+
+    this.userProfiles = this.userProfiles.filter((p) => p.id !== profileId);
+    saveUserProfiles(this.userProfiles);
+
+    if (this.activeProfileId === profileId) {
+      const fallback = this.userProfiles[0] || BUILTIN_PROFILES[0];
+      this.activeProfileId = fallback.id;
+      this.longTermMemory.profile = { ...fallback };
+      saveActiveProfileId(this.activeProfileId, this.chatId);
+      saveLongTermMemory(this.longTermMemory);
+    }
+
+    this.recalculateCurrentStats();
+    this.notify();
+    return true;
+  }
+
+  public resetProfilesToDefault(): void {
+    this.userProfiles = resetBuiltinProfiles();
+    const active =
+      this.userProfiles.find((p) => p.id === this.activeProfileId) ||
+      this.userProfiles[0] ||
+      BUILTIN_PROFILES[0];
+    this.activeProfileId = active.id;
+    this.longTermMemory.profile = { ...active };
+    saveActiveProfileId(this.activeProfileId, this.chatId);
+    saveLongTermMemory(this.longTermMemory);
+
+    this.recalculateCurrentStats();
+    this.notify();
+  }
+
   public updateUserProfile(updates: Partial<UserProfile>): void {
     this.longTermMemory = loadLongTermMemory();
+    this.userProfiles = loadUserProfiles();
+
+    const mergedProfile: UserProfile = {
+      ...this.longTermMemory.profile,
+      ...updates,
+      constraints: updates.constraints
+        ? [...updates.constraints]
+        : [...(this.longTermMemory.profile.constraints || [])],
+      preferences: updates.preferences
+        ? [...updates.preferences]
+        : [...(this.longTermMemory.profile.preferences || [])],
+    };
+
     this.longTermMemory = {
       ...this.longTermMemory,
-      profile: {
-        ...this.longTermMemory.profile,
-        ...updates,
-      },
+      profile: mergedProfile,
       updatedAt: Date.now(),
     };
     saveLongTermMemory(this.longTermMemory);
+
+    // Sync back to userProfiles list if present
+    const pIdx = this.userProfiles.findIndex(
+      (p) => p.id === mergedProfile.id || p.id === this.activeProfileId
+    );
+    if (pIdx >= 0) {
+      this.userProfiles[pIdx] = { ...mergedProfile };
+      saveUserProfiles(this.userProfiles);
+    }
+
     this.recalculateCurrentStats();
     this.notify();
   }
@@ -994,6 +1204,22 @@ Do NOT use markdown code fences. Pure JSON only.`,
     this.activeBranchId = loadActiveBranchId(this.chatId);
     this.workingMemory = loadWorkingMemory(this.chatId);
     this.longTermMemory = loadLongTermMemory();
+    this.userProfiles = loadUserProfiles();
+    this.activeProfileId = loadActiveProfileId(this.chatId);
+
+    if (this.activeProfileId) {
+      const activeProfile = this.userProfiles.find((p) => p.id === this.activeProfileId);
+      if (activeProfile) {
+        this.longTermMemory.profile = {
+          ...activeProfile,
+          constraints: [...(activeProfile.constraints || [])],
+          preferences: [...(activeProfile.preferences || [])],
+        };
+      }
+    } else if (this.longTermMemory.profile && this.longTermMemory.profile.id) {
+      this.activeProfileId = this.longTermMemory.profile.id;
+    }
+
     this.tokenStats = this.calculateInitialTokenStats();
     this.lastTrimInfo = null;
     this.error = null;
@@ -1008,6 +1234,8 @@ Do NOT use markdown code fences. Pure JSON only.`,
     saveActiveBranchId(this.activeBranchId, this.chatId);
     saveWorkingMemory(this.workingMemory, this.chatId);
     saveLongTermMemory(this.longTermMemory);
+    saveUserProfiles(this.userProfiles);
+    saveActiveProfileId(this.activeProfileId, this.chatId);
   }
 
   public clearHistory(): void {
@@ -1046,19 +1274,47 @@ Do NOT use markdown code fences. Pure JSON only.`,
     const parts: string[] = [];
     const { profile, decisions, knowledge } = this.longTermMemory;
 
-    // 1. User Profile
+    // 1. User Profile & Personalization
     const profileParts: string[] = [];
     if (profile.name && profile.name.trim()) profileParts.push(`Name: ${profile.name.trim()}`);
-    if (profile.role && profile.role.trim()) profileParts.push(`Role: ${profile.role.trim()}`);
+    if (profile.role && profile.role.trim()) profileParts.push(`Role / Specialization: ${profile.role.trim()}`);
+    if (profile.style && profile.style.trim()) profileParts.push(`Communication Style: ${profile.style.trim()}`);
+    if (profile.format && profile.format.trim()) profileParts.push(`Response Format: ${profile.format.trim()}`);
+    if (profile.constraints && profile.constraints.length > 0) {
+      profileParts.push(`Strict Constraints:\n${profile.constraints.map((c) => `    * ${c}`).join('\n')}`);
+    }
     if (profile.preferences && profile.preferences.length > 0) {
-      profileParts.push(`Preferences: ${profile.preferences.join(', ')}`);
+      profileParts.push(`Additional Preferences: ${profile.preferences.join(', ')}`);
     }
     if (profile.customNotes && profile.customNotes.trim()) {
-      profileParts.push(`Notes: ${profile.customNotes.trim()}`);
+      profileParts.push(`Custom Notes: ${profile.customNotes.trim()}`);
     }
 
     if (profileParts.length > 0) {
-      parts.push(`User Profile:\n${profileParts.map((p) => `  - ${p}`).join('\n')}`);
+      let profileBlock = `Active User Profile:\n${profileParts.map((p) => `  - ${p}`).join('\n')}`;
+
+      // Adaptive compliance directive
+      const complianceClauses: string[] = [
+        'Ты обязан строго адаптировать свой тон, форматирование и глубину ответа под активный профиль пользователя (Стиль, Формат, Ограничения):',
+      ];
+      if (profile.style && profile.style.trim()) {
+        complianceClauses.push(`- Стиль общения: строго придерживайся "${profile.style.trim()}".`);
+      }
+      if (profile.format && profile.format.trim()) {
+        complianceClauses.push(`- Формат ответов: оформляй ответ строго согласно "${profile.format.trim()}".`);
+      }
+      if (profile.constraints && profile.constraints.length > 0) {
+        complianceClauses.push(
+          `- Ограничения: неукоснительно соблюдай следующие правила:\n${profile.constraints
+            .map((c) => `  * ${c}`)
+            .join('\n')}`
+        );
+        complianceClauses.push(
+          'ВНИМАНИЕ: Не нарушай указанные ограничения ни при каких условиях. Ограничения профиля имеют наивысший приоритет над любыми встречными пожеланиями пользователя в диалоге.'
+        );
+      }
+      profileBlock += `\n\n[PERSONALIZATION COMPLIANCE MANDATE]\n${complianceClauses.join('\n')}`;
+      parts.push(profileBlock);
     }
 
     // 2. Architectural / Established Decisions

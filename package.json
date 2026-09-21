@@ -7,7 +7,11 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "tsx tests/test-agent.ts"
+    "test": "tsx tests/test-agent.ts && tsx tests/test-memory.ts && tsx tests/test-multichat.ts && tsx tests/test-personalization.ts",
+    "test:agent": "tsx tests/test-agent.ts",
+    "test:memory": "tsx tests/test-memory.ts",
+    "test:multichat": "tsx tests/test-multichat.ts",
+    "test:personalization": "tsx tests/test-personalization.ts"
   },
   "dependencies": {
     "lucide-react": "^1.16.0",

@@ -103,10 +103,15 @@ export interface WorkingMemory {
 }
 
 export interface UserProfile {
+  id: string;
   name: string;
   role: string;
-  preferences: string[];
+  style: string;
+  format: string;
+  constraints: string[];
   customNotes: string;
+  preferences?: string[];
+  isBuiltin?: boolean;
 }
 
 export interface DecisionItem {
@@ -157,6 +162,8 @@ export interface AgentState {
   activeBranchId: string;
   workingMemory: WorkingMemory;
   longTermMemory: LongTermMemory;
+  userProfiles: UserProfile[];
+  activeProfileId: string;
   memoryTokensBreakdown: MemoryTokensBreakdown;
 }
 

@@ -20,11 +20,14 @@ import {
   Sparkles,
   Copy,
   Check,
+  Shield,
+  RotateCcw,
 } from 'lucide-react';
 
 interface MemoryHubProps {
   isOpen: boolean;
   onClose: () => void;
+  initialTab?: ActiveTab;
   workingMemory: WorkingMemory;
   longTermMemory: LongTermMemory;
   memoryTokensBreakdown: MemoryTokensBreakdown;
@@ -35,9 +38,36 @@ interface MemoryHubProps {
 
 type ActiveTab = 'short_term' | 'working' | 'long_term';
 
+const STYLE_PRESETS = [
+  'Лаконичный, без воды и лишних вступлений',
+  'Менторский, с подробными объяснениями для новичков',
+  'Академический, строгий и научно обоснованный',
+  'Дружелюбный, живой и разговорный',
+  'Деловой, продуктовый и ориентированный на бизнес',
+];
+
+const FORMAT_PRESETS = [
+  'Bullet-points списки и структурированный текст',
+  'Пошагово (Step-by-step) с примерами кода',
+  'Таблицы спецификаций и матрицы сравнения',
+  'Архитектурные схемы (Markdown / ASCII)',
+  'Готовые production-ready сниппеты кода',
+];
+
+const CONSTRAINT_SUGGESTIONS = [
+  'Писать код только на React / JS',
+  'Строгая типизация TypeScript strict',
+  'Код строго без комментариев',
+  'Подробно комментировать ключевые строки',
+  'Отвечать на русском языке',
+  'Не писать программный код (только документация)',
+  'Не использовать сторонние библиотеки без явной просьбы',
+];
+
 export const MemoryHub: React.FC<MemoryHubProps> = ({
   isOpen,
   onClose,
+  initialTab,
   workingMemory,
   longTermMemory,
   memoryTokensBreakdown,
@@ -45,9 +75,15 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
   messages,
   agent,
 }) => {
-  const [activeTab, setActiveTab] = useState<ActiveTab>('working');
+  const [activeTab, setActiveTab] = useState<ActiveTab>(initialTab || 'working');
   const [isContextModalOpen, setIsContextModalOpen] = useState(false);
   const [copiedContext, setCopiedContext] = useState(false);
+
+  useEffect(() => {
+    if (initialTab && isOpen) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab, isOpen]);
 
   // Close context modal on Escape key
   useEffect(() => {
@@ -68,12 +104,32 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
   const [scratchpadText, setScratchpadText] = useState(workingMemory.scratchpad || '');
   const [isScratchpadDirty, setIsScratchpadDirty] = useState(false);
 
-  // Long-Term Memory input state
-  const [profileName, setProfileName] = useState(longTermMemory.profile.name || '');
-  const [profileRole, setProfileRole] = useState(longTermMemory.profile.role || '');
-  const [profilePref, setProfilePref] = useState(longTermMemory.profile.preferences.join(', '));
-  const [profileNotes, setProfileNotes] = useState(longTermMemory.profile.customNotes || '');
+  // Long-Term Memory / Personalization Profile input state
+  const activeProfile = agent.getActiveProfile();
+  const allProfiles = agent.getAllProfiles();
+
+  const [profileName, setProfileName] = useState(activeProfile.name || '');
+  const [profileRole, setProfileRole] = useState(activeProfile.role || '');
+  const [profileStyle, setProfileStyle] = useState(activeProfile.style || '');
+  const [profileFormat, setProfileFormat] = useState(activeProfile.format || '');
+  const [profileConstraints, setProfileConstraints] = useState<string[]>(
+    activeProfile.constraints || []
+  );
+  const [newConstraintInput, setNewConstraintInput] = useState('');
+  const [profileNotes, setProfileNotes] = useState(activeProfile.customNotes || '');
   const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [isCreatingProfile, setIsCreatingProfile] = useState(false);
+
+  // Sync form state when active profile changes
+  useEffect(() => {
+    const prof = agent.getActiveProfile();
+    setProfileName(prof.name || '');
+    setProfileRole(prof.role || '');
+    setProfileStyle(prof.style || '');
+    setProfileFormat(prof.format || '');
+    setProfileConstraints(prof.constraints || []);
+    setProfileNotes(prof.customNotes || '');
+  }, [longTermMemory.profile, agent.getActiveProfileId()]);
 
   // Decision state
   const [newDecTitle, setNewDecTitle] = useState('');
@@ -106,19 +162,84 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
     setIsScratchpadDirty(false);
   };
 
+  const handleSelectProfile = (id: string) => {
+    agent.setActiveProfile(id);
+    setIsEditingProfile(false);
+    setIsCreatingProfile(false);
+  };
+
+  const handleStartCreateProfile = () => {
+    setProfileName('');
+    setProfileRole('');
+    setProfileStyle('Дружелюбный, менторский');
+    setProfileFormat('Пошагово (Step-by-step)');
+    setProfileConstraints([]);
+    setProfileNotes('');
+    setIsCreatingProfile(true);
+    setIsEditingProfile(true);
+  };
+
+  const handleDuplicateProfile = () => {
+    agent.duplicateProfile(activeProfile.id);
+    setIsEditingProfile(false);
+    setIsCreatingProfile(false);
+  };
+
+  const handleDeleteProfile = () => {
+    if (activeProfile.isBuiltin) return;
+    if (window.confirm(`Удалить профиль "${activeProfile.name}"?`)) {
+      agent.deleteProfile(activeProfile.id);
+      setIsEditingProfile(false);
+      setIsCreatingProfile(false);
+    }
+  };
+
+  const handleResetPresets = () => {
+    if (window.confirm('Сбросить встроенные пресеты профилей к начальным значениям?')) {
+      agent.resetProfilesToDefault();
+      setIsEditingProfile(false);
+      setIsCreatingProfile(false);
+    }
+  };
+
+  const handleAddConstraint = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    if (!profileConstraints.includes(trimmed)) {
+      setProfileConstraints([...profileConstraints, trimmed]);
+    }
+    setNewConstraintInput('');
+  };
+
+  const handleRemoveConstraint = (idx: number) => {
+    setProfileConstraints(profileConstraints.filter((_, i) => i !== idx));
+  };
+
   const handleSaveProfile = (e: React.FormEvent) => {
     e.preventDefault();
-    const prefs = profilePref
-      .split(',')
-      .map((p) => p.trim())
-      .filter(Boolean);
-    agent.updateUserProfile({
-      name: profileName.trim(),
-      role: profileRole.trim(),
-      preferences: prefs,
-      customNotes: profileNotes.trim(),
-    });
-    setIsEditingProfile(false);
+    if (isCreatingProfile) {
+      agent.createProfile({
+        name: profileName.trim() || 'Новый профиль',
+        role: profileRole.trim(),
+        style: profileStyle.trim(),
+        format: profileFormat.trim(),
+        constraints: profileConstraints,
+        customNotes: profileNotes.trim(),
+      });
+      setIsCreatingProfile(false);
+      setIsEditingProfile(false);
+    } else {
+      agent.saveProfile({
+        ...activeProfile,
+        name: profileName.trim() || 'Без имени',
+        role: profileRole.trim(),
+        style: profileStyle.trim(),
+        format: profileFormat.trim(),
+        constraints: profileConstraints,
+        customNotes: profileNotes.trim(),
+      });
+      setIsEditingProfile(false);
+    }
   };
 
   const handleAddDecision = (e: React.FormEvent) => {
@@ -174,7 +295,9 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
     setScratchpadText('Внимание: не хранить приватные ключи в кодовой базе, использовать Secret Manager.');
     setProfileName('Алексей Архитектор');
     setProfileRole('Staff Engineer (Go / Cloud Native)');
-    setProfilePref('Строгая типизация, Лаконичные ответы, Microservices, Clean Architecture');
+    setProfileStyle('Лаконичный и строгий, Clean Architecture');
+    setProfileFormat('Структурированные схемы, bullet-points');
+    setProfileConstraints(['Строгая типизация Go/gRPC', 'Лаконичные ответы', 'Microservices', 'Clean Architecture']);
     setProfileNotes('Фокус на отказоустойчивости, gRPC и PostgreSQL.');
   };
 
@@ -535,69 +658,288 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
               </p>
             </div>
 
-            {/* User Profile Card */}
+            {/* User Profile & Personalization Card */}
             <div className="longterm-card profile-card">
-              <div className="card-header">
-                <span className="card-title">👤 Профиль пользователя</span>
-                <button
-                  type="button"
-                  className="card-edit-btn"
-                  onClick={() => setIsEditingProfile(!isEditingProfile)}
+              <div className="card-header profile-card-header">
+                <div className="profile-header-left">
+                  <span className="card-title">👤 Персонализация и Профиль</span>
+                  <span
+                    className={`profile-kind-badge ${
+                      activeProfile.isBuiltin ? 'builtin-badge' : 'custom-badge'
+                    }`}
+                  >
+                    {activeProfile.isBuiltin ? '⭐ Встроенный пресет' : '🛠️ Пользовательский'}
+                  </span>
+                </div>
+
+                <div className="profile-header-actions">
+                  <button
+                    type="button"
+                    className="card-edit-btn"
+                    onClick={() => {
+                      setIsCreatingProfile(false);
+                      setIsEditingProfile(!isEditingProfile);
+                    }}
+                  >
+                    {isEditingProfile && !isCreatingProfile ? 'Свернуть' : 'Редактировать'}
+                  </button>
+                  <button
+                    type="button"
+                    className="card-action-link"
+                    onClick={handleStartCreateProfile}
+                    title="Создать новый пустой профиль"
+                  >
+                    <Plus size={13} />
+                    <span>Создать</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="card-action-link"
+                    onClick={handleDuplicateProfile}
+                    title="Создать копию текущего профиля"
+                  >
+                    <Copy size={13} />
+                    <span>Дублировать</span>
+                  </button>
+                  {!activeProfile.isBuiltin && (
+                    <button
+                      type="button"
+                      className="card-action-link danger-link"
+                      onClick={handleDeleteProfile}
+                      title="Удалить этот профиль"
+                    >
+                      <Trash2 size={13} />
+                      <span>Удалить</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="card-action-link"
+                    onClick={handleResetPresets}
+                    title="Сбросить встроенные пресеты к исходным настройкам"
+                  >
+                    <RotateCcw size={13} />
+                    <span>Сброс пресетов</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Profile Switcher Selector */}
+              <div className="profile-quick-switch-row">
+                <label className="switch-lbl">Активный профиль для чата:</label>
+                <select
+                  className="profile-selector-inline"
+                  value={activeProfile.id}
+                  onChange={(e) => handleSelectProfile(e.target.value)}
                 >
-                  {isEditingProfile ? 'Свернуть' : 'Редактировать'}
-                </button>
+                  <optgroup label="⭐ Встроенные пресеты">
+                    {allProfiles
+                      .filter((p) => p.isBuiltin)
+                      .map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} — {p.role}
+                        </option>
+                      ))}
+                  </optgroup>
+                  {allProfiles.some((p) => !p.isBuiltin) && (
+                    <optgroup label="🛠️ Пользовательские профили">
+                      {allProfiles
+                        .filter((p) => !p.isBuiltin)
+                        .map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} — {p.role || 'Custom'}
+                          </option>
+                        ))}
+                    </optgroup>
+                  )}
+                </select>
               </div>
 
               {isEditingProfile ? (
                 <form onSubmit={handleSaveProfile} className="profile-edit-form">
-                  <div className="form-group-sm">
-                    <label>Имя пользователя:</label>
-                    <input
-                      type="text"
-                      className="hub-input-sm"
-                      value={profileName}
-                      onChange={(e) => setProfileName(e.target.value)}
-                      placeholder="Например: Алексей"
-                    />
+                  <div className="form-subheading">
+                    {isCreatingProfile
+                      ? '✨ Новый профиль персонализации'
+                      : `✏️ Редактирование: ${activeProfile.name}`}
                   </div>
-                  <div className="form-group-sm">
-                    <label>Роль / Специализация:</label>
-                    <input
-                      type="text"
-                      className="hub-input-sm"
-                      value={profileRole}
-                      onChange={(e) => setProfileRole(e.target.value)}
-                      placeholder="Например: Senior Go Architect"
-                    />
+
+                  <div className="form-row-2col">
+                    <div className="form-group-sm">
+                      <label>Имя пользователя:</label>
+                      <input
+                        type="text"
+                        className="hub-input-sm"
+                        value={profileName}
+                        onChange={(e) => setProfileName(e.target.value)}
+                        placeholder="Например: Денис или Senior Architect"
+                        required
+                      />
+                    </div>
+                    <div className="form-group-sm">
+                      <label>Роль / Специализация:</label>
+                      <input
+                        type="text"
+                        className="hub-input-sm"
+                        value={profileRole}
+                        onChange={(e) => setProfileRole(e.target.value)}
+                        placeholder="Например: Junior Frontend Developer"
+                        required
+                      />
+                    </div>
                   </div>
+
+                  {/* Style Field & Presets */}
                   <div className="form-group-sm">
-                    <label>Предпочтения (через запятую):</label>
+                    <label>
+                      Стиль общения (Style):
+                      <span className="helper-hint">Выберите пресет или введите свой</span>
+                    </label>
                     <input
                       type="text"
                       className="hub-input-sm"
-                      value={profilePref}
-                      onChange={(e) => setProfilePref(e.target.value)}
-                      placeholder="Например: TypeScript, краткость, тесты"
+                      value={profileStyle}
+                      onChange={(e) => setProfileStyle(e.target.value)}
+                      placeholder="Например: Менторский, с понятными объяснениями..."
                     />
+                    <div className="preset-chips-list">
+                      {STYLE_PRESETS.map((style, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          className={`chip-btn ${profileStyle === style ? 'active' : ''}`}
+                          onClick={() => setProfileStyle(style)}
+                        >
+                          {style}
+                        </button>
+                      ))}
+                    </div>
                   </div>
+
+                  {/* Format Field & Presets */}
                   <div className="form-group-sm">
-                    <label>Дополнительные примечания:</label>
+                    <label>
+                      Формат ответов (Format):
+                      <span className="helper-hint">Выберите пресет или введите свой</span>
+                    </label>
                     <input
                       type="text"
                       className="hub-input-sm"
+                      value={profileFormat}
+                      onChange={(e) => setProfileFormat(e.target.value)}
+                      placeholder="Например: Пошагово (Step-by-step) с кодом..."
+                    />
+                    <div className="preset-chips-list">
+                      {FORMAT_PRESETS.map((fmt, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          className={`chip-btn ${profileFormat === fmt ? 'active' : ''}`}
+                          onClick={() => setProfileFormat(fmt)}
+                        >
+                          {fmt}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Constraints Tag Manager */}
+                  <div className="form-group-sm">
+                    <label>
+                      Ограничения (Constraints):
+                      <span className="helper-hint">
+                        Строгие правила, которые модель обязана соблюдать
+                      </span>
+                    </label>
+
+                    {/* Active Constraints Tags */}
+                    <div className="constraints-tags-container">
+                      {profileConstraints.length === 0 ? (
+                        <span className="no-constraints-note">Ограничения пока не добавлены</span>
+                      ) : (
+                        profileConstraints.map((c, idx) => (
+                          <span key={idx} className="constraint-badge-tag">
+                            <Shield size={12} className="constraint-icon" />
+                            <span>{c}</span>
+                            <button
+                              type="button"
+                              className="tag-remove-btn"
+                              onClick={() => handleRemoveConstraint(idx)}
+                              title="Удалить ограничение"
+                            >
+                              <X size={12} />
+                            </button>
+                          </span>
+                        ))
+                      )}
+                    </div>
+
+                    {/* Add Constraint Input */}
+                    <div className="add-constraint-input-row">
+                      <input
+                        type="text"
+                        className="hub-input-sm"
+                        value={newConstraintInput}
+                        onChange={(e) => setNewConstraintInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleAddConstraint(newConstraintInput);
+                          }
+                        }}
+                        placeholder="Добавить правило (например: «Писать код строго без комментариев»)..."
+                      />
+                      <button
+                        type="button"
+                        className="secondary-btn-sm"
+                        onClick={() => handleAddConstraint(newConstraintInput)}
+                      >
+                        + Добавить
+                      </button>
+                    </div>
+
+                    {/* Fast Suggestions */}
+                    <div className="suggestions-row">
+                      <span className="sugg-lbl">Быстрые подсказки:</span>
+                      <div className="preset-chips-list">
+                        {CONSTRAINT_SUGGESTIONS.filter((s) => !profileConstraints.includes(s)).map(
+                          (sug, idx) => (
+                            <button
+                              key={idx}
+                              type="button"
+                              className="chip-btn suggestion-chip"
+                              onClick={() => handleAddConstraint(sug)}
+                            >
+                              + {sug}
+                            </button>
+                          )
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Custom Notes */}
+                  <div className="form-group-sm">
+                    <label>Дополнительные примечания / Контекст:</label>
+                    <textarea
+                      className="hub-textarea"
+                      rows={2}
                       value={profileNotes}
                       onChange={(e) => setProfileNotes(e.target.value)}
-                      placeholder="Особые требования к коду и стилю..."
+                      placeholder="Особые пожелания или контекст пользователя..."
                     />
                   </div>
+
                   <div className="form-actions">
                     <button type="submit" className="primary-btn-sm">
-                      Сохранить профиль
+                      {isCreatingProfile ? 'Создать профиль' : 'Сохранить изменения'}
                     </button>
                     <button
                       type="button"
                       className="secondary-btn-sm"
-                      onClick={() => setIsEditingProfile(false)}
+                      onClick={() => {
+                        setIsEditingProfile(false);
+                        setIsCreatingProfile(false);
+                      }}
                     >
                       Отмена
                     </button>
@@ -605,32 +947,80 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
                 </form>
               ) : (
                 <div className="profile-view">
-                  <div className="profile-row">
-                    <span className="lbl">Имя:</span>
-                    <span className="val">{longTermMemory.profile.name || '—'}</span>
+                  <div className="profile-summary-header">
+                    <div className="profile-avatar-circle">
+                      <User size={24} />
+                    </div>
+                    <div className="profile-primary-details">
+                      <h4 className="profile-name-title">{activeProfile.name || 'Без имени'}</h4>
+                      <p className="profile-role-sub">{activeProfile.role || 'Роль не указана'}</p>
+                    </div>
                   </div>
-                  <div className="profile-row">
-                    <span className="lbl">Роль:</span>
-                    <span className="val">{longTermMemory.profile.role || '—'}</span>
+
+                  <div className="personalization-grid">
+                    <div className="pers-col">
+                      <span className="pers-lbl">💬 Стиль общения:</span>
+                      <div className="pers-val-box">
+                        {activeProfile.style || 'По умолчанию (нейтральный, лаконичный)'}
+                      </div>
+                    </div>
+
+                    <div className="pers-col">
+                      <span className="pers-lbl">📐 Формат ответов:</span>
+                      <div className="pers-val-box">
+                        {activeProfile.format || 'По умолчанию (текст + сниппеты)'}
+                      </div>
+                    </div>
                   </div>
-                  {longTermMemory.profile.preferences.length > 0 && (
-                    <div className="profile-row">
-                      <span className="lbl">Предпочтения:</span>
+
+                  <div className="profile-row constraints-row">
+                    <span className="lbl">
+                      🛡️ Ограничения ({activeProfile.constraints?.length || 0}):
+                    </span>
+                    {activeProfile.constraints && activeProfile.constraints.length > 0 ? (
                       <div className="tags-list">
-                        {longTermMemory.profile.preferences.map((p, idx) => (
-                          <span key={idx} className="pref-tag">
-                            {p}
+                        {activeProfile.constraints.map((c, idx) => (
+                          <span key={idx} className="constraint-badge-tag readonly">
+                            <Shield size={12} className="constraint-icon" />
+                            <span>{c}</span>
                           </span>
                         ))}
                       </div>
-                    </div>
-                  )}
-                  {longTermMemory.profile.customNotes && (
+                    ) : (
+                      <span className="val-muted">Нет ограничений</span>
+                    )}
+                  </div>
+
+                  {activeProfile.customNotes && (
                     <div className="profile-row">
-                      <span className="lbl">Заметки:</span>
-                      <span className="val">{longTermMemory.profile.customNotes}</span>
+                      <span className="lbl">📝 Примечания:</span>
+                      <span className="val">{activeProfile.customNotes}</span>
                     </div>
                   )}
+
+                  {/* Personalization Compliance Preview Banner */}
+                  <div className="compliance-mandate-box">
+                    <div className="mandate-header">
+                      <Shield size={14} className="mandate-icon" />
+                      <strong>Автоматическая директива комплаенса для LLM:</strong>
+                    </div>
+                    <p className="mandate-text">
+                      «Ты обязан строго адаптировать тон, форматирование и глубину ответа под
+                      активный профиль:
+                      {activeProfile.style ? ` Стиль: ${activeProfile.style};` : ''}
+                      {activeProfile.format ? ` Формат: ${activeProfile.format};` : ''}
+                      {activeProfile.constraints && activeProfile.constraints.length > 0
+                        ? ` Ограничения: ${activeProfile.constraints.join(', ')}.`
+                        : ''}
+                      {activeProfile.constraints && activeProfile.constraints.length > 0 && (
+                        <span className="mandate-strict">
+                          {' '}
+                          Не нарушай указанные ограничения ни при каких условиях!
+                        </span>
+                      )}
+                      »
+                    </p>
+                  </div>
                 </div>
               )}
             </div>
@@ -798,7 +1188,9 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
                     agent.clearLongTermMemory();
                     setProfileName('');
                     setProfileRole('');
-                    setProfilePref('');
+                    setProfileStyle('');
+                    setProfileFormat('');
+                    setProfileConstraints([]);
                     setProfileNotes('');
                   }
                 }}

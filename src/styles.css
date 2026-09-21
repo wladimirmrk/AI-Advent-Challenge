@@ -442,6 +442,54 @@ select, option, optgroup {
   font-weight: 600;
 }
 
+.profile-selector-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  transition: all 0.15s ease;
+}
+
+.profile-selector-wrapper:hover,
+.profile-selector-wrapper:focus-within {
+  border-color: #a855f7;
+  background: rgba(168, 85, 247, 0.08);
+}
+
+.profile-select-icon {
+  color: #c084fc;
+  flex-shrink: 0;
+}
+
+.profile-select-dropdown {
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  padding: 3px 0;
+  max-width: 175px;
+  text-overflow: ellipsis;
+}
+
+.profile-select-dropdown option,
+.profile-select-dropdown optgroup {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-family: var(--font-family);
+  font-size: 13px;
+}
+
+.profile-select-dropdown optgroup {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
 .header-center {
   display: flex;
   align-items: center;
@@ -3616,6 +3664,387 @@ select, option, optgroup {
   background: rgba(0, 0, 0, 0.25);
   border-radius: 6px;
   padding: 8px 10px;
+}
+
+/* ==========================================
+ * Day 12 Personalization & User Profiles UI
+ * ========================================== */
+
+.profile-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.profile-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.profile-kind-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  letter-spacing: 0.2px;
+}
+
+.profile-kind-badge.builtin-badge {
+  background: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
+.profile-kind-badge.custom-badge {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.profile-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.card-action-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-color);
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.card-action-link:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text-primary);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.card-action-link.danger-link:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.profile-quick-switch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border-color);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  margin-top: 10px;
+  margin-bottom: 12px;
+}
+
+.switch-lbl {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.profile-selector-inline {
+  flex: 1;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 8px;
+  border-radius: 4px;
+  outline: none;
+  cursor: pointer;
+}
+
+.profile-selector-inline:focus {
+  border-color: #a855f7;
+}
+
+.form-subheading {
+  font-size: 13px;
+  font-weight: 600;
+  color: #c084fc;
+  margin-bottom: 10px;
+  border-bottom: 1px solid rgba(168, 85, 247, 0.2);
+  padding-bottom: 6px;
+}
+
+.form-row-2col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+@media (max-width: 600px) {
+  .form-row-2col {
+    grid-template-columns: 1fr;
+  }
+}
+
+.helper-hint {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 1px;
+  font-weight: 400;
+}
+
+.preset-chips-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.chip-btn {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  line-height: 1.3;
+}
+
+.chip-btn:hover {
+  background: rgba(168, 85, 247, 0.15);
+  color: #e2e8f0;
+  border-color: rgba(168, 85, 247, 0.4);
+}
+
+.chip-btn.active {
+  background: #a855f7;
+  color: #fff;
+  border-color: #a855f7;
+  font-weight: 600;
+}
+
+.chip-btn.suggestion-chip {
+  background: rgba(59, 130, 246, 0.08);
+  border-color: rgba(59, 130, 246, 0.25);
+  color: #93c5fd;
+}
+
+.chip-btn.suggestion-chip:hover {
+  background: rgba(59, 130, 246, 0.2);
+  color: #fff;
+}
+
+.constraints-tags-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-sm);
+  margin-top: 4px;
+  margin-bottom: 6px;
+}
+
+.no-constraints-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 4px;
+}
+
+.constraint-badge-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: 6px;
+  line-height: 1.3;
+}
+
+.constraint-badge-tag.readonly {
+  background: rgba(168, 85, 247, 0.12);
+  border-color: rgba(168, 85, 247, 0.3);
+  color: #d8b4fe;
+}
+
+.constraint-icon {
+  flex-shrink: 0;
+  color: #f87171;
+}
+
+.constraint-badge-tag.readonly .constraint-icon {
+  color: #c084fc;
+}
+
+.tag-remove-btn {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  padding: 1px;
+  display: flex;
+  align-items: center;
+  border-radius: 2px;
+  transition: color 0.1s ease;
+}
+
+.tag-remove-btn:hover {
+  color: #fff;
+  background: rgba(239, 68, 68, 0.4);
+}
+
+.add-constraint-input-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.suggestions-row {
+  margin-top: 8px;
+}
+
+.sugg-lbl {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.profile-summary-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0 12px;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 12px;
+}
+
+.profile-avatar-circle {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #a855f7 0%, #6366f1 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  flex-shrink: 0;
+  box-shadow: 0 4px 12px rgba(168, 85, 247, 0.3);
+}
+
+.profile-primary-details {
+  flex: 1;
+}
+
+.profile-name-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.profile-role-sub {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: #a855f7;
+  font-weight: 500;
+}
+
+.personalization-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+@media (max-width: 600px) {
+  .personalization-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.pers-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pers-lbl {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.pers-val-box {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border-color);
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--text-primary);
+  line-height: 1.4;
+  min-height: 38px;
+}
+
+.constraints-row {
+  margin-top: 6px;
+  margin-bottom: 10px;
+}
+
+.compliance-mandate-box {
+  background: rgba(168, 85, 247, 0.08);
+  border: 1px solid rgba(168, 85, 247, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin-top: 14px;
+}
+
+.mandate-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: #c084fc;
+  margin-bottom: 4px;
+}
+
+.mandate-icon {
+  color: #a855f7;
+  flex-shrink: 0;
+}
+
+.mandate-text {
+  margin: 0;
+  font-size: 11px;
+  font-style: italic;
+  color: #cbd5e1;
+  line-height: 1.45;
+}
+
+.mandate-strict {
+  color: #f87171;
+  font-weight: 600;
+  font-style: normal;
 }
 
 
