@@ -25,6 +25,7 @@ import {
   UserProfile,
   DecisionItem,
   KnowledgeItem,
+  InvariantItem,
 } from './types';
 import { resolveContextLimit } from './tokenizer';
 
@@ -46,6 +47,7 @@ const STORAGE_KEYS = {
   LONG_TERM_MEMORY: 'agent_long_term_memory',
   USER_PROFILES: 'agent_user_profiles',
   ACTIVE_PROFILE_ID: 'agent_active_profile_id',
+  INVARIANTS: 'agent_invariants',
   STORAGE_VERSION: 'agent_storage_version',
 } as const;
 
@@ -1150,5 +1152,100 @@ export function resetBuiltinProfiles(): UserProfile[] {
   saveUserProfiles(updated);
   return updated;
 }
+
+// ---------------------------------------------------------------------------
+// Invariants Subsystem (Day 14: Hard Constraints & State Invariants)
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_INVARIANTS: InvariantItem[] = [
+  {
+    id: 'inv_arch_hexagonal',
+    category: 'architecture',
+    title: 'Гексагональная архитектура (Ports & Adapters)',
+    description:
+      'Бизнес-логика (ядро/домен) строго изолирована от внешних деталей. Доменные сущности и юзкейсы не имеют права напрямую импортировать веб-фреймворки, HTTP-роутеры или ORM/БД драйверы. Все зависимости инжектируются через абстрактные интерфейсы (порты).',
+    enforcement: 'strict',
+    isActive: true,
+    createdAt: 1716100000000,
+    updatedAt: 1716100000000,
+  },
+  {
+    id: 'inv_stack_go_grpc_postgres',
+    category: 'stack',
+    title: 'Технологический стек: Go 1.22 + gRPC/Protobuf + PostgreSQL',
+    description:
+      'Вся серверная разработка ведется исключительно на Go 1.22 с gRPC (Protobuf) и СУБД PostgreSQL. Категорически запрещено предлагать код на Python, Node.js, PHP или использовать NoSQL (MongoDB, DynamoDB) без согласованного изменения инвариантов.',
+    enforcement: 'strict',
+    isActive: true,
+    createdAt: 1716100001000,
+    updatedAt: 1716100001000,
+  },
+  {
+    id: 'inv_adr_jwt_rs256',
+    category: 'technical_decision',
+    title: 'ADR-004: Использование асимметричных JWT RS256',
+    description:
+      'Для авторизации микросервисов разрешено генерировать и валидировать только токены с асимметричной криптографией RS256 (RSA 2048/4096-bit). Категорически запрещено использовать симметричные алгоритмы HS256 с общим секретом или сессионные cookies.',
+    enforcement: 'strict',
+    isActive: true,
+    createdAt: 1716100002000,
+    updatedAt: 1716100002000,
+  },
+  {
+    id: 'inv_biz_argon2id_passwords',
+    category: 'business_rule',
+    title: 'Безопасность учетных записей: Хеширование паролей Argon2id',
+    description:
+      'Строжайше запрещено сохранять, передавать в открытом виде или использовать обратимое шифрование (Base64/AES) для паролей. Разрешено только стойкое одностороннее хеширование с солью по алгоритму Argon2id (или bcrypt cost >= 12).',
+    enforcement: 'strict',
+    isActive: true,
+    createdAt: 1716100003000,
+    updatedAt: 1716100003000,
+  },
+];
+
+/**
+ * Load invariants from localStorage, falling back to default presets.
+ * Invariants are stored completely independently from dialogues and chat history.
+ */
+export function loadInvariants(): InvariantItem[] {
+  try {
+    if (typeof localStorage === 'undefined') {
+      return [];
+    }
+    const raw = localStorage.getItem(STORAGE_KEYS.INVARIANTS);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed;
+      }
+    }
+  } catch (err) {
+    console.error('[Storage] Failed to load invariants from localStorage:', err);
+  }
+  return [];
+}
+
+/**
+ * Save invariants to localStorage.
+ */
+export function saveInvariants(invariants: InvariantItem[]): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(STORAGE_KEYS.INVARIANTS, JSON.stringify(invariants));
+  } catch (err) {
+    console.error('[Storage] Failed to save invariants to localStorage:', err);
+  }
+}
+
+/**
+ * Reset invariants to default presets.
+ */
+export function resetInvariantsToDefault(): InvariantItem[] {
+  const fresh = [...DEFAULT_INVARIANTS.map((item) => ({ ...item }))];
+  saveInvariants(fresh);
+  return fresh;
+}
+
 
 

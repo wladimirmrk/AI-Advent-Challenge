@@ -148,8 +148,26 @@ export interface LongTermMemory {
   updatedAt: number;
 }
 
+export type InvariantCategory =
+  | 'architecture'
+  | 'stack'
+  | 'technical_decision'
+  | 'business_rule';
+
+export interface InvariantItem {
+  id: string;
+  category: InvariantCategory;
+  title: string;
+  description: string;
+  enforcement: 'strict';
+  isActive: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface MemoryTokensBreakdown {
   systemTokens: number;
+  invariantsTokens: number;
   longTermTokens: number;
   workingTokens: number;
   shortTermTokens: number;
@@ -174,6 +192,7 @@ export interface AgentState {
   activeBranchId: string;
   workingMemory: WorkingMemory;
   longTermMemory: LongTermMemory;
+  invariants: InvariantItem[];
   userProfiles: UserProfile[];
   activeProfileId: string;
   memoryTokensBreakdown: MemoryTokensBreakdown;

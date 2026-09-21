@@ -4535,6 +4535,512 @@ select, option, optgroup {
   background: rgba(168, 85, 247, 0.25) !important;
 }
 
+/* ==========================================================================
+   DAY 14: INVARIANTS & HARD CONSTRAINTS STYLES
+   ========================================================================== */
+
+/* Header Invariants Button */
+.invariants-header-btn {
+  border-color: rgba(16, 185, 129, 0.4) !important;
+  color: #10b981 !important;
+  background: rgba(16, 185, 129, 0.08) !important;
+}
+
+.invariants-header-btn:hover {
+  background: rgba(16, 185, 129, 0.18) !important;
+  border-color: #10b981 !important;
+}
+
+.invariants-header-btn.active {
+  background: rgba(16, 185, 129, 0.25) !important;
+  border-color: #10b981 !important;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
+}
+
+.invariants-badge-count {
+  background: #10b981;
+  color: #022c22;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 10px;
+  min-width: 16px;
+  text-align: center;
+}
+
+/* Token Banner Chip */
+.token-chip.invariants {
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  color: #34d399;
+}
+
+.preset-btn.invariants-preset-btn {
+  background: rgba(16, 185, 129, 0.15) !important;
+  color: #34d399 !important;
+  border: 1px solid rgba(16, 185, 129, 0.35) !important;
+}
+
+.preset-btn.invariants-preset-btn:hover {
+  background: rgba(16, 185, 129, 0.25) !important;
+  border-color: #34d399 !important;
+}
+
+/* Invariant Check Card inside Assistant Message */
+.invariant-check-card {
+  border-radius: 8px;
+  margin-bottom: 12px;
+  overflow: hidden;
+  transition: all 0.2s ease;
+  font-size: 13px;
+}
+
+.invariant-check-card.status-pass {
+  background: rgba(16, 185, 129, 0.06);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+}
+
+.invariant-check-card.status-conflict {
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.12);
+}
+
+.invariant-check-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.invariant-check-header:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.invariant-check-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.invariant-icon-pass {
+  color: #10b981;
+}
+
+.invariant-icon-conflict {
+  color: #ef4444;
+  animation: pulse 2s infinite;
+}
+
+.invariant-check-title {
+  font-weight: 600;
+  font-size: 12.5px;
+}
+
+.status-pass .invariant-check-title {
+  color: #34d399;
+}
+
+.status-conflict .invariant-check-title {
+  color: #f87171;
+}
+
+.invariant-violated-badge {
+  background: rgba(239, 68, 68, 0.2);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.invariant-toggle-action {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted, #94a3b8);
+  font-size: 11px;
+}
+
+.invariant-toggle-hint {
+  opacity: 0.8;
+}
+
+.invariant-check-body {
+  padding: 10px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.invariant-reasoning-line {
+  margin-bottom: 6px;
+}
+
+.invariant-label {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-muted, #94a3b8);
+  margin-bottom: 4px;
+}
+
+.invariant-text {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-main, #f1f5f9);
+  white-space: pre-wrap;
+  margin: 0;
+}
+
+.invariant-conflict-alert {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: rgba(239, 68, 68, 0.12);
+  border-left: 3px solid #ef4444;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #fca5a5;
+  font-weight: 500;
+}
+
+/* Invariants Tab in Memory Hub */
+.invariants-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.invariants-info-card {
+  border-color: rgba(16, 185, 129, 0.3) !important;
+  background: rgba(16, 185, 129, 0.05) !important;
+}
+
+.invariants-info-card .info-icon {
+  color: #10b981;
+}
+
+/* Test Triggers Panel */
+.invariants-test-panel {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.test-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.test-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #f1f5f9;
+}
+
+.test-panel-subtitle {
+  font-size: 11px;
+  color: var(--text-muted, #94a3b8);
+}
+
+.invariants-test-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px;
+}
+
+.test-prompt-btn {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  color: var(--text-main, #f1f5f9);
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
+}
+
+.test-prompt-btn:hover {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.3);
+  transform: translateY(-1px);
+}
+
+.test-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+
+.test-badge.stack {
+  background: rgba(59, 130, 246, 0.2);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.test-badge.decision {
+  background: rgba(168, 85, 247, 0.2);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
+.test-badge.business {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.test-badge.arch {
+  background: rgba(16, 185, 129, 0.2);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.test-label {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #e2e8f0;
+}
+
+/* Invariants Filter Bar */
+.invariants-filter-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.filter-chips-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.filter-chip {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 20px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  color: var(--text-muted, #94a3b8);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.filter-chip:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f1f5f9;
+}
+
+.filter-chip.active {
+  background: rgba(16, 185, 129, 0.18);
+  border-color: #10b981;
+  color: #34d399;
+  font-weight: 600;
+}
+
+/* Invariants List & Cards */
+.invariants-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.invariant-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 12px 14px;
+  transition: all 0.15s ease;
+}
+
+.invariant-card.active {
+  border-left: 3px solid #10b981;
+}
+
+.invariant-card.disabled {
+  opacity: 0.6;
+  border-left: 3px solid #64748b;
+  filter: grayscale(0.5);
+}
+
+.invariant-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.invariant-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.category-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  align-self: flex-start;
+}
+
+.category-badge.badge-arch {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.category-badge.badge-stack {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.category-badge.badge-decision {
+  background: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
+.category-badge.badge-business {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.invariant-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #f1f5f9;
+}
+
+.invariant-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.invariant-card-body {
+  margin-bottom: 10px;
+}
+
+.invariant-desc {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #cbd5e1;
+}
+
+.invariant-card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text-muted, #94a3b8);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  padding-top: 8px;
+}
+
+.enforcement-tag {
+  font-weight: 600;
+  color: #34d399;
+}
+
+.status-pill.active {
+  color: #34d399;
+}
+
+.status-pill.disabled {
+  color: #94a3b8;
+}
+
+/* Switch styling */
+.switch-wrapper {
+  position: relative;
+  display: inline-block;
+  width: 34px;
+  height: 18px;
+}
+
+.switch-wrapper input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #334155;
+  transition: 0.2s;
+}
+
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 14px;
+  width: 14px;
+  left: 2px;
+  bottom: 2px;
+  background-color: white;
+  transition: 0.2s;
+}
+
+input:checked + .slider {
+  background-color: #10b981;
+}
+
+input:checked + .slider:before {
+  transform: translateX(16px);
+}
+
+.slider.round {
+  border-radius: 18px;
+}
+
+.slider.round:before {
+  border-radius: 50%;
+}
+
+/* Context Inspector Invariants Block */
+.context-block.layer-invariants {
+  border-left: 3px solid #10b981;
+  background: rgba(16, 185, 129, 0.05);
+}
+
+.context-block.layer-invariants .block-layer-badge {
+  background: rgba(16, 185, 129, 0.2);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+
 
 
 

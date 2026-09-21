@@ -10,7 +10,7 @@ import { BranchBar } from './BranchBar';
 import { StickyFactsPanel } from './StickyFactsPanel';
 import { MemoryHub } from './MemoryHub';
 import { TaskStatusBar } from './TaskStatusBar';
-import { Bot, Settings as SettingsIcon, Trash2, Cpu, PanelLeft, Brain, User } from 'lucide-react';
+import { Bot, Settings as SettingsIcon, Trash2, Cpu, PanelLeft, Brain, User, Shield } from 'lucide-react';
 
 interface ChatProps {
   agent?: Agent;
@@ -27,7 +27,7 @@ export const Chat: React.FC<ChatProps> = ({
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isFactsDrawerOpen, setIsFactsDrawerOpen] = useState(false);
   const [isMemoryHubOpen, setIsMemoryHubOpen] = useState(false);
-  const [memoryHubTab, setMemoryHubTab] = useState<'working' | 'short_term' | 'long_term'>('working');
+  const [memoryHubTab, setMemoryHubTab] = useState<'working' | 'short_term' | 'long_term' | 'invariants'>('invariants');
 
   // Subscribe to Agent state changes (Agent -> React state -> UI)
   useEffect(() => {
@@ -36,6 +36,23 @@ export const Chat: React.FC<ChatProps> = ({
       setAgentState(newState);
     });
     return unsubscribe;
+  }, [agent]);
+
+  // Ensure default Day 14 invariants are loaded on first visit
+  useEffect(() => {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const initialized = localStorage.getItem('agent_invariants_initialized');
+        if (!initialized) {
+          localStorage.setItem('agent_invariants_initialized', 'true');
+          if (agent.getInvariants().length === 0) {
+            agent.resetInvariantsToDefault();
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to initialize invariants:', e);
+    }
   }, [agent]);
 
   const handleSendMessage = async (text: string) => {
@@ -229,9 +246,28 @@ export const Chat: React.FC<ChatProps> = ({
         <div className="header-right">
           <button
             type="button"
-            className={`action-btn memory-hub-btn ${isMemoryHubOpen ? 'active' : ''}`}
-            onClick={() => setIsMemoryHubOpen(!isMemoryHubOpen)}
-            title="Memory Hub: 3 явных слоя памяти (Short-Term, Working, Long-Term)"
+            className={`action-btn invariants-header-btn ${isMemoryHubOpen && memoryHubTab === 'invariants' ? 'active' : ''}`}
+            onClick={() => {
+              setMemoryHubTab('invariants');
+              setIsMemoryHubOpen(true);
+            }}
+            title="Инварианты и ограничения состояния (День 14): нажмите для просмотра и настройки"
+          >
+            <Shield size={16} />
+            <span className="btn-text">Инварианты</span>
+            <span className="invariants-badge-count">
+              {agentState.invariants.filter((i) => i.isActive).length}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            className={`action-btn memory-hub-btn ${isMemoryHubOpen && memoryHubTab !== 'invariants' ? 'active' : ''}`}
+            onClick={() => {
+              if (memoryHubTab === 'invariants') setMemoryHubTab('working');
+              setIsMemoryHubOpen(!isMemoryHubOpen);
+            }}
+            title="Memory Hub: слои памяти агента (Short-Term, Working, Long-Term)"
           >
             <Brain size={16} />
             <span className="btn-text">Memory Hub</span>
@@ -324,10 +360,12 @@ export const Chat: React.FC<ChatProps> = ({
             initialTab={memoryHubTab}
             workingMemory={agentState.workingMemory}
             longTermMemory={agentState.longTermMemory}
+            invariants={agentState.invariants}
             memoryTokensBreakdown={agentState.memoryTokensBreakdown}
             recentMessagesCount={agentState.config.recentMessagesCount}
             messages={agentState.messages}
             agent={agent}
+            onTriggerTestPrompt={(prompt) => handleSendMessage(prompt)}
           />
         </div>
       </main>

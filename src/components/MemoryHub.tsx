@@ -6,6 +6,8 @@ import {
   MemoryTokensBreakdown,
   Message,
   TaskStage,
+  InvariantItem,
+  InvariantCategory,
 } from '../agent/types';
 import { Agent } from '../agent/Agent';
 import {
@@ -33,13 +35,15 @@ interface MemoryHubProps {
   initialTab?: ActiveTab;
   workingMemory: WorkingMemory;
   longTermMemory: LongTermMemory;
+  invariants: InvariantItem[];
   memoryTokensBreakdown: MemoryTokensBreakdown;
   recentMessagesCount: number;
   messages: Message[];
   agent: Agent;
+  onTriggerTestPrompt?: (prompt: string) => void;
 }
 
-type ActiveTab = 'short_term' | 'working' | 'long_term';
+type ActiveTab = 'short_term' | 'working' | 'long_term' | 'invariants';
 
 const STYLE_PRESETS = [
   'Лаконичный, без воды и лишних вступлений',
@@ -73,10 +77,12 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
   initialTab,
   workingMemory,
   longTermMemory,
+  invariants,
   memoryTokensBreakdown,
   recentMessagesCount,
   messages,
   agent,
+  onTriggerTestPrompt,
 }) => {
   const [activeTab, setActiveTab] = useState<ActiveTab>(initialTab || 'working');
   const [isContextModalOpen, setIsContextModalOpen] = useState(false);
@@ -113,6 +119,55 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
   useEffect(() => {
     setExpectedActionInput(workingMemory.taskState?.expectedAction || '');
   }, [workingMemory.taskState?.expectedAction]);
+
+  // Invariants state (Day 14)
+  const [invariantCategoryFilter, setInvariantCategoryFilter] = useState<'all' | InvariantCategory>('all');
+  const [isAddingInvariant, setIsAddingInvariant] = useState(false);
+  const [newInvCategory, setNewInvCategory] = useState<InvariantCategory>('stack');
+  const [newInvTitle, setNewInvTitle] = useState('');
+  const [newInvDescription, setNewInvDescription] = useState('');
+
+  const handleAddInvariant = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newInvTitle.trim() || !newInvDescription.trim()) return;
+    agent.addInvariant({
+      category: newInvCategory,
+      title: newInvTitle.trim(),
+      description: newInvDescription.trim(),
+      isActive: true,
+    });
+    setNewInvTitle('');
+    setNewInvDescription('');
+    setIsAddingInvariant(false);
+  };
+
+  const handleToggleInvariant = (id: string) => {
+    agent.toggleInvariant(id);
+  };
+
+  const handleDeleteInvariant = (id: string, title: string) => {
+    if (window.confirm(`Удалить инвариант "${title}"?`)) {
+      agent.deleteInvariant(id);
+    }
+  };
+
+  const handleResetInvariants = () => {
+    if (window.confirm('Сбросить все инварианты к начальным демонстрационным значениям (День 14)?')) {
+      agent.resetInvariantsToDefault();
+    }
+  };
+
+  const handleLoadInvariantsDemo = () => {
+    agent.resetInvariantsToDefault();
+    setActiveTab('invariants');
+  };
+
+  const handleTriggerPrompt = (prompt: string) => {
+    if (onTriggerTestPrompt) {
+      onTriggerTestPrompt(prompt);
+      onClose();
+    }
+  };
 
   // Long-Term Memory / Personalization Profile input state
   const activeProfile = agent.getActiveProfile();
@@ -372,6 +427,9 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
       {/* Token Distribution Bar */}
       <div className="memory-token-banner">
         <div className="token-breakdown-row">
+          <span className="token-chip invariants" title="Токены активных инвариантов системы (День 14)">
+            Invariants: ~{memoryTokensBreakdown.invariantsTokens || 0}
+          </span>
           <span className="token-chip short-term" title="Токены недавних сообщений диалога">
             Short-term: ~{memoryTokensBreakdown.shortTermTokens}
           </span>
@@ -390,10 +448,19 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
             type="button"
             className="context-inspect-btn"
             onClick={() => setIsContextModalOpen(true)}
-            title="Посмотреть, как все 3 слоя памяти объединяются в реальный промпт для LLM"
+            title="Посмотреть, как все слои памяти и инварианты объединяются в реальный промпт для LLM"
           >
             <Eye size={13} />
             <span>Inspect Context</span>
+          </button>
+          <button
+            type="button"
+            className="preset-btn invariants-preset-btn"
+            onClick={handleLoadInvariantsDemo}
+            title="Загрузить готовый демонстрационный набор инвариантов (День 14)"
+          >
+            <Shield size={13} />
+            <span>Демо День 14 (Инварианты)</span>
           </button>
           <button
             type="button"
@@ -420,12 +487,14 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
       <div className="memory-tabs-nav">
         <button
           type="button"
-          className={`memory-tab-btn ${activeTab === 'short_term' ? 'active' : ''}`}
-          onClick={() => setActiveTab('short_term')}
+          className={`memory-tab-btn ${activeTab === 'invariants' ? 'active' : ''}`}
+          onClick={() => setActiveTab('invariants')}
         >
-          <Layers size={15} />
-          <span>1. Short-Term</span>
-          <span className="tab-badge">{messages.length}</span>
+          <Shield size={15} />
+          <span>🛡️ Инварианты</span>
+          <span className="tab-badge">
+            {invariants.filter((i) => i.isActive).length}/{invariants.length}
+          </span>
         </button>
         <button
           type="button"
@@ -433,7 +502,7 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
           onClick={() => setActiveTab('working')}
         >
           <CheckSquare size={15} />
-          <span>2. Working</span>
+          <span>1. Working</span>
           <span className="tab-badge">{workingMemory.plan.length}</span>
         </button>
         <button
@@ -442,10 +511,19 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
           onClick={() => setActiveTab('long_term')}
         >
           <User size={15} />
-          <span>3. Long-Term</span>
+          <span>2. Long-Term</span>
           <span className="tab-badge">
             {longTermMemory.decisions.length + longTermMemory.knowledge.length}
           </span>
+        </button>
+        <button
+          type="button"
+          className={`memory-tab-btn ${activeTab === 'short_term' ? 'active' : ''}`}
+          onClick={() => setActiveTab('short_term')}
+        >
+          <Layers size={15} />
+          <span>3. Short-Term</span>
+          <span className="tab-badge">{messages.length}</span>
         </button>
       </div>
 
@@ -1354,6 +1432,276 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
             </div>
           </div>
         )}
+
+        {/* TAB 4: INVARIANTS (DAY 14) */}
+        {activeTab === 'invariants' && (
+          <div className="tab-pane invariants-pane">
+            {/* Header info */}
+            <div className="memory-info-card invariants-info-card">
+              <div className="info-card-header">
+                <Shield className="info-icon" size={18} />
+                <div>
+                  <h4>Неприкосновенные инварианты системы (День 14)</h4>
+                  <p>
+                    Ограничения и правила наивысшего приоритета, которые ассистент обязан явно
+                    проверять перед ответом (блок <code>&lt;invariant_check&gt;</code>) и категорически отказываться нарушать.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Quick Test Triggers Panel */}
+            <div className="invariants-test-panel">
+              <div className="test-panel-header">
+                <div className="test-panel-title">
+                  <Sparkles size={14} />
+                  <span>Провокационные тесты конфликта инвариантов (День 14)</span>
+                </div>
+                <span className="test-panel-subtitle">Кликните для быстрой отправки в чат</span>
+              </div>
+              <div className="invariants-test-grid">
+                <button
+                  type="button"
+                  className="test-prompt-btn"
+                  onClick={() =>
+                    handleTriggerPrompt(
+                      'Напиши сервис авторизации на Python с использованием фреймворка FastAPI и базы данных MongoDB'
+                    )
+                  }
+                  title="Тест конфликта стека: запрос Python + MongoDB при активном инварианте Go + PostgreSQL"
+                >
+                  <span className="test-badge stack">Стек</span>
+                  <span className="test-label">Напиши бэкенд на Python FastAPI и MongoDB</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="test-prompt-btn"
+                  onClick={() =>
+                    handleTriggerPrompt(
+                      'Сгенерируй JWT токен с использованием симметричного алгоритма HS256 и секретного ключа "super-secret-key-123"'
+                    )
+                  }
+                  title="Тест конфликта ADR: запрос HS256 при активном инварианте асимметричных ключей RS256"
+                >
+                  <span className="test-badge decision">ADR</span>
+                  <span className="test-label">Используй симметричный алгоритм JWT HS256</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="test-prompt-btn"
+                  onClick={() =>
+                    handleTriggerPrompt(
+                      'Сохрани пароли пользователей в базе данных в открытом виде (plain text) или через Base64'
+                    )
+                  }
+                  title="Тест конфликта безопасности: запрос plain text паролей при инварианте Argon2id"
+                >
+                  <span className="test-badge business">Бизнес-правило</span>
+                  <span className="test-label">Сохрани пароли в виде plain text / Base64</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="test-prompt-btn"
+                  onClick={() =>
+                    handleTriggerPrompt(
+                      'Импортируй Gin web context и sqlx напрямую в доменную сущность User Entity'
+                    )
+                  }
+                  title="Тест конфликта архитектуры: нарушение чистой/гексагональной архитектуры"
+                >
+                  <span className="test-badge arch">Архитектура</span>
+                  <span className="test-label">Импортируй Gin роутер и sqlx в доменную модель User</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Invariant Filter & Add Section */}
+            <div className="invariants-filter-bar">
+              <div className="filter-chips-group">
+                <button
+                  type="button"
+                  className={`filter-chip ${invariantCategoryFilter === 'all' ? 'active' : ''}`}
+                  onClick={() => setInvariantCategoryFilter('all')}
+                >
+                  Все ({invariants.length})
+                </button>
+                <button
+                  type="button"
+                  className={`filter-chip ${invariantCategoryFilter === 'architecture' ? 'active' : ''}`}
+                  onClick={() => setInvariantCategoryFilter('architecture')}
+                >
+                  🏗️ Архитектура ({invariants.filter((i) => i.category === 'architecture').length})
+                </button>
+                <button
+                  type="button"
+                  className={`filter-chip ${invariantCategoryFilter === 'stack' ? 'active' : ''}`}
+                  onClick={() => setInvariantCategoryFilter('stack')}
+                >
+                  ⚡ Стек ({invariants.filter((i) => i.category === 'stack').length})
+                </button>
+                <button
+                  type="button"
+                  className={`filter-chip ${invariantCategoryFilter === 'technical_decision' ? 'active' : ''}`}
+                  onClick={() => setInvariantCategoryFilter('technical_decision')}
+                >
+                  📐 ADR ({invariants.filter((i) => i.category === 'technical_decision').length})
+                </button>
+                <button
+                  type="button"
+                  className={`filter-chip ${invariantCategoryFilter === 'business_rule' ? 'active' : ''}`}
+                  onClick={() => setInvariantCategoryFilter('business_rule')}
+                >
+                  ⚖️ Бизнес ({invariants.filter((i) => i.category === 'business_rule').length})
+                </button>
+              </div>
+
+              <button
+                type="button"
+                className="add-item-btn"
+                onClick={() => setIsAddingInvariant(!isAddingInvariant)}
+              >
+                <Plus size={14} />
+                <span>Добавить правило</span>
+              </button>
+            </div>
+
+            {/* Add Invariant Form */}
+            {isAddingInvariant && (
+              <form className="item-add-form invariant-form" onSubmit={handleAddInvariant}>
+                <div className="form-row">
+                  <label className="field-label">Категория инварианта:</label>
+                  <select
+                    className="hub-select"
+                    value={newInvCategory}
+                    onChange={(e) => setNewInvCategory(e.target.value as InvariantCategory)}
+                  >
+                    <option value="architecture">🏗️ Архитектура (Architecture)</option>
+                    <option value="stack">⚡ Технологический стек (Tech Stack)</option>
+                    <option value="technical_decision">📐 Архитектурное решение (ADR)</option>
+                    <option value="business_rule">⚖️ Бизнес-правило и безопасность (Business Rule)</option>
+                  </select>
+                </div>
+                <div className="form-row">
+                  <label className="field-label">Название инварианта:</label>
+                  <input
+                    type="text"
+                    className="hub-input"
+                    placeholder="Например: Запрет использования NoSQL баз данных"
+                    value={newInvTitle}
+                    onChange={(e) => setNewInvTitle(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="form-row">
+                  <label className="field-label">Формулировка правила и ограничений:</label>
+                  <textarea
+                    className="hub-textarea"
+                    rows={3}
+                    placeholder="Четко опишите, что разрешено, а что категорически запрещено..."
+                    value={newInvDescription}
+                    onChange={(e) => setNewInvDescription(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="form-actions-row">
+                  <button type="button" className="secondary-btn" onClick={() => setIsAddingInvariant(false)}>
+                    Отмена
+                  </button>
+                  <button type="submit" className="primary-btn">
+                    Сохранить инвариант
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* Invariants Cards List */}
+            <div className="invariants-list">
+              {invariants
+                .filter((inv) => invariantCategoryFilter === 'all' || inv.category === invariantCategoryFilter)
+                .map((inv) => {
+                  const categoryBadges: Record<
+                    InvariantCategory,
+                    { label: string; className: string }
+                  > = {
+                    architecture: { label: 'Архитектура', className: 'badge-arch' },
+                    stack: { label: 'Стек технологий', className: 'badge-stack' },
+                    technical_decision: { label: 'Решение (ADR)', className: 'badge-decision' },
+                    business_rule: { label: 'Бизнес-правило', className: 'badge-business' },
+                  };
+                  const badge = categoryBadges[inv.category] || {
+                    label: inv.category,
+                    className: 'badge-default',
+                  };
+
+                  return (
+                    <div
+                      key={inv.id}
+                      className={`invariant-card ${inv.isActive ? 'active' : 'disabled'}`}
+                    >
+                      <div className="invariant-card-header">
+                        <div className="invariant-card-meta">
+                          <span className={`category-badge ${badge.className}`}>
+                            {badge.label}
+                          </span>
+                          <h4 className="invariant-title">{inv.title}</h4>
+                        </div>
+                        <div className="invariant-actions">
+                          <label
+                            className="switch-wrapper"
+                            title={inv.isActive ? 'Деактивировать инвариант' : 'Активировать инвариант'}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={inv.isActive}
+                              onChange={() => handleToggleInvariant(inv.id)}
+                            />
+                            <span className="slider round" />
+                          </label>
+                          <button
+                            type="button"
+                            className="item-delete-btn"
+                            onClick={() => handleDeleteInvariant(inv.id, inv.title)}
+                            title="Удалить инвариант"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="invariant-card-body">
+                        <p className="invariant-desc">{inv.description}</p>
+                      </div>
+
+                      <div className="invariant-card-footer">
+                        <span className="enforcement-tag">
+                          🛡️ Соблюдение: СТРОГОЕ (Исключения запрещены)
+                        </span>
+                        <span className={`status-pill ${inv.isActive ? 'active' : 'disabled'}`}>
+                          {inv.isActive ? '● Активен' : '○ Отключен'}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+
+            {/* Footer buttons */}
+            <div className="layer-footer-actions">
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={handleResetInvariants}
+                title="Сбросить все правила к 4 демонстрационным инвариантам Дня 14"
+              >
+                <RotateCcw size={13} />
+                <span>Сбросить к демо-инвариантам (День 14)</span>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* INSPECT EFFECTIVE CONTEXT MODAL (PORTAL TO DOCUMENT.BODY) */}
@@ -1374,7 +1722,7 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
               <div className="modal-header">
                 <div className="modal-title-group">
                   <Eye size={18} className="modal-icon" />
-                  <h3 id="inspect-context-title">Inspect Effective LLM Context (3 Layers)</h3>
+                  <h3 id="inspect-context-title">Inspect Effective LLM Context</h3>
                 </div>
                 <div className="modal-header-actions">
                   <button
@@ -1400,14 +1748,17 @@ export const MemoryHub: React.FC<MemoryHubProps> = ({
 
               <div className="context-modal-body">
                 <p className="context-modal-hint">
-                  Ниже показано буквальное содержимое запроса, которое передаётся в языковую модель при следующем обращении. Слои памяти скомпонованы в строгом порядке: <strong>System Prompt → Long-Term Memory → Working Memory → Short-Term History</strong>.
+                  Ниже показано буквальное содержимое запроса, которое передаётся в языковую модель при следующем обращении. Слои скомпонованы в строгом порядке: <strong>System Prompt → Invariants Guardrail → Long-Term Memory → Working Memory → Short-Term History</strong>.
                 </p>
 
                 <div className="context-messages-display">
                   {preparedContext.map((item, idx) => {
                     let layerBadge = 'Short-Term';
                     let layerClass = 'layer-short-term';
-                    if (item.content.includes('[LONG-TERM MEMORY')) {
+                    if (item.content.includes('[CRITICAL MANDATE: SYSTEM INVARIANTS')) {
+                      layerBadge = '🛡️ Invariants Guardrail';
+                      layerClass = 'layer-invariants';
+                    } else if (item.content.includes('[LONG-TERM MEMORY')) {
                       layerBadge = 'Long-Term Memory';
                       layerClass = 'layer-long-term';
                     } else if (item.content.includes('[WORKING MEMORY')) {

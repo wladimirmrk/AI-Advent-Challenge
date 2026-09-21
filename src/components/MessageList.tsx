@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Message, TrimInfo, ContextStrategy } from '../agent/types';
 import {
   User,
@@ -9,7 +9,119 @@ import {
   X,
   GitBranch,
   Layers,
+  ShieldCheck,
+  ShieldAlert,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
+
+interface InvariantCheckResult {
+  status: 'PASS' | 'CONFLICT';
+  violated?: string;
+  analysis?: string;
+  raw: string;
+}
+
+function parseInvariantCheck(content: string): {
+  check: InvariantCheckResult | null;
+  cleanedContent: string;
+} {
+  const match = content.match(/<invariant_check>([\s\S]*?)<\/invariant_check>/i);
+  if (!match) {
+    const cleaned = content.replace(/<task_update\s+[^>]+\/?>/gi, '').trim();
+    return { check: null, cleanedContent: cleaned };
+  }
+
+  const raw = match[0];
+  const inner = match[1];
+
+  let status: 'PASS' | 'CONFLICT' = 'PASS';
+  if (/status:\s*CONFLICT/i.test(inner)) {
+    status = 'CONFLICT';
+  }
+
+  let violated = '';
+  const violatedMatch = inner.match(/violated:\s*([^\r\n]+)/i);
+  if (violatedMatch && violatedMatch[1] && !/none/i.test(violatedMatch[1])) {
+    violated = violatedMatch[1].trim();
+  }
+
+  let analysis = '';
+  const analysisMatch = inner.match(/analysis:\s*([\s\S]+)$/i);
+  if (analysisMatch && analysisMatch[1]) {
+    analysis = analysisMatch[1].trim();
+  } else {
+    analysis = inner
+      .replace(/status:[^\r\n]+/i, '')
+      .replace(/violated:[^\r\n]+/i, '')
+      .trim();
+  }
+
+  const cleanedContent = content
+    .replace(raw, '')
+    .replace(/<task_update\s+[^>]+\/?>/gi, '')
+    .trim();
+
+  return {
+    check: { status, violated, analysis, raw },
+    cleanedContent,
+  };
+}
+
+const InvariantCheckCard: React.FC<{ check: InvariantCheckResult }> = ({ check }) => {
+  const [isOpen, setIsOpen] = useState(check.status === 'CONFLICT');
+  const isConflict = check.status === 'CONFLICT';
+
+  return (
+    <div className={`invariant-check-card ${isConflict ? 'status-conflict' : 'status-pass'}`}>
+      <div
+        className="invariant-check-header"
+        onClick={() => setIsOpen(!isOpen)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            setIsOpen(!isOpen);
+          }
+        }}
+      >
+        <div className="invariant-check-title-row">
+          {isConflict ? (
+            <ShieldAlert size={15} className="invariant-icon-conflict" />
+          ) : (
+            <ShieldCheck size={15} className="invariant-icon-pass" />
+          )}
+          <span className="invariant-check-title">
+            {isConflict ? '🚨 Конфликт с инвариантом' : '🛡️ Проверка инвариантов пройдена'}
+          </span>
+          {isConflict && check.violated && (
+            <span className="invariant-violated-badge">{check.violated}</span>
+          )}
+        </div>
+        <div className="invariant-toggle-action">
+          <span className="invariant-toggle-hint">{isOpen ? 'Скрыть анализ' : 'Показать анализ'}</span>
+          {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </div>
+      </div>
+
+      {isOpen && (
+        <div className="invariant-check-body">
+          <div className="invariant-reasoning-line">
+            <strong className="invariant-label">Анализ соблюдения ограничений:</strong>
+            <p className="invariant-text">
+              {check.analysis || 'Запрос проверен против активных инвариантов системы.'}
+            </p>
+          </div>
+          {isConflict && (
+            <div className="invariant-conflict-alert">
+              <span>🛑 Ассистент зафиксировал конфликт правил и предоставил обоснованный отказ с альтернативой.</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
 
 interface MessageListProps {
   messages: Message[];
@@ -148,9 +260,24 @@ export const MessageList: React.FC<MessageListProps> = ({
                         )}
                       </div>
 
-                      <div className="message-content">
-                        {msg.content}
-                      </div>
+                      {(() => {
+                        if (msg.role === 'assistant') {
+                          const { check, cleanedContent } = parseInvariantCheck(msg.content);
+                          return (
+                            <>
+                              {check && <InvariantCheckCard check={check} />}
+                              <div className="message-content">
+                                {cleanedContent}
+                              </div>
+                            </>
+                          );
+                        }
+                        return (
+                          <div className="message-content">
+                            {msg.content}
+                          </div>
+                        );
+                      })()}
                     </div>
                   </div>
                 </React.Fragment>
