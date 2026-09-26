@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Message, TrimInfo, ContextStrategy } from '../agent/types';
+import Markdown from './Markdown';
 import {
   User,
   Bot,
@@ -375,7 +376,7 @@ export const MessageList: React.FC<MessageListProps> = ({
                               {stateCheck && <StateCheckCard check={stateCheck} />}
                               {check && <InvariantCheckCard check={check} />}
                               <div className="message-content">
-                                {cleanedContent}
+                                <Markdown content={cleanedContent} />
                               </div>
                             </>
                           );
