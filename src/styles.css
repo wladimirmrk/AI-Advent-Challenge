@@ -1093,57 +1093,6 @@ select, option, optgroup {
   margin: 0;
   padding: 12px 14px;
   overflow-x: auto;
-  scrollbar-width: thin;
-  scrollbar-color: #39414e transparent;
-}
-
-.md-codeblock pre::-webkit-scrollbar {
-  height: 10px;
-}
-
-.md-codeblock pre::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.md-codeblock pre::-webkit-scrollbar-thumb {
-  background: #39414e;
-  border-radius: 5px;
-}
-
-.md-codeblock pre::-webkit-scrollbar-thumb:hover {
-  background: #4a5464;
-}
-
-/* Top horizontal scrollbar (scroll proxy), visible when code overflows */
-
-.md-codeblock-scrollbar {
-  overflow-x: auto;
-  overflow-y: hidden;
-  border-bottom: 1px solid var(--border-color);
-  background: rgba(255, 255, 255, 0.02);
-  scrollbar-width: thin;
-  scrollbar-color: #39414e transparent;
-}
-
-.md-codeblock-scrollbar::-webkit-scrollbar {
-  height: 10px;
-}
-
-.md-codeblock-scrollbar::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.md-codeblock-scrollbar::-webkit-scrollbar-thumb {
-  background: #39414e;
-  border-radius: 5px;
-}
-
-.md-codeblock-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #4a5464;
-}
-
-.md-codeblock-scrollbar-filler {
-  height: 1px;
 }
 
 .md-codeblock pre code {
