@@ -25,12 +25,45 @@ function nodeToString(node: ReactNode): string {
 function CodeBlock({ children }: { children?: ReactNode }) {
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<number | null>(null);
+  const preRef = useRef<HTMLPreElement | null>(null);
+  const barRef = useRef<HTMLDivElement | null>(null);
+  const [hasOverflow, setHasOverflow] = useState(false);
+  const [scrollWidth, setScrollWidth] = useState(0);
 
   useEffect(() => {
     return () => {
       if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     };
   }, []);
+
+  const measure = useCallback(() => {
+    const pre = preRef.current;
+    if (!pre) return;
+    const overflow = pre.scrollWidth > pre.clientWidth + 1;
+    setHasOverflow(overflow);
+    if (overflow) setScrollWidth(pre.scrollWidth);
+  }, []);
+
+  useEffect(() => {
+    measure();
+    const pre = preRef.current;
+    if (!pre || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(pre);
+    return () => observer.disconnect();
+  }, [measure]);
+
+  const syncBarFromPre = () => {
+    if (preRef.current && barRef.current) {
+      barRef.current.scrollLeft = preRef.current.scrollLeft;
+    }
+  };
+
+  const syncPreFromBar = () => {
+    if (preRef.current && barRef.current) {
+      preRef.current.scrollLeft = barRef.current.scrollLeft;
+    }
+  };
 
   let language = '';
   let code = '';
@@ -66,7 +99,18 @@ function CodeBlock({ children }: { children?: ReactNode }) {
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
-      <pre>{children}</pre>
+      {hasOverflow && (
+        <div
+          className="md-codeblock-scrollbar"
+          ref={barRef}
+          onScroll={syncPreFromBar}
+        >
+          <div className="md-codeblock-scrollbar-filler" style={{ width: scrollWidth }} />
+        </div>
+      )}
+      <pre ref={preRef} onScroll={syncBarFromPre}>
+        {children}
+      </pre>
     </div>
   );
 }
