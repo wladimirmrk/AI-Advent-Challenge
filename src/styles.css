@@ -759,7 +759,9 @@ select, option, optgroup {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  padding: 16px 20px;
+  /* no bottom padding: the sticky .md-scrollx-bar pins to the scrollport
+     bottom edge, so the end-of-list spacing lives on .messages-container */
+  padding: 16px 20px 0;
 }
 
 .message-list-wrapper::-webkit-scrollbar {
@@ -783,6 +785,7 @@ select, option, optgroup {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  padding-bottom: 16px;
 }
 
 .message-row {
