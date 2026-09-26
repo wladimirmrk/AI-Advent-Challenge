@@ -1044,7 +1044,10 @@ select, option, optgroup {
   margin: 10px 0;
   border: 1px solid var(--border-color);
   border-radius: 8px;
+  /* clip (not hidden): still clips the rounded corners but does not create a
+     scroll container, so the sticky scrollbar binds to the chat scroller */
   overflow: hidden;
+  overflow: clip;
   background: #0d1117;
 }
 
@@ -1093,6 +1096,11 @@ select, option, optgroup {
   margin: 0;
   padding: 12px 14px;
   overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.md-codeblock pre::-webkit-scrollbar {
+  display: none;
 }
 
 .md-codeblock pre code {
@@ -1104,6 +1112,57 @@ select, option, optgroup {
   line-height: 1.55;
   color: #c9d1d9;
   white-space: pre;
+}
+
+/* Sticky horizontal scrollbar for tall overflowing blocks: pinned to the
+   visible bottom edge of the block until the block is scrolled to its end */
+
+.md-scrollx-bar {
+  position: sticky;
+  bottom: 0;
+  height: 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.md-codeblock .md-scrollx-bar {
+  background: #0d1117;
+}
+
+.md-table-scrollx .md-scrollx-bar {
+  background: var(--bg-card);
+}
+
+.md-scrollx-bar::-webkit-scrollbar {
+  height: 6px;
+}
+
+.md-scrollx-bar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.md-scrollx-bar::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 3px;
+}
+
+.md-scrollx-bar::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+.md-scrollx-bar-spacer {
+  height: 1px;
+  pointer-events: none;
+}
+
+/* Wide tables share the sticky scrollbar through a wrapper */
+
+.md-table-scrollx {
+  margin: 10px 0;
+}
+
+.markdown-body .md-table-scrollx table {
+  margin: 0;
 }
 
 /* Syntax highlighting palette (one-dark inspired, matched to app dark theme) */
