@@ -142,6 +142,7 @@ select, option, optgroup {
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
   background: transparent;
   border: 1px solid transparent;
   color: var(--text-secondary);
@@ -157,8 +158,10 @@ select, option, optgroup {
   border-color: var(--border-color);
 }
 
+/* Keeps the closed-state toggle in the chat header at the same 14px offset
+   from the left edge as the sidebar-header toggle (chat-header padding is 20px). */
 .header-sidebar-toggle {
-  margin-right: 4px;
+  margin-left: -6px;
 }
 
 .sidebar-chat-list {

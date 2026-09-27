@@ -117,12 +117,12 @@ export const Chat: React.FC<ChatProps> = ({
       {/* Top Navigation Bar */}
       <header className="chat-header">
         <div className="header-left">
-          {onToggleSidebar && (
+          {onToggleSidebar && !isSidebarOpen && (
             <button
               type="button"
               className="sidebar-toggle-btn header-sidebar-toggle"
               onClick={onToggleSidebar}
-              title={isSidebarOpen ? 'Свернуть панель' : 'Развернуть панель'}
+              title="Развернуть панель"
             >
               <PanelLeft size={18} />
             </button>
