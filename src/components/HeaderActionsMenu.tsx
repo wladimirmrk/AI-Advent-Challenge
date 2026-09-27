@@ -1,5 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Brain, MoreVertical, Shield, Trash2 } from 'lucide-react';
+import { Brain, Monitor, Moon, MoreVertical, Shield, Sun, Trash2 } from 'lucide-react';
+import { useThemePreference, ThemePreference } from '../theme';
+
+const THEME_OPTIONS: Array<{ value: ThemePreference; icon: React.ReactNode; label: string }> = [
+  { value: 'light', icon: <Sun size={14} />, label: 'Светлая тема' },
+  { value: 'dark', icon: <Moon size={14} />, label: 'Тёмная тема' },
+  { value: 'system', icon: <Monitor size={14} />, label: 'Как в системе' },
+];
 
 interface HeaderActionsMenuProps {
   invariantsCount: number;
@@ -24,6 +31,7 @@ export const HeaderActionsMenu: React.FC<HeaderActionsMenuProps> = ({
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const { preference, setPreference } = useThemePreference();
 
   useEffect(() => {
     if (!isOpen) return;
@@ -64,6 +72,26 @@ export const HeaderActionsMenu: React.FC<HeaderActionsMenuProps> = ({
 
       {isOpen && (
         <div className="header-actions-dropdown" role="menu">
+          <div className="header-actions-theme" role="group" aria-label="Тема оформления">
+            <span className="header-actions-theme-label">Тема</span>
+            <div className="header-actions-theme-group">
+              {THEME_OPTIONS.map(({ value, icon, label }) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`header-actions-theme-btn ${preference === value ? 'active' : ''}`}
+                  onClick={() => setPreference(value)}
+                  title={label}
+                  aria-pressed={preference === value}
+                >
+                  {icon}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="header-actions-divider" role="separator" />
+
           <button
             type="button"
             role="menuitem"

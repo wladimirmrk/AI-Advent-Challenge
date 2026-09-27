@@ -48,8 +48,16 @@ const STORAGE_KEYS = {
   USER_PROFILES: 'agent_user_profiles',
   ACTIVE_PROFILE_ID: 'agent_active_profile_id',
   INVARIANTS: 'agent_invariants',
+  THEME: 'agent_theme',
   STORAGE_VERSION: 'agent_storage_version',
 } as const;
+
+/**
+ * User's theme preference: explicit light/dark or follow the OS setting.
+ */
+export type ThemePreference = 'light' | 'dark' | 'system';
+
+const VALID_THEMES: readonly ThemePreference[] = ['light', 'dark', 'system'];
 
 export const BUILTIN_PROFILES: UserProfile[] = [
   {
@@ -1245,6 +1253,35 @@ export function resetInvariantsToDefault(): InvariantItem[] {
   const fresh = [...DEFAULT_INVARIANTS.map((item) => ({ ...item }))];
   saveInvariants(fresh);
   return fresh;
+}
+
+/**
+ * Load theme preference from localStorage.
+ * Returns null when nothing valid is stored (caller decides the default).
+ */
+export function loadThemePreference(): ThemePreference | null {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    const stored = localStorage.getItem(STORAGE_KEYS.THEME);
+    if (stored && (VALID_THEMES as readonly string[]).includes(stored)) {
+      return stored as ThemePreference;
+    }
+  } catch (err) {
+    console.error('[Storage] Failed to read theme preference from localStorage:', err);
+  }
+  return null;
+}
+
+/**
+ * Save theme preference to localStorage.
+ */
+export function saveThemePreference(theme: ThemePreference): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(STORAGE_KEYS.THEME, theme);
+  } catch (err) {
+    console.error('[Storage] Failed to save theme preference to localStorage:', err);
+  }
 }
 
 
