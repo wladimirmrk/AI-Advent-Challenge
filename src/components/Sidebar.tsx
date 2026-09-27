@@ -8,7 +8,6 @@ import {
   Check,
   X,
   PanelLeftClose,
-  PanelLeft,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -101,21 +100,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="sidebar-header">
           <button
             type="button"
+            className="sidebar-toggle-btn"
+            onClick={onToggleOpen}
+            title="Свернуть панель"
+          >
+            <PanelLeftClose size={18} />
+          </button>
+
+          <button
+            type="button"
             className="new-chat-btn"
             onClick={onCreateChat}
             title="Создать новый чат"
           >
             <Plus size={18} />
             <span>Новый чат</span>
-          </button>
-
-          <button
-            type="button"
-            className="sidebar-toggle-btn"
-            onClick={onToggleOpen}
-            title={isOpen ? 'Свернуть панель' : 'Развернуть панель'}
-          >
-            {isOpen ? <PanelLeftClose size={18} /> : <PanelLeft size={18} />}
           </button>
         </div>
 
