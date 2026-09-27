@@ -10,7 +10,8 @@ import { BranchBar } from './BranchBar';
 import { StickyFactsPanel } from './StickyFactsPanel';
 import { MemoryHub } from './MemoryHub';
 import { TaskStatusBar } from './TaskStatusBar';
-import { Bot, Settings as SettingsIcon, Trash2, Cpu, PanelLeft, Brain, User, Shield } from 'lucide-react';
+import { HeaderActionsMenu } from './HeaderActionsMenu';
+import { Bot, Settings as SettingsIcon, Cpu, PanelLeft, User } from 'lucide-react';
 
 interface ChatProps {
   agent?: Agent;
@@ -244,53 +245,27 @@ export const Chat: React.FC<ChatProps> = ({
         </div>
 
         <div className="header-right">
-          <button
-            type="button"
-            className={`action-btn invariants-header-btn ${isMemoryHubOpen && memoryHubTab === 'invariants' ? 'active' : ''}`}
-            onClick={() => {
+          <HeaderActionsMenu
+            invariantsCount={agentState.invariants.filter((i) => i.isActive).length}
+            memoryCount={
+              (agentState.workingMemory.goal ? 1 : 0) +
+              agentState.workingMemory.plan.length +
+              agentState.longTermMemory.decisions.length +
+              agentState.longTermMemory.knowledge.length
+            }
+            hasMessages={agentState.messages.length > 0}
+            disabled={agentState.isLoading}
+            active={isMemoryHubOpen}
+            onOpenInvariants={() => {
               setMemoryHubTab('invariants');
               setIsMemoryHubOpen(true);
             }}
-            title="Инварианты и ограничения состояния (День 14): нажмите для просмотра и настройки"
-          >
-            <Shield size={16} />
-            <span className="btn-text">Инварианты</span>
-            <span className="invariants-badge-count">
-              {agentState.invariants.filter((i) => i.isActive).length}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            className={`action-btn memory-hub-btn ${isMemoryHubOpen && memoryHubTab !== 'invariants' ? 'active' : ''}`}
-            onClick={() => {
+            onOpenMemoryHub={() => {
               if (memoryHubTab === 'invariants') setMemoryHubTab('working');
               setIsMemoryHubOpen(!isMemoryHubOpen);
             }}
-            title="Memory Hub: слои памяти агента (Short-Term, Working, Long-Term)"
-          >
-            <Brain size={16} />
-            <span className="btn-text">Memory Hub</span>
-            <span className="memory-badge-count">
-              {(agentState.workingMemory.goal ? 1 : 0) +
-                agentState.workingMemory.plan.length +
-                agentState.longTermMemory.decisions.length +
-                agentState.longTermMemory.knowledge.length}
-            </span>
-          </button>
-
-          {agentState.messages.length > 0 && (
-            <button
-              type="button"
-              className="action-btn clear-btn"
-              onClick={handleClearHistory}
-              title="Clear conversation and localStorage"
-              disabled={agentState.isLoading}
-            >
-              <Trash2 size={16} />
-              <span className="btn-text">Clear</span>
-            </button>
-          )}
+            onClearHistory={handleClearHistory}
+          />
 
           <button
             type="button"

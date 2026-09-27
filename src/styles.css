@@ -352,6 +352,7 @@ select, option, optgroup {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   padding: 12px 20px;
   border-bottom: 1px solid var(--border-color);
   background: rgba(19, 21, 26, 0.85);
@@ -364,6 +365,7 @@ select, option, optgroup {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
 }
 
 .logo-badge {
@@ -425,7 +427,8 @@ select, option, optgroup {
   cursor: pointer;
   outline: none;
   padding: 3px 0;
-  max-width: 190px;
+  max-width: 135px;
+  min-width: 0;
   text-overflow: ellipsis;
 }
 
@@ -473,7 +476,8 @@ select, option, optgroup {
   cursor: pointer;
   outline: none;
   padding: 3px 0;
-  max-width: 175px;
+  max-width: 115px;
+  min-width: 0;
   text-overflow: ellipsis;
 }
 
@@ -493,12 +497,14 @@ select, option, optgroup {
 .header-center {
   display: flex;
   align-items: center;
+  min-width: 0;
 }
 
 .header-right {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .action-btn {
@@ -521,11 +527,6 @@ select, option, optgroup {
   color: var(--text-primary);
 }
 
-.action-btn.clear-btn:hover {
-  color: var(--accent-danger);
-  border-color: rgba(239, 68, 68, 0.4);
-}
-
 .action-btn.needs-attention {
   border-color: var(--accent-warning);
   color: var(--text-primary);
@@ -540,6 +541,100 @@ select, option, optgroup {
   border-radius: 50%;
   background: var(--accent-warning);
   border: 2px solid var(--bg-app);
+}
+
+/* Header Actions Dropdown ("...") */
+.header-actions-menu {
+  position: relative;
+  display: flex;
+}
+
+.header-actions-toggle {
+  padding: 6px 8px;
+}
+
+.header-actions-toggle.active {
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
+}
+
+.header-actions-count {
+  background: var(--accent-primary);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 10px;
+  min-width: 15px;
+  text-align: center;
+  line-height: 1.3;
+}
+
+.header-actions-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 200px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  padding: 4px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+}
+
+.header-actions-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.12s ease;
+}
+
+.header-actions-item:hover:not(:disabled) {
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
+}
+
+.header-actions-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.header-actions-item-label {
+  flex: 1;
+}
+
+.header-actions-item-count {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 10px;
+  min-width: 16px;
+  text-align: center;
+}
+
+.header-actions-item-count.invariants {
+  background: #10b981;
+  color: #022c22;
+}
+
+.header-actions-item-count.memory {
+  background: rgba(139, 92, 246, 0.4);
+  color: #ede9fe;
+}
+
+.header-actions-item-danger:hover:not(:disabled) {
+  color: var(--accent-danger);
 }
 
 /* ==========================================================================
@@ -2104,6 +2199,21 @@ select, option, optgroup {
    Responsive Adaptations
    ========================================================================== */
 
+/* Header compression steps: thresholds are viewport-based and sized for the
+   worst case (sidebar open takes 260px), since media queries can't see the
+   actual .chat-app-layout width. */
+@media (max-width: 1220px) {
+  .settings-btn .btn-text {
+    display: none;
+  }
+}
+
+@media (max-width: 1000px) {
+  .brand-tag {
+    display: none;
+  }
+}
+
 @media (max-width: 640px) {
   .chat-app-layout {
     border: none;
@@ -2111,11 +2221,22 @@ select, option, optgroup {
 
   .chat-header {
     padding: 10px 14px;
-    flex-wrap: wrap;
   }
 
   .brand-name {
     display: none;
+  }
+
+  .header-left {
+    flex-wrap: wrap;
+  }
+
+  .model-select-dropdown {
+    max-width: 120px;
+  }
+
+  .profile-select-dropdown {
+    max-width: 100px;
   }
 
   .header-center {
@@ -2123,10 +2244,6 @@ select, option, optgroup {
     width: 100%;
     justify-content: center;
     margin-top: 4px;
-  }
-
-  .btn-text {
-    display: none;
   }
 
   .stats-grid {
@@ -2413,6 +2530,7 @@ select, option, optgroup {
   outline: none;
   transition: all 0.15s ease;
   font-family: inherit;
+  max-width: 150px;
 }
 
 .strategy-dropdown-select:hover:not(:disabled) {
@@ -2473,7 +2591,7 @@ select, option, optgroup {
   color: var(--text-secondary);
   font-size: 11px;
   font-weight: 500;
-  padding: 2px 6px;
+  padding: 2px 4px;
   border-radius: 4px;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -3141,40 +3259,6 @@ select, option, optgroup {
 /* ========================================================
    Memory Hub (Week 3 - 3 Memory Layers Architecture)
    ======================================================== */
-
-.memory-hub-btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: rgba(139, 92, 246, 0.15);
-  border: 1px solid rgba(139, 92, 246, 0.35);
-  color: #c4b5fd;
-  border-radius: 8px;
-  padding: 6px 12px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.memory-hub-btn:hover,
-.memory-hub-btn.active {
-  background: rgba(139, 92, 246, 0.28);
-  border-color: rgba(167, 139, 250, 0.7);
-  color: #fff;
-  box-shadow: 0 0 12px rgba(139, 92, 246, 0.3);
-}
-
-.memory-badge-count {
-  background: rgba(139, 92, 246, 0.4);
-  color: #ede9fe;
-  font-size: 11px;
-  font-weight: 700;
-  padding: 1px 6px;
-  border-radius: 10px;
-  min-width: 18px;
-  text-align: center;
-}
 
 /* Memory quick button in TokenStats bar */
 .memory-layer-quick-btn {
@@ -4899,35 +4983,6 @@ select, option, optgroup {
 /* ==========================================================================
    DAY 14: INVARIANTS & HARD CONSTRAINTS STYLES
    ========================================================================== */
-
-/* Header Invariants Button */
-.invariants-header-btn {
-  border-color: rgba(16, 185, 129, 0.4) !important;
-  color: #10b981 !important;
-  background: rgba(16, 185, 129, 0.08) !important;
-}
-
-.invariants-header-btn:hover {
-  background: rgba(16, 185, 129, 0.18) !important;
-  border-color: #10b981 !important;
-}
-
-.invariants-header-btn.active {
-  background: rgba(16, 185, 129, 0.25) !important;
-  border-color: #10b981 !important;
-  box-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
-}
-
-.invariants-badge-count {
-  background: #10b981;
-  color: #022c22;
-  font-size: 10px;
-  font-weight: 700;
-  padding: 1px 6px;
-  border-radius: 10px;
-  min-width: 16px;
-  text-align: center;
-}
 
 /* Token Banner Chip */
 .token-chip.invariants {
