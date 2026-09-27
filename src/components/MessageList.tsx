@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Message, TrimInfo, ContextStrategy } from '../agent/types';
 import Markdown from './Markdown';
 import {
@@ -230,6 +230,10 @@ const InvariantCheckCard: React.FC<{ check: InvariantCheckResult }> = ({ check }
   );
 };
 
+const PAGE_SIZE = 50; // messages rendered initially and per scroll-up batch
+const LOAD_MORE_THRESHOLD = 80; // px from the top that triggers loading older messages
+const NEAR_BOTTOM_THRESHOLD = 120; // px from the bottom that counts as "viewing the newest"
+
 interface MessageListProps {
   messages: Message[];
   isLoading: boolean;
@@ -253,14 +257,82 @@ export const MessageList: React.FC<MessageListProps> = ({
   onSuggestionClick,
   onBranchFromMessage,
 }) => {
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
+  const isNearBottomRef = useRef(true);
+  const pendingRestoreRef = useRef<{ prevScrollHeight: number; prevScrollTop: number } | null>(null);
+  const suppressAnimIdsRef = useRef<Set<string> | null>(null);
+  if (suppressAnimIdsRef.current === null) {
+    suppressAnimIdsRef.current = new Set(messages.map((m) => m.id));
+  }
+  const prevLastIdRef = useRef<string | null>(null);
+  const prevIsLoadingRef = useRef(false);
+
+  // Open on the newest messages instantly — no smooth scroll, no row animation.
+  useLayoutEffect(() => {
+    const wrapper = listRef.current;
+    if (wrapper) {
+      wrapper.scrollTop = wrapper.scrollHeight;
+    }
+  }, []);
+
+  // Keep the viewport anchored while a batch of older messages is prepended.
+  useLayoutEffect(() => {
+    const wrapper = listRef.current;
+    const pending = pendingRestoreRef.current;
+    if (!wrapper || !pending) return;
+    pendingRestoreRef.current = null;
+    wrapper.scrollTop = wrapper.scrollHeight - pending.prevScrollHeight + pending.prevScrollTop;
+  }, [visibleCount]);
+
+  // Auto-scroll only for live conversation updates, never while the user reads history.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isLoading, error, lastTrimInfo]);
+    const wrapper = listRef.current;
+    if (!wrapper) return;
+    const last = messages[messages.length - 1];
+    const prevLastId = prevLastIdRef.current;
+    prevLastIdRef.current = last ? last.id : null;
+    const isLoadingTurnedOn = isLoading && !prevIsLoadingRef.current;
+    prevIsLoadingRef.current = isLoading;
+    if (prevLastId === null) return;
+
+    const lastChanged = last !== undefined && last.id !== prevLastId;
+    const lastIsUser = last?.role === 'user';
+    if (
+      (lastChanged && (isNearBottomRef.current || lastIsUser)) ||
+      (isLoadingTurnedOn && isNearBottomRef.current)
+    ) {
+      wrapper.scrollTop = wrapper.scrollHeight;
+    }
+  }, [messages, isLoading]);
+
+  const handleScroll = () => {
+    const wrapper = listRef.current;
+    if (!wrapper) return;
+    const { scrollTop, scrollHeight, clientHeight } = wrapper;
+    isNearBottomRef.current = scrollHeight - scrollTop - clientHeight < NEAR_BOTTOM_THRESHOLD;
+
+    if (scrollTop <= LOAD_MORE_THRESHOLD && messages.length > visibleCount) {
+      const nextCount = Math.min(visibleCount + PAGE_SIZE, messages.length);
+      const firstVisible = messages.length - visibleCount;
+      const newFirst = messages.length - nextCount;
+      const suppress = suppressAnimIdsRef.current;
+      if (suppress) {
+        for (let i = newFirst; i < firstVisible; i++) {
+          suppress.add(messages[i].id);
+        }
+      }
+      pendingRestoreRef.current = { prevScrollHeight: scrollHeight, prevScrollTop: scrollTop };
+      setVisibleCount(nextCount);
+    }
+  };
+
+  const firstVisibleIndex = Math.max(0, messages.length - visibleCount);
+  const visibleMessages = messages.slice(firstVisibleIndex);
 
   return (
-    <div className="message-list-wrapper">
+    <div className="message-list-wrapper" ref={listRef} onScroll={handleScroll}>
       {messages.length === 0 ? (
         <div className="empty-state">
           <div className="empty-icon-circle">
@@ -308,7 +380,8 @@ export const MessageList: React.FC<MessageListProps> = ({
             const usesWindowN = strategy === 'sliding_window' || strategy === 'sticky_facts' || strategy === 'summary';
             const cutoffIndex = usesWindowN ? Math.max(0, messages.length - recentMessagesCount) : 0;
 
-            return messages.map((msg, idx) => {
+            return visibleMessages.map((msg, i) => {
+              const idx = firstVisibleIndex + i;
               const isOutsideContext = cutoffIndex > 0 && idx < cutoffIndex;
 
               return (
@@ -328,7 +401,7 @@ export const MessageList: React.FC<MessageListProps> = ({
                   )}
 
                   <div
-                    className={`message-row ${msg.role === 'user' ? 'user-row' : 'assistant-row'} ${isOutsideContext ? 'outside-context' : ''}`}
+                    className={`message-row ${msg.role === 'user' ? 'user-row' : 'assistant-row'} ${isOutsideContext ? 'outside-context' : ''} ${suppressAnimIdsRef.current?.has(msg.id) ? 'no-anim' : ''}`}
                     title={isOutsideContext ? 'Это сообщение находится за пределами окна N и не передаётся в LLM' : undefined}
                   >
                     <div className="avatar-col">
@@ -448,7 +521,7 @@ export const MessageList: React.FC<MessageListProps> = ({
             </div>
           )}
 
-          <div ref={bottomRef} className="scroll-anchor" />
+          <div className="scroll-anchor" />
         </div>
       )}
     </div>

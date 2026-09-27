@@ -307,6 +307,7 @@ export const Chat: React.FC<ChatProps> = ({
 
         <div className="chat-body-container">
           <MessageList
+            key={agentState.activeBranchId}
             messages={agentState.messages}
             isLoading={agentState.isLoading}
             error={agentState.error}
