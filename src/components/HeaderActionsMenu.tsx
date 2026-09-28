@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Brain, Monitor, Moon, MoreVertical, Shield, Sun, Trash2 } from 'lucide-react';
+import { Brain, Monitor, Moon, MoreVertical, Server, Shield, Sun, Trash2 } from 'lucide-react';
 import { useThemePreference, ThemePreference } from '../theme';
 
 const THEME_OPTIONS: Array<{ value: ThemePreference; icon: React.ReactNode; label: string }> = [
@@ -11,22 +11,26 @@ const THEME_OPTIONS: Array<{ value: ThemePreference; icon: React.ReactNode; labe
 interface HeaderActionsMenuProps {
   invariantsCount: number;
   memoryCount: number;
+  mcpCount?: number;
   hasMessages: boolean;
   disabled?: boolean;
   active?: boolean;
   onOpenInvariants: () => void;
   onOpenMemoryHub: () => void;
+  onOpenMcp: () => void;
   onClearHistory: () => void;
 }
 
 export const HeaderActionsMenu: React.FC<HeaderActionsMenuProps> = ({
   invariantsCount,
   memoryCount,
+  mcpCount = 0,
   hasMessages,
   disabled,
   active,
   onOpenInvariants,
   onOpenMemoryHub,
+  onOpenMcp,
   onClearHistory,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -54,7 +58,7 @@ export const HeaderActionsMenu: React.FC<HeaderActionsMenuProps> = ({
   }, [isOpen]);
 
   const close = () => setIsOpen(false);
-  const totalCount = invariantsCount + memoryCount;
+  const totalCount = invariantsCount + memoryCount + (mcpCount || 0);
 
   return (
     <div className="header-actions-menu" ref={containerRef}>
@@ -62,7 +66,7 @@ export const HeaderActionsMenu: React.FC<HeaderActionsMenuProps> = ({
         type="button"
         className={`action-btn header-actions-toggle ${active ? 'active' : ''}`}
         onClick={() => setIsOpen((v) => !v)}
-        title="Инварианты, Memory Hub и очистка чата"
+        title="Инварианты, Memory Hub, MCP и очистка чата"
         aria-haspopup="menu"
         aria-expanded={isOpen}
       >
@@ -120,6 +124,23 @@ export const HeaderActionsMenu: React.FC<HeaderActionsMenuProps> = ({
             <Brain size={15} />
             <span className="header-actions-item-label">Memory Hub</span>
             <span className="header-actions-item-count memory">{memoryCount}</span>
+          </button>
+
+          <button
+            type="button"
+            role="menuitem"
+            className="header-actions-item"
+            onClick={() => {
+              close();
+              onOpenMcp();
+            }}
+            title="MCP: Model Context Protocol (День 16) — управление серверами инструментов"
+          >
+            <Server size={15} />
+            <span className="header-actions-item-label">MCP</span>
+            {mcpCount > 0 && (
+              <span className="header-actions-item-count mcp">{mcpCount}</span>
+            )}
           </button>
 
           {hasMessages && (

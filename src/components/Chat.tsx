@@ -11,6 +11,9 @@ import { StickyFactsPanel } from './StickyFactsPanel';
 import { MemoryHub } from './MemoryHub';
 import { TaskStatusBar } from './TaskStatusBar';
 import { HeaderActionsMenu } from './HeaderActionsMenu';
+import { McpModal } from './McpModal';
+import { loadMcpServers } from '../agent/mcp/storage';
+import { McpServerConfig } from '../agent/mcp/types';
 import { Bot, Settings as SettingsIcon, Cpu, User } from 'lucide-react';
 
 interface ChatProps {
@@ -22,6 +25,8 @@ export const Chat: React.FC<ChatProps> = ({
 }) => {
   const [agentState, setAgentState] = useState<AgentState>(() => agent.getState());
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isMcpModalOpen, setIsMcpModalOpen] = useState(false);
+  const [mcpServers, setMcpServers] = useState<McpServerConfig[]>(() => loadMcpServers());
   const [isFactsDrawerOpen, setIsFactsDrawerOpen] = useState(false);
   const [isMemoryHubOpen, setIsMemoryHubOpen] = useState(false);
   const [memoryHubTab, setMemoryHubTab] = useState<'working' | 'short_term' | 'long_term' | 'invariants'>('invariants');
@@ -238,6 +243,7 @@ export const Chat: React.FC<ChatProps> = ({
               agentState.longTermMemory.decisions.length +
               agentState.longTermMemory.knowledge.length
             }
+            mcpCount={mcpServers.filter((s) => s.enabled).length}
             hasMessages={agentState.messages.length > 0}
             disabled={agentState.isLoading}
             active={isMemoryHubOpen}
@@ -249,6 +255,7 @@ export const Chat: React.FC<ChatProps> = ({
               if (memoryHubTab === 'invariants') setMemoryHubTab('working');
               setIsMemoryHubOpen(!isMemoryHubOpen);
             }}
+            onOpenMcp={() => setIsMcpModalOpen(true)}
             onClearHistory={handleClearHistory}
           />
 
@@ -359,6 +366,13 @@ export const Chat: React.FC<ChatProps> = ({
         onSave={handleSaveSettings}
         onAddCustomModel={(model) => agent.addCustomModel(model)}
         onRemoveCustomModel={(modelId) => agent.removeCustomModel(modelId)}
+      />
+
+      {/* MCP Modal */}
+      <McpModal
+        isOpen={isMcpModalOpen}
+        onClose={() => setIsMcpModalOpen(false)}
+        onServersChange={setMcpServers}
       />
     </div>
   );
