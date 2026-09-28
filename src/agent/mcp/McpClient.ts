@@ -17,7 +17,20 @@ export function createMcpClientAndTransport(config: McpServerConfig) {
     }
   );
 
-  const url = new URL(config.url);
+  let targetUrlString = config.url;
+
+  // In browser: if target is an external origin (not localhost), transparently route through Vite dev proxy
+  if (
+    typeof window !== 'undefined' &&
+    !config.url.includes('localhost') &&
+    !config.url.includes('127.0.0.1') &&
+    !config.url.startsWith('/')
+  ) {
+    const origin = window.location.origin;
+    targetUrlString = `${origin}/api/mcp-proxy?url=${encodeURIComponent(config.url)}`;
+  }
+
+  const url = new URL(targetUrlString);
   const cleanHeaders: Record<string, string> = {};
 
   if (config.headers) {
@@ -100,7 +113,7 @@ export async function testMcpConnection(config: McpServerConfig): Promise<McpCon
         errorMessage = `Браузер заблокировал прямой запрос к ${config.url} из-за политики CORS (Cross-Origin). Внешний сервер не разрешает браузерные запросы с http://localhost:5173. Для таких серверов используйте консольную проверку: 'npm run test:mcp'.`;
       }
     } else if (rawError.includes('405')) {
-      errorMessage = `Сервер вернул ошибку 405 (Method Not Allowed). Попробуйте сменить способ подключения на ${config.transport === 'sse' ? 'Streamable HTTP' : 'SSE'}.`;
+      errorMessage = `Сервер вернул ошибку 405 (Method Not Allowed). Сервер ожидает Streamable HTTP, измените тип подключения в редактировании на Streamable HTTP (или наоборот).`;
     }
 
     return {
