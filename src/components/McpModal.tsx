@@ -218,6 +218,10 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
 
   const getSampleArgsForTool = (toolName: string): string => {
     switch (toolName) {
+      case 'schedule_monitor':
+        return JSON.stringify({ target: 'all', interval_seconds: 15, notes: 'Мониторинг цен и остатков' }, null, 2);
+      case 'get_aggregated_summary':
+        return JSON.stringify({ target: 'all' }, null, 2);
       case 'store_search_products':
         return JSON.stringify({ query: 'iPhone', category: 'smartphones', max_price: 150000 }, null, 2);
       case 'store_get_product':

@@ -7,11 +7,53 @@ import {
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { MockEcommerceService } from './mock-store.js';
+import { SchedulerService, MonitorTarget } from './scheduler-service.js';
 
 const PORT = Number(process.env.MCP_PORT) || 3001;
 
 // Define tools available on this server
 const AVAILABLE_TOOLS = [
+  {
+    name: 'schedule_monitor',
+    description: 'Запланировать фоновый периодический или отложенный мониторинг цен, остатков товаров или статусов заказов',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: {
+          type: 'string',
+          enum: ['products', 'orders', 'all'],
+          description: 'Объект мониторинга: товары (цены и остатки), заказы (статусы доставки) или всё вместе (по умолчанию "all")',
+        },
+        interval_seconds: {
+          type: 'number',
+          description: 'Интервал периодического опроса в секундах (например: 5, 30, 60, 3600)',
+        },
+        delay_seconds: {
+          type: 'number',
+          description: 'Отсрочка первого запуска в секундах (0 для немедленного запуска)',
+        },
+        notes: {
+          type: 'string',
+          description: 'Примечание или цель мониторинга (например: "Мониторинг скидок на iPhone 15 Pro")',
+        },
+      },
+      required: ['interval_seconds'],
+    },
+  },
+  {
+    name: 'get_aggregated_summary',
+    description: 'Получить агрегированную аналитическую сводку по результатам фонового мониторинга (дельты цен, складские алерты, статусы заказов, предупреждения)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: {
+          type: 'string',
+          enum: ['products', 'orders', 'all'],
+          description: 'Объект сводки: "products", "orders" или "all" (по умолчанию "all")',
+        },
+      },
+    },
+  },
   {
     name: 'store_search_products',
     description: 'Поиск товаров в каталоге интернет-магазина по ключевым словам, категории или максимальной цене',
@@ -151,6 +193,77 @@ export function createLocalMcpServer() {
   // Handle call tool
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+
+    if (name === 'schedule_monitor') {
+      try {
+        const scheduler = SchedulerService.getInstance();
+        const target = (args?.target as MonitorTarget) || 'all';
+        const intervalSeconds = Number(args?.interval_seconds) || 60;
+        const delaySeconds =
+          args?.delay_seconds !== undefined ? Number(args.delay_seconds) : 0;
+        const notes = args?.notes ? String(args.notes) : undefined;
+
+        const task = scheduler.scheduleTask({
+          target,
+          intervalSeconds,
+          delaySeconds,
+          notes,
+        });
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  success: true,
+                  message: `Задача мониторинга успешно запланирована: опрос каждые ${intervalSeconds} сек.`,
+                  task: {
+                    id: task.id,
+                    target: task.target,
+                    intervalSeconds: task.intervalSeconds,
+                    delaySeconds: task.delaySeconds,
+                    status: task.status,
+                    nextRunAt: new Date(task.nextRunAt).toISOString(),
+                    runCount: task.runCount,
+                    notes: task.notes,
+                  },
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          content: [{ type: 'text', text: `Ошибка планирования задачи: ${err.message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    if (name === 'get_aggregated_summary') {
+      try {
+        const scheduler = SchedulerService.getInstance();
+        const target = (args?.target as MonitorTarget) || 'all';
+        const summary = scheduler.getAggregatedSummary(target);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(summary, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          content: [{ type: 'text', text: `Ошибка получения агрегированной сводки: ${err.message}` }],
+          isError: true,
+        };
+      }
+    }
 
     if (name === 'store_search_products') {
       try {
@@ -381,6 +494,9 @@ export function startMcpHttpServer(port = PORT): Promise<http.Server> {
     });
 
     httpServer.listen(port, () => {
+      // Start 24/7 background scheduler engine
+      SchedulerService.getInstance().start();
+
       console.log(`\n🚀 Local MCP Server started on http://localhost:${port}`);
       console.log(`📡 Endpoints:`);
       console.log(`   - SSE Stream:       http://localhost:${port}/sse`);
@@ -391,6 +507,8 @@ export function startMcpHttpServer(port = PORT): Promise<http.Server> {
     });
   });
 }
+
+export { SchedulerService };
 
 // Standalone execution
 if (process.argv[1]?.endsWith('mcp-server.ts') || process.argv[1]?.endsWith('mcp-server.js')) {
