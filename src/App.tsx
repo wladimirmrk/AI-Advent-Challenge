@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { PanelLeft } from 'lucide-react';
 import { Chat } from './components/Chat';
 import { Sidebar } from './components/Sidebar';
 import { chatManagerInstance, ChatManagerState } from './agent/ChatManager';
@@ -33,10 +34,19 @@ export const App: React.FC = () => {
         <Chat
           key={chatState.activeChatId}
           agent={chatState.activeAgent}
-          onToggleSidebar={() => setIsSidebarOpen((prev) => !prev)}
-          isSidebarOpen={isSidebarOpen}
         />
       </div>
+
+      {!isSidebarOpen && (
+        <button
+          type="button"
+          className="sidebar-toggle-btn sidebar-expand-float"
+          onClick={() => setIsSidebarOpen(true)}
+          title="Развернуть панель"
+        >
+          <PanelLeft size={18} />
+        </button>
+      )}
     </div>
   );
 };

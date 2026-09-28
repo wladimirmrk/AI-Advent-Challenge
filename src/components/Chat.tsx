@@ -11,18 +11,14 @@ import { StickyFactsPanel } from './StickyFactsPanel';
 import { MemoryHub } from './MemoryHub';
 import { TaskStatusBar } from './TaskStatusBar';
 import { HeaderActionsMenu } from './HeaderActionsMenu';
-import { Bot, Settings as SettingsIcon, Cpu, PanelLeft, User } from 'lucide-react';
+import { Bot, Settings as SettingsIcon, Cpu, User } from 'lucide-react';
 
 interface ChatProps {
   agent?: Agent;
-  onToggleSidebar?: () => void;
-  isSidebarOpen?: boolean;
 }
 
 export const Chat: React.FC<ChatProps> = ({
   agent = agentInstance,
-  onToggleSidebar,
-  isSidebarOpen = false,
 }) => {
   const [agentState, setAgentState] = useState<AgentState>(() => agent.getState());
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -117,17 +113,6 @@ export const Chat: React.FC<ChatProps> = ({
       {/* Top Navigation Bar */}
       <header className="chat-header">
         <div className="header-left">
-          {onToggleSidebar && !isSidebarOpen && (
-            <button
-              type="button"
-              className="sidebar-toggle-btn header-sidebar-toggle"
-              onClick={onToggleSidebar}
-              title="Развернуть панель"
-            >
-              <PanelLeft size={18} />
-            </button>
-          )}
-
           <div className="logo-badge">
             <Bot size={22} className="brand-icon" />
             <div className="brand-info">
