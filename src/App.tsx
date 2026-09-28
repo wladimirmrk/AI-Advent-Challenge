@@ -3,12 +3,17 @@ import { PanelLeft } from 'lucide-react';
 import { Chat } from './components/Chat';
 import { Sidebar } from './components/Sidebar';
 import { chatManagerInstance, ChatManagerState } from './agent/ChatManager';
+import { loadSidebarOpen, saveSidebarOpen } from './agent/storage';
 
 export const App: React.FC = () => {
   const [chatState, setChatState] = useState<ChatManagerState>(() =>
     chatManagerInstance.getState()
   );
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(() => loadSidebarOpen() ?? true);
+
+  useEffect(() => {
+    saveSidebarOpen(isSidebarOpen);
+  }, [isSidebarOpen]);
 
   useEffect(() => {
     const unsubscribe = chatManagerInstance.subscribe((newState) => {

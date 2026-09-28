@@ -49,6 +49,7 @@ const STORAGE_KEYS = {
   ACTIVE_PROFILE_ID: 'agent_active_profile_id',
   INVARIANTS: 'agent_invariants',
   THEME: 'agent_theme',
+  SIDEBAR_OPEN: 'agent_sidebar_open',
   STORAGE_VERSION: 'agent_storage_version',
 } as const;
 
@@ -1281,6 +1282,34 @@ export function saveThemePreference(theme: ThemePreference): void {
     localStorage.setItem(STORAGE_KEYS.THEME, theme);
   } catch (err) {
     console.error('[Storage] Failed to save theme preference to localStorage:', err);
+  }
+}
+
+/**
+ * Load sidebar visibility from localStorage.
+ * Returns null when nothing valid is stored (caller decides the default).
+ */
+export function loadSidebarOpen(): boolean | null {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    const stored = localStorage.getItem(STORAGE_KEYS.SIDEBAR_OPEN);
+    if (stored === 'true') return true;
+    if (stored === 'false') return false;
+  } catch (err) {
+    console.error('[Storage] Failed to read sidebar state from localStorage:', err);
+  }
+  return null;
+}
+
+/**
+ * Save sidebar visibility to localStorage.
+ */
+export function saveSidebarOpen(open: boolean): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(STORAGE_KEYS.SIDEBAR_OPEN, String(open));
+  } catch (err) {
+    console.error('[Storage] Failed to save sidebar state to localStorage:', err);
   }
 }
 
