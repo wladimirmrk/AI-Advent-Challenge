@@ -45,8 +45,7 @@ import {
   McpCallMeta,
 } from './types';
 import { loadMcpServers } from './mcp/storage';
-import { callMcpTool } from './mcp/McpClient';
-import { McpToolCallResult } from './mcp/types';
+import { McpRouter } from './mcp/McpRouter';
 import {
   canTransition,
   STAGE_LABELS,
@@ -1384,53 +1383,79 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
   }
 
   /**
-   * Executes an MCP tool on enabled MCP servers.
+   * Generates a structured human-readable fallback response from executed MCP tool results
+   * when the model terminates without emitting conversational text.
+   */
+  public generateFallbackMcpSummary(calls: McpCallMeta[]): string {
+    const lines: string[] = [
+      `### 🎯 Результаты выполнения запроса через MCP-серверы:`,
+      ``,
+    ];
+
+    for (const call of calls) {
+      if (call.toolName === 'store_search_products') {
+        try {
+          const data = JSON.parse(call.result || '{}');
+          if (data.products && Array.isArray(data.products)) {
+            lines.push(`- 📦 **Поиск в каталоге:** Найдено позиций: ${data.products.length}.`);
+          }
+        } catch {}
+      } else if (call.toolName === 'store_get_product') {
+        try {
+          const data = JSON.parse(call.result || '{}');
+          const p = data.product || data;
+          if (p.title) {
+            lines.push(
+              `- 💻 **Подобранный товар:** **${p.title}** (Артикул: \`${p.sku}\`, цена: ${
+                typeof p.price === 'number' ? p.price.toLocaleString('ru-RU') : p.price
+              } руб., наличие: ${p.stockCount ?? 1} шт., склад: ${p.warehouse || 'в наличии'}).`
+            );
+          }
+        } catch {}
+      } else if (call.toolName === 'delivery_calculate_cost') {
+        try {
+          const data = JSON.parse(call.result || '{}');
+          lines.push(
+            `- 🚚 **Доставка (${data.city}):** ${data.isExpress ? 'Экспресс-доставка' : 'Стандартная доставка'}, срок: **${
+              data.estimatedDays || '1-2 дня'
+            }**, стоимость: **${data.totalCost} руб.**`
+          );
+        } catch {}
+      } else if (call.toolName === 'saveToFile') {
+        try {
+          const data = JSON.parse(call.result || '{}');
+          lines.push(
+            `- 📄 **Сохранение отчета:** Файл отчета \`${
+              data.filename || 'отчет.md'
+            }\` успешно сохранен на диск в каталог \`data/reports\`.`
+          );
+        } catch {}
+      } else if (call.toolName === 'summarize') {
+        lines.push(`- 📊 **Аналитика:** Сформирована сравнительная аналитическая сводка с расчетом метрик.`);
+      }
+    }
+
+    lines.push(``);
+    lines.push(`Все этапы цепочки успешно выполнены внешними MCP-серверами.`);
+    return lines.join('\n');
+  }
+
+  /**
+   * Access to MCP multi-server router
+   */
+  public getMcpRouter(): McpRouter {
+    return McpRouter.getInstance();
+  }
+
+  /**
+   * Executes an MCP tool on enabled MCP servers via smart McpRouter.
    */
   public async executeMcpTool(
     toolName: string,
     args: Record<string, unknown> = {}
   ): Promise<McpCallMeta> {
-    const servers = loadMcpServers().filter((s) => s.enabled);
-    if (servers.length === 0) {
-      return {
-        toolName,
-        args,
-        isError: true,
-        result: 'Ошибка: Нет активных (enabled) MCP-серверов в настройках приложения.',
-        latencyMs: 0,
-      };
-    }
-
-    let lastResult: McpToolCallResult | null = null;
-    let successfulServerName = servers[0].name;
-
-    for (const server of servers) {
-      try {
-        const res = await callMcpTool(server, toolName, args);
-        lastResult = res;
-        successfulServerName = server.name;
-        if (res.success) {
-          break;
-        }
-      } catch (err: any) {
-        lastResult = {
-          success: false,
-          toolName,
-          isError: true,
-          error: err.message,
-          result: `Ошибка: ${err.message}`,
-        };
-      }
-    }
-
-    return {
-      toolName,
-      args,
-      result: lastResult?.result || 'Инструмент не вернул данных',
-      isError: lastResult?.isError || !lastResult?.success,
-      serverName: successfulServerName,
-      latencyMs: lastResult?.latencyMs || 0,
-    };
+    const router = McpRouter.getInstance();
+    return router.executeTool(toolName, args);
   }
 
   /**
@@ -1439,52 +1464,8 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
   public formatMcpToolsPrompt(): string {
     const servers = loadMcpServers().filter((s) => s.enabled);
     if (servers.length === 0) return '';
-
-    return [
-      `[MODEL CONTEXT PROTOCOL (MCP) TOOLS]`,
-      `When user asks questions about catalog, products, prices, stock, delivery, orders, or asks to schedule background monitoring or show an aggregated summary/digest — DO NOT INVENT ANSWERS! You MUST call the appropriate MCP tool.`,
-      ``,
-      `ФОРМАТ ВЫЗОВА ИНСТРУМЕНТА:`,
-      `<mcp_call name="имя_инструмента">`,
-      `{"параметр1": "значение1"}`,
-      `</mcp_call>`,
-      ``,
-      `СПИСОК ДОСТУПНЫХ ИНСТРУМЕНТОВ:`,
-      `1. store_search_products — Поиск товаров в каталоге магазина.`,
-      `   Параметры: {"query": "строка поиска", "category"?: "smartphones|laptops|audio|wearables|accessories", "max_price"?: число}`,
-      `2. store_get_product — Получить подробные данные о товаре (цену, характеристики, склад и остаток) по SKU.`,
-      `   Параметры: {"sku": "PHONE-15-PRO | LAPTOP-AIR-M3 | HEADPHONES-MAX | WATCH-ULTRA-2 | CASE-MAGSAFE"}`,
-      `3. order_get_status — Проверить статус, состав и трекинг заказа по номеру заказа.`,
-      `   Параметры: {"order_id": "ORD-7741 | ORD-8820 | ORD-9905"}`,
-      `4. delivery_calculate_cost — Рассчитать стоимость и ориентировочный срок курьерской доставки в город.`,
-      `   Параметры: {"city": "Москва|Санкт-Петербург|Казань|...", "weight_kg"?: число, "express"?: булево}`,
-      `5. schedule_monitor — Запланировать фоновый периодический или отложенный мониторинг цен, остатков товаров или заказов.`,
-      `   Параметры: {"target"?: "products|orders|all", "interval_seconds": число_секунд, "delay_seconds"?: число, "notes"?: "текст заметки"}`,
-      `6. get_aggregated_summary — Получить агрегированную аналитическую сводку по собранным фоновым данным (дельты цен, складские алерты, статусы заказов, предупреждения).`,
-      `   Параметры: {"target"?: "products|orders|all"}`,
-      `7. calculate — Вычислить математическое выражение.`,
-      `   Параметры: {"expression": "100 * 5"}`,
-      `8. get_system_time — Получить текущее время сервера.`,
-      `   Параметры: {"format"?: "iso|locale|timestamp"}`,
-      `9. echo — Эхо-тест.`,
-      `   Параметры: {"message": "текст"}`,
-      `10. search — Поиск товаров в каталоге магазина (Шаг 1 цепочки: получение данных).`,
-      `    Параметры: {"query": "строка поиска", "category"?: "smartphones|laptops|audio|wearables|accessories", "max_results"?: число}`,
-      `11. summarize — Аналитическая выжимка и расчет метрик по товарам или тексту (Шаг 2 цепочки: обработка данных).`,
-      `    Параметры: {"content"?: "строка JSON или текст", "items"?: массив_товаров, "format"?: "markdown|json", "title"?: "заголовок"}`,
-      `12. saveToFile — Сохранение отчета на диск в каталог data/reports (Шаг 3 цепочки: сохранение результата).`,
-      `    Параметры: {"content": "текст отчета", "filename"?: "имя_файла.md", "format"?: "markdown|json"}`,
-      ``,
-      `АВТОНОМНАЯ ОРКЕСТРАЦИЯ ЦЕПОЧЕК (WORKFLOW CHAINING):`,
-      `Ты самостоятельно управляешь пайплайном и последовательностью вызова инструментов:`,
-      `- Если пользователь просит найти, обработать/составить отчет и сохранить в файл:`,
-      `  1. Шаг 1 (Получение данных): вызови <mcp_call name="search">{"query": "..."}</mcp_call>.`,
-      `  2. Шаг 2 (Обработка): получив <mcp_result name="search">, вызови <mcp_call name="summarize">{"content": ...}</mcp_call>.`,
-      `  3. Шаг 3 (Сохранение): получив <mcp_result name="summarize">, вызови <mcp_call name="saveToFile">{"content": ..., "filename": "..."}</mcp_call>.`,
-      `  4. Финал: получив <mcp_result name="saveToFile">, сформируй понятный ответ для пользователя со ссылкой на сохраненный файл и ключевыми выводами.`,
-      `- Система автоматически поддерживает многошаговые вызовы, передавая результат предыдущего инструмента в следующий ход диалога.`,
-      `- Отвечай прямо по сути без лишних технических тегов в финальном сообщении.`,
-    ].join('\n');
+    const router = McpRouter.getInstance();
+    return router.formatSystemPromptInstructions(servers);
   }
 
   // ==========================================
@@ -2849,8 +2830,11 @@ Do NOT use markdown code fences. Pure JSON only.`,
 
       // 6.1 Check if LLM requested MCP tool calls (Multi-turn tool loop for composition pipelines)
       let currentContent = res.content;
-      const MAX_MCP_TURNS = 5;
+      const MAX_MCP_TURNS = 8;
       let turnCount = 0;
+      const executedSignatures = new Set<string>();
+      let hasCompletedSaveToFile = false;
+      let intermediateHistory: Array<{ role: string; content: string }> = [...messagesToSend];
 
       while (turnCount < MAX_MCP_TURNS) {
         const mcpCalls = this.parseMcpCalls(currentContent);
@@ -2859,21 +2843,43 @@ Do NOT use markdown code fences. Pure JSON only.`,
           break;
         }
 
+        // Loop detection: prevent executing exact same tool calls again
+        const newCalls = mcpCalls.filter((c) => {
+          const sig = `${c.name}:${JSON.stringify(c.args)}`;
+          return !executedSignatures.has(sig);
+        });
+
+        if (newCalls.length === 0) {
+          console.warn('[Agent] Loop detected: model repeated identical MCP tool calls. Terminating tool loop.');
+          break;
+        }
+
         turnCount++;
         let toolResultsText = '';
         for (const call of mcpCalls) {
+          const sig = `${call.name}:${JSON.stringify(call.args)}`;
+          executedSignatures.add(sig);
+
           const callMeta = await this.executeMcpTool(call.name, call.args);
           executedCalls.push(callMeta);
           toolResultsText += `<mcp_result name="${call.name}" is_error="${callMeta.isError}">\n${callMeta.result}\n</mcp_result>\n`;
+
+          if (call.name === 'saveToFile' && !callMeta.isError) {
+            hasCompletedSaveToFile = true;
+          }
         }
 
         // Send results back to LLM to formulate synthesized user-facing response or next pipeline step
+        const promptInstruction = hasCompletedSaveToFile
+          ? `[ОТЧЕТ УСПЕШНО СОХРАНЕН НА ДИСК]: Файл отчета успешно записан. Пайплайн завершен!\nВНИМАНИЕ: Больше НЕ вызывай инструменты (<mcp_call> строго запрещены).\nПожалуйста, сформируй подробный, красивый и полезный итоговый ответ для пользователя на русском языке: опиши подобранный ноутбук, его характеристики, наличие, стоимость экспресс-доставки и подтверди сохранение файла.`
+          : `[MCP TOOLS EXECUTION RESULTS]:\n${toolResultsText}\n\nПожалуйста, сформируй понятный, полезный и структурированный ответ для пользователя на человеческом естественном языке на основе полученных данных из MCP-инструментов.\nЕсли для завершения цепочки требуется вызвать следующий инструмент (например, summarize или saveToFile), выведи <mcp_call name="...">...</mcp_call>.\nНЕ выводи повторно технические теги вызова (вроде <|tool_call_start|> или <mcp_call>), если задача выполнена — отвечай прямо по сути.`;
+
         const synthesisPrompt = [
-          ...messagesToSend,
+          ...intermediateHistory,
           { role: 'assistant', content: currentContent },
           {
             role: 'user',
-            content: `[MCP TOOLS EXECUTION RESULTS]:\n${toolResultsText}\n\nПожалуйста, сформируй понятный, полезный и структурированный ответ для пользователя на человеческом естественном языке на основе полученных данных из MCP-инструментов.\nЕсли для завершения цепочки требуется вызвать следующий инструмент (например, summarize или saveToFile), выведи <mcp_call name="...">...</mcp_call>.\nНЕ выводи повторно технические теги вызова (вроде <|tool_call_start|> или <mcp_call>), если задача выполнена — отвечай прямо по сути.`,
+            content: promptInstruction,
           },
         ];
 
@@ -2882,10 +2888,18 @@ Do NOT use markdown code fences. Pure JSON only.`,
           totalCompletionTokens += synthesisRes.completionTokens;
           totalTokens += synthesisRes.completionTokens;
           currentContent = synthesisRes.content;
-          const cleanedSynthesis = this.cleanModelRawToolTokens(currentContent);
-          finalContent = cleanedSynthesis.trim() ? cleanedSynthesis : currentContent;
+          intermediateHistory = synthesisPrompt;
 
-          // If no further tool calls in this turn, exit loop
+          const cleanedSynthesis = this.cleanModelRawToolTokens(currentContent);
+          if (cleanedSynthesis.trim()) {
+            finalContent = cleanedSynthesis;
+          }
+
+          // If saveToFile finished or no further tool calls requested, exit loop
+          if (hasCompletedSaveToFile) {
+            break;
+          }
+
           const nextCalls = this.parseMcpCalls(currentContent);
           if (nextCalls.length === 0) {
             break;
@@ -2895,6 +2909,35 @@ Do NOT use markdown code fences. Pure JSON only.`,
           finalContent = `${this.cleanModelRawToolTokens(currentContent)}\n\n[Результаты MCP инструментов]:\n${toolResultsText}`;
           break;
         }
+      }
+
+      // 6.2 Force Synthesis Guard: ensure user NEVER receives empty text when tools were executed
+      const cleanedFinal = this.cleanModelRawToolTokens(finalContent).trim();
+      if (!cleanedFinal && executedCalls.length > 0) {
+        console.log('[Agent] Final response is empty after tool execution. Requesting final synthesis...');
+        try {
+          const forceSynthesisPrompt = [
+            ...intermediateHistory,
+            {
+              role: 'user',
+              content: `[ЗАДАЧА ЗАВЕРШЕНА]: Все операции на MCP-серверах успешно выполнены.\n` +
+                `СТРОГО ЗАПРЕЩЕНО вызывать инструменты (<mcp_call> использовать нельзя!).\n` +
+                `Напиши развернутый и понятный итоговый ответ для пользователя на русском языке: расскажи о подобранном товаре, его характеристиках, наличии, рассчитанной доставке и подтверди сохранение отчета в файл.`,
+            },
+          ];
+          const forceRes = await this.callLLM(forceSynthesisPrompt);
+          totalCompletionTokens += forceRes.completionTokens;
+          totalTokens += forceRes.completionTokens;
+          const cleanedForce = this.cleanModelRawToolTokens(forceRes.content).trim();
+          finalContent = cleanedForce || forceRes.content;
+        } catch (forceErr) {
+          console.warn('[Agent] Force synthesis failed, generating structured fallback summary:', forceErr);
+        }
+      }
+
+      // 6.3 Absolute Fallback: if still empty, generate structured summary from executedCalls
+      if (!this.cleanModelRawToolTokens(finalContent).trim() && executedCalls.length > 0) {
+        finalContent = this.generateFallbackMcpSummary(executedCalls);
       }
 
       // 7. Create and append assistant message

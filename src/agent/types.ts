@@ -10,6 +10,7 @@ export interface McpCallMeta {
   result?: string;
   isError?: boolean;
   serverName?: string;
+  serverUrl?: string;
   latencyMs?: number;
 }
 

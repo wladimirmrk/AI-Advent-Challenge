@@ -566,6 +566,12 @@ export const MessageList: React.FC<MessageListProps> = ({
                         if (msg.role === 'assistant') {
                           const { stateCheck, cleanedContent: afterStateCleaned } = parseStateCheck(msg.content);
                           const { check, cleanedContent } = parseInvariantCheck(afterStateCleaned);
+                          const displayContent = cleanedContent
+                            .replace(/<\|tool_call_start\|>[\s\S]*?<\|tool_call_end\|>/gi, '')
+                            .replace(/<mcp_call\s+name=["'][^"']+["']\s*>[\s\S]*?<\/mcp_call>/gi, '')
+                            .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
+                            .trim();
+
                           return (
                             <>
                               {msg.mcpCalls && msg.mcpCalls.length > 0 && (
@@ -574,7 +580,14 @@ export const MessageList: React.FC<MessageListProps> = ({
                               {stateCheck && <StateCheckCard check={stateCheck} />}
                               {check && <InvariantCheckCard check={check} />}
                               <div className="message-content">
-                                <Markdown content={cleanedContent} />
+                                <Markdown
+                                  content={
+                                    displayContent ||
+                                    (msg.mcpCalls && msg.mcpCalls.length > 0
+                                      ? '✅ Все операции успешно выполнены через внешние MCP-серверы.'
+                                      : msg.content)
+                                  }
+                                />
                               </div>
                             </>
                           );

@@ -4,14 +4,34 @@ const MCP_SERVERS_STORAGE_KEY = 'agent_mcp_servers';
 
 export const DEFAULT_MCP_SERVERS: McpServerConfig[] = [
   {
-    id: 'default-local-mcp',
-    name: 'Локальный MCP сервер',
+    id: 'mcp-catalog-server',
+    name: 'Каталог и Склад',
     url: 'http://localhost:3001/sse',
     transport: 'sse',
     headers: {},
     headersRaw: '{\n  "Authorization": ""\n}',
     enabled: true,
-    createdAt: Date.now(),
+    createdAt: 1700000000001,
+  },
+  {
+    id: 'mcp-logistics-server',
+    name: 'Логистика и Заказы',
+    url: 'http://localhost:3002/sse',
+    transport: 'sse',
+    headers: {},
+    headersRaw: '{\n  "Authorization": ""\n}',
+    enabled: true,
+    createdAt: 1700000000002,
+  },
+  {
+    id: 'mcp-analytics-server',
+    name: 'Аналитика и Отчеты',
+    url: 'http://localhost:3003/sse',
+    transport: 'sse',
+    headers: {},
+    headersRaw: '{\n  "Authorization": ""\n}',
+    enabled: true,
+    createdAt: 1700000000003,
   },
 ];
 
