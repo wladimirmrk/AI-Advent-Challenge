@@ -8,6 +8,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { MockEcommerceService } from './mock-store.js';
 import { SchedulerService, MonitorTarget } from './scheduler-service.js';
+import { PipelineService } from './pipeline-service.js';
 
 const PORT = Number(process.env.MCP_PORT) || 3001;
 
@@ -166,6 +167,78 @@ const AVAILABLE_TOOLS = [
         },
       },
       required: ['message'],
+    },
+  },
+  {
+    name: 'search',
+    description: 'Поиск товаров и информации в каталоге магазина по ключевым словам или категории (Шаг 1 пайплайна: получение данных)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Поисковый запрос (например: "iPhone", "ноутбук", "наушники")',
+        },
+        category: {
+          type: 'string',
+          enum: ['smartphones', 'laptops', 'audio', 'wearables', 'accessories'],
+          description: 'Категория товаров',
+        },
+        max_results: {
+          type: 'number',
+          description: 'Максимальное количество возвращаемых товаров (по умолчанию 20)',
+        },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'summarize',
+    description: 'Аналитическая структурированная выжимка найденных товаров или текста с расчетом метрик, цен и рекомендаций (Шаг 2 пайплайна: обработка данных)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        content: {
+          type: 'string',
+          description: 'Текстовый контент или JSON для суммаризации (например, JSON-вывод инструмента search)',
+        },
+        items: {
+          type: 'array',
+          description: 'Массив найденных объектов товаров (альтернатива текстовому content)',
+        },
+        format: {
+          type: 'string',
+          enum: ['markdown', 'json'],
+          description: 'Формат отчета: markdown (по умолчанию) или json',
+        },
+        title: {
+          type: 'string',
+          description: 'Пользовательский заголовок аналитического отчета',
+        },
+      },
+    },
+  },
+  {
+    name: 'saveToFile',
+    description: 'Безопасное сохранение форматированного отчета на диск в каталог data/reports с защитой от path traversal (Шаг 3 пайплайна: сохранение результата)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        content: {
+          type: 'string',
+          description: 'Текстовое содержимое (Markdown или JSON) для записи в файл',
+        },
+        filename: {
+          type: 'string',
+          description: 'Имя файла (например: smartphones-report.md). Если не указано, имя генерируется автоматически.',
+        },
+        format: {
+          type: 'string',
+          enum: ['markdown', 'json'],
+          description: 'Формат файла (markdown или json)',
+        },
+      },
+      required: ['content'],
     },
   },
 ];
@@ -407,6 +480,77 @@ export function createLocalMcpServer() {
       };
     }
 
+    if (name === 'search') {
+      try {
+        const query = args?.query !== undefined ? String(args.query) : undefined;
+        const category = args?.category ? String(args.category) : undefined;
+        const maxResults = args?.max_results ? Number(args.max_results) : undefined;
+        const pipeline = PipelineService.getInstance();
+        const res = pipeline.searchData({ query, category, max_results: maxResults });
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(res, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          content: [{ type: 'text', text: `Ошибка поиска: ${err.message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    if (name === 'summarize') {
+      try {
+        const content = args?.content !== undefined ? String(args.content) : undefined;
+        const items = Array.isArray(args?.items) ? args.items : undefined;
+        const format = (args?.format as 'markdown' | 'json') || 'markdown';
+        const title = args?.title ? String(args.title) : undefined;
+        const pipeline = PipelineService.getInstance();
+        const res = pipeline.summarizeData({ content, items, format, title });
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(res, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          content: [{ type: 'text', text: `Ошибка суммаризации: ${err.message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    if (name === 'saveToFile') {
+      try {
+        const content = args?.content;
+        const filename = args?.filename ? String(args.filename) : undefined;
+        const format = (args?.format as 'markdown' | 'json') || 'markdown';
+        const directory = args?.directory ? String(args.directory) : undefined;
+        const pipeline = PipelineService.getInstance();
+        const res = pipeline.saveToFile({ content, filename, format, directory });
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(res, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          content: [{ type: 'text', text: `Ошибка сохранения файла: ${err.message}` }],
+          isError: true,
+        };
+      }
+    }
+
     throw new Error(`Tool not found: ${name}`);
   });
 
@@ -508,7 +652,7 @@ export function startMcpHttpServer(port = PORT): Promise<http.Server> {
   });
 }
 
-export { SchedulerService };
+export { SchedulerService, PipelineService };
 
 // Standalone execution
 if (process.argv[1]?.endsWith('mcp-server.ts') || process.argv[1]?.endsWith('mcp-server.js')) {

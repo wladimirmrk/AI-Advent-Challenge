@@ -1468,11 +1468,22 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
       `   Параметры: {"format"?: "iso|locale|timestamp"}`,
       `9. echo — Эхо-тест.`,
       `   Параметры: {"message": "текст"}`,
+      `10. search — Поиск товаров в каталоге магазина (Шаг 1 цепочки: получение данных).`,
+      `    Параметры: {"query": "строка поиска", "category"?: "smartphones|laptops|audio|wearables|accessories", "max_results"?: число}`,
+      `11. summarize — Аналитическая выжимка и расчет метрик по товарам или тексту (Шаг 2 цепочки: обработка данных).`,
+      `    Параметры: {"content"?: "строка JSON или текст", "items"?: массив_товаров, "format"?: "markdown|json", "title"?: "заголовок"}`,
+      `12. saveToFile — Сохранение отчета на диск в каталог data/reports (Шаг 3 цепочки: сохранение результата).`,
+      `    Параметры: {"content": "текст отчета", "filename"?: "имя_файла.md", "format"?: "markdown|json"}`,
       ``,
-      `ПРАВИЛА ВЫЗОВА:`,
-      `- Если для ответа требуются данные из внешнего мира или планирование/сводка фоновых задач, выведи тег <mcp_call name="...">...</mcp_call>.`,
-      `- Система выполнит вызов инструмента и предоставит результат в блоке <mcp_result name="...">...</mcp_result>.`,
-      `- После получения <mcp_result> сформулируй для пользователя исчерпывающий, вежливый и структурированный ответ на основе реальных данных.`,
+      `АВТОНОМНАЯ ОРКЕСТРАЦИЯ ЦЕПОЧЕК (WORKFLOW CHAINING):`,
+      `Ты самостоятельно управляешь пайплайном и последовательностью вызова инструментов:`,
+      `- Если пользователь просит найти, обработать/составить отчет и сохранить в файл:`,
+      `  1. Шаг 1 (Получение данных): вызови <mcp_call name="search">{"query": "..."}</mcp_call>.`,
+      `  2. Шаг 2 (Обработка): получив <mcp_result name="search">, вызови <mcp_call name="summarize">{"content": ...}</mcp_call>.`,
+      `  3. Шаг 3 (Сохранение): получив <mcp_result name="summarize">, вызови <mcp_call name="saveToFile">{"content": ..., "filename": "..."}</mcp_call>.`,
+      `  4. Финал: получив <mcp_result name="saveToFile">, сформируй понятный ответ для пользователя со ссылкой на сохраненный файл и ключевыми выводами.`,
+      `- Система автоматически поддерживает многошаговые вызовы, передавая результат предыдущего инструмента в следующий ход диалога.`,
+      `- Отвечай прямо по сути без лишних технических тегов в финальном сообщении.`,
     ].join('\n');
   }
 
@@ -2836,9 +2847,19 @@ Do NOT use markdown code fences. Pure JSON only.`,
       let totalCompletionTokens = res.completionTokens;
       let totalTokens = res.totalTokens;
 
-      // 6.1 Check if LLM requested MCP tool calls (Day 17)
-      const mcpCalls = this.parseMcpCalls(res.content);
-      if (mcpCalls.length > 0) {
+      // 6.1 Check if LLM requested MCP tool calls (Multi-turn tool loop for composition pipelines)
+      let currentContent = res.content;
+      const MAX_MCP_TURNS = 5;
+      let turnCount = 0;
+
+      while (turnCount < MAX_MCP_TURNS) {
+        const mcpCalls = this.parseMcpCalls(currentContent);
+        if (mcpCalls.length === 0) {
+          finalContent = this.cleanModelRawToolTokens(currentContent) || currentContent;
+          break;
+        }
+
+        turnCount++;
         let toolResultsText = '';
         for (const call of mcpCalls) {
           const callMeta = await this.executeMcpTool(call.name, call.args);
@@ -2846,29 +2867,34 @@ Do NOT use markdown code fences. Pure JSON only.`,
           toolResultsText += `<mcp_result name="${call.name}" is_error="${callMeta.isError}">\n${callMeta.result}\n</mcp_result>\n`;
         }
 
-        // Send results back to LLM to formulate synthesized user-facing response
+        // Send results back to LLM to formulate synthesized user-facing response or next pipeline step
         const synthesisPrompt = [
           ...messagesToSend,
-          { role: 'assistant', content: res.content },
+          { role: 'assistant', content: currentContent },
           {
             role: 'user',
-            content: `[MCP TOOLS EXECUTION RESULTS]:\n${toolResultsText}\n\nПожалуйста, сформируй понятный, полезный и структурированный ответ для пользователя на человеческом естественном языке на основе полученных данных из MCP-инструментов.\nНЕ выводи повторно технические теги вызова (вроде <|tool_call_start|> или <mcp_call>), отвечай прямо по сути вопроса (наличие товара, цена, характеристики, статус заказа или доставка).`,
+            content: `[MCP TOOLS EXECUTION RESULTS]:\n${toolResultsText}\n\nПожалуйста, сформируй понятный, полезный и структурированный ответ для пользователя на человеческом естественном языке на основе полученных данных из MCP-инструментов.\nЕсли для завершения цепочки требуется вызвать следующий инструмент (например, summarize или saveToFile), выведи <mcp_call name="...">...</mcp_call>.\nНЕ выводи повторно технические теги вызова (вроде <|tool_call_start|> или <mcp_call>), если задача выполнена — отвечай прямо по сути.`,
           },
         ];
 
         try {
           const synthesisRes = await this.callLLM(synthesisPrompt);
-          const cleanedSynthesis = this.cleanModelRawToolTokens(synthesisRes.content);
-          finalContent = cleanedSynthesis.trim() ? cleanedSynthesis : synthesisRes.content;
           totalCompletionTokens += synthesisRes.completionTokens;
           totalTokens += synthesisRes.completionTokens;
+          currentContent = synthesisRes.content;
+          const cleanedSynthesis = this.cleanModelRawToolTokens(currentContent);
+          finalContent = cleanedSynthesis.trim() ? cleanedSynthesis : currentContent;
+
+          // If no further tool calls in this turn, exit loop
+          const nextCalls = this.parseMcpCalls(currentContent);
+          if (nextCalls.length === 0) {
+            break;
+          }
         } catch (synthErr) {
           console.warn('[Agent] Synthesis call failed, using raw tool results:', synthErr);
-          finalContent = `${this.cleanModelRawToolTokens(res.content)}\n\n[Результаты MCP инструментов]:\n${toolResultsText}`;
+          finalContent = `${this.cleanModelRawToolTokens(currentContent)}\n\n[Результаты MCP инструментов]:\n${toolResultsText}`;
+          break;
         }
-      } else {
-        // If no tool calls were extracted, still ensure raw tokens are stripped if leaked
-        finalContent = this.cleanModelRawToolTokens(res.content) || res.content;
       }
 
       // 7. Create and append assistant message

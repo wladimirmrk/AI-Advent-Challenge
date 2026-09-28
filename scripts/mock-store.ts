@@ -252,11 +252,14 @@ export const MockEcommerceService = {
       products: results.map((p) => ({
         sku: p.sku,
         title: p.title,
+        category: p.category,
         price: p.price,
         currency: p.currency,
         inStock: p.inStock,
         stockCount: p.stockCount,
         warehouse: p.warehouse,
+        description: p.description,
+        specs: p.specs,
       })),
     };
   },
