@@ -1,7 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { McpServerConfig, McpToolInfo, McpConnectionResult } from './types';
+import { McpServerConfig, McpToolInfo, McpConnectionResult, McpToolCallResult } from './types';
 
 /**
  * Creates an MCP client and transport configured for the given server.
@@ -133,3 +133,80 @@ export async function testMcpConnection(config: McpServerConfig): Promise<McpCon
     }
   }
 }
+
+/**
+ * Connects to an MCP server, executes a specific tool with arguments,
+ * returns the result, and cleanly closes the connection.
+ */
+export async function callMcpTool(
+  config: McpServerConfig,
+  toolName: string,
+  args: Record<string, unknown> = {}
+): Promise<McpToolCallResult> {
+  const startTime = Date.now();
+  let clientInstance: Client | null = null;
+
+  try {
+    const { client, transport } = createMcpClientAndTransport(config);
+    clientInstance = client;
+
+    // Establish connection with timeout protection
+    const connectPromise = client.connect(transport);
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timed out after 10 seconds')), 10000)
+    );
+
+    await Promise.race([connectPromise, timeoutPromise]);
+
+    // Call tool
+    const response = await client.callTool({
+      name: toolName,
+      arguments: args,
+    });
+
+    const latencyMs = Date.now() - startTime;
+
+    // Parse content text
+    let outputText = '';
+    if (Array.isArray(response.content)) {
+      outputText = response.content
+        .map((item: any) => {
+          if (typeof item === 'string') return item;
+          if (item?.type === 'text') return item.text;
+          return JSON.stringify(item);
+        })
+        .join('\n');
+    } else if (response.content) {
+      outputText = JSON.stringify(response.content, null, 2);
+    }
+
+    return {
+      success: !response.isError,
+      toolName,
+      result: outputText,
+      isError: Boolean(response.isError),
+      latencyMs,
+    };
+  } catch (error: any) {
+    const latencyMs = Date.now() - startTime;
+    const rawError = error?.message || String(error) || `Failed to call tool ${toolName}`;
+
+    return {
+      success: false,
+      toolName,
+      isError: true,
+      error: rawError,
+      result: `Ошибка выполнения инструмента: ${rawError}`,
+      latencyMs,
+    };
+  } finally {
+    if (clientInstance) {
+      try {
+        await clientInstance.close();
+      } catch {
+        // Ignore teardown errors
+      }
+    }
+  }
+}
+

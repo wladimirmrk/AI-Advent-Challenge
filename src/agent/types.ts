@@ -4,12 +4,22 @@
 
 export type Role = 'user' | 'assistant' | 'system';
 
+export interface McpCallMeta {
+  toolName: string;
+  args: Record<string, unknown>;
+  result?: string;
+  isError?: boolean;
+  serverName?: string;
+  latencyMs?: number;
+}
+
 export interface Message {
   id: string;
   role: Role;
   content: string;
   timestamp: number;
   tokens?: number;
+  mcpCalls?: McpCallMeta[];
 }
 
 export type AgentMode = 'production' | 'demo';

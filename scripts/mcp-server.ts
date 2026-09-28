@@ -6,11 +6,84 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import { MockEcommerceService } from './mock-store.js';
 
 const PORT = Number(process.env.MCP_PORT) || 3001;
 
 // Define tools available on this server
 const AVAILABLE_TOOLS = [
+  {
+    name: 'store_search_products',
+    description: 'Поиск товаров в каталоге интернет-магазина по ключевым словам, категории или максимальной цене',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Поисковый запрос (название товара или описание)',
+        },
+        category: {
+          type: 'string',
+          enum: ['smartphones', 'laptops', 'audio', 'wearables', 'accessories'],
+          description: 'Категория электроники',
+        },
+        max_price: {
+          type: 'number',
+          description: 'Максимальная стоимость в рублях',
+        },
+      },
+    },
+  },
+  {
+    name: 'store_get_product',
+    description: 'Получить подробные данные о товаре по артикулу (SKU): цена, характеристики, склад и остаток',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sku: {
+          type: 'string',
+          description: 'Артикул товара (например: PHONE-15-PRO, LAPTOP-AIR-M3, HEADPHONES-MAX, WATCH-ULTRA-2, CASE-MAGSAFE)',
+        },
+      },
+      required: ['sku'],
+    },
+  },
+  {
+    name: 'order_get_status',
+    description: 'Проверить статус, состав и трекинг заказа клиента по номеру заказа (order_id)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        order_id: {
+          type: 'string',
+          description: 'Номер заказа (например: ORD-7741, ORD-8820, ORD-9905)',
+        },
+      },
+      required: ['order_id'],
+    },
+  },
+  {
+    name: 'delivery_calculate_cost',
+    description: 'Рассчитать стоимость и ориентировочный срок курьерской доставки в указанный город',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        city: {
+          type: 'string',
+          description: 'Город назначения (например: Москва, Санкт-Петербург, Казань, Екатеринбург, Новосибирск)',
+        },
+        weight_kg: {
+          type: 'number',
+          description: 'Вес посылки в килограммах (по умолчанию 1.0)',
+        },
+        express: {
+          type: 'boolean',
+          description: 'Срочная доставка (быстрее, но с доплатой)',
+        },
+      },
+      required: ['city'],
+    },
+  },
   {
     name: 'calculate',
     description: 'Вычислить простое математическое выражение (например: 2 + 2, 10 * 5, 100 / 4)',
@@ -78,6 +151,94 @@ export function createLocalMcpServer() {
   // Handle call tool
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+
+    if (name === 'store_search_products') {
+      try {
+        const query = args?.query ? String(args.query) : undefined;
+        const category = args?.category ? String(args.category) : undefined;
+        const maxPrice = args?.max_price ? Number(args.max_price) : undefined;
+        const res = MockEcommerceService.searchProducts(query, category, maxPrice);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(res, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          content: [{ type: 'text', text: `Ошибка поиска товаров: ${err.message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    if (name === 'store_get_product') {
+      try {
+        const sku = String(args?.sku || '');
+        const res = MockEcommerceService.getProductBySku(sku);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(res, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          content: [{ type: 'text', text: `Ошибка получения данных товара: ${err.message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    if (name === 'order_get_status') {
+      try {
+        const orderId = String(args?.order_id || '');
+        const res = MockEcommerceService.getOrderStatus(orderId);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(res, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          content: [{ type: 'text', text: `Ошибка проверки заказа: ${err.message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    if (name === 'delivery_calculate_cost') {
+      try {
+        const city = String(args?.city || '');
+        const weightKg = Number(args?.weight_kg || 1.0);
+        const express = Boolean(args?.express || false);
+        const res = MockEcommerceService.calculateDelivery(city, weightKg, express);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(res, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          content: [{ type: 'text', text: `Ошибка расчета доставки: ${err.message}` }],
+          isError: true,
+        };
+      }
+    }
 
     if (name === 'calculate') {
       const expr = String(args?.expression || '');

@@ -29,3 +29,13 @@ export interface McpConnectionResult {
   error?: string;
   latencyMs?: number;
 }
+
+export interface McpToolCallResult {
+  success: boolean;
+  toolName: string;
+  result?: string;
+  isError?: boolean;
+  error?: string;
+  latencyMs?: number;
+}
+

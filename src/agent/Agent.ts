@@ -42,7 +42,11 @@ import {
   InvariantCategory,
   TransitionResult,
   StateCheckResult,
+  McpCallMeta,
 } from './types';
+import { loadMcpServers } from './mcp/storage';
+import { callMcpTool } from './mcp/McpClient';
+import { McpToolCallResult } from './mcp/types';
 import {
   canTransition,
   STAGE_LABELS,
@@ -1241,6 +1245,235 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
   }
 
   // ==========================================
+  // Model Context Protocol (MCP) Tool Execution (Day 17)
+  // ==========================================
+
+  /**
+   * Helper to parse tool calls from model output in multiple formats:
+   * 1. <mcp_call name="...">{"arg": "val"}</mcp_call>
+   * 2. <|tool_call_start|>[tool_name(key='val')]<|tool_call_end|> (Qwen / Hermes format)
+   * 3. <|tool_call_start|>[{"name": "tool_name", "arguments": {...}}]<|tool_call_end|>
+   * 4. <tool_call>{"name": "tool_name", "arguments": {...}}</tool_call>
+   */
+  public parseMcpCalls(
+    content: string
+  ): Array<{ name: string; args: Record<string, unknown>; rawTag: string }> {
+    if (!content) return [];
+    const calls: Array<{ name: string; args: Record<string, unknown>; rawTag: string }> = [];
+
+    const parseArgsHelper = (rawStr: string): Record<string, unknown> => {
+      const trimmed = rawStr.trim();
+      if (!trimmed) return {};
+
+      // 1. Try JSON
+      try {
+        const cleaned = trimmed
+          .replace(/^```json\s*/i, '')
+          .replace(/^```\s*/i, '')
+          .replace(/```$/i, '')
+          .trim();
+        if ((cleaned.startsWith('{') && cleaned.endsWith('}')) || (cleaned.startsWith('[') && cleaned.endsWith(']'))) {
+          const parsed = JSON.parse(cleaned);
+          if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+            return parsed;
+          }
+        }
+      } catch {}
+
+      // 2. Try pythonic keyword arguments: key=value, key='value', key="value"
+      const args: Record<string, unknown> = {};
+      const kvRegex = /([a-zA-Z0-9_]+)\s*=\s*(?:'([^']*)'|"([^"]*)"|([a-zA-Z0-9_.-]+))/g;
+      let match;
+      while ((match = kvRegex.exec(trimmed)) !== null) {
+        const key = match[1];
+        let val: any = match[2] ?? match[3] ?? match[4];
+        if (val === 'True' || val === 'true') val = true;
+        else if (val === 'False' || val === 'false') val = false;
+        else if (val === 'None' || val === 'null') val = null;
+        else if (!isNaN(Number(val)) && typeof val === 'string' && val.trim() !== '') {
+          val = Number(val);
+        }
+        args[key] = val;
+      }
+      return args;
+    };
+
+    // Format 1: <mcp_call name="tool_name">...</mcp_call>
+    const mcpCallRegex = /<mcp_call\s+name=["']([^"']+)["']\s*>([\s\S]*?)<\/mcp_call>/gi;
+    let mcpMatch;
+    while ((mcpMatch = mcpCallRegex.exec(content)) !== null) {
+      const name = mcpMatch[1].trim();
+      const rawArgs = mcpMatch[2].trim();
+      const args = parseArgsHelper(rawArgs);
+      calls.push({ name, args, rawTag: mcpMatch[0] });
+    }
+
+    // Format 2: <|tool_call_start|>...<|tool_call_end|> (e.g. Qwen, Hermes)
+    const qwenRegex = /<\|tool_call_start\|>([\s\S]*?)<\|tool_call_end\|>/gi;
+    let qwenMatch;
+    while ((qwenMatch = qwenRegex.exec(content)) !== null) {
+      const inner = qwenMatch[1].trim();
+
+      // Case 2a: JSON array/object inside <|tool_call_start|>[{"name": "...", "arguments": ...}]<|tool_call_end|>
+      if (inner.startsWith('[') && inner.includes('"name"')) {
+        try {
+          const parsed = JSON.parse(inner);
+          if (Array.isArray(parsed)) {
+            for (const item of parsed) {
+              if (item?.name) {
+                calls.push({
+                  name: String(item.name).trim(),
+                  args: (item.arguments || {}) as Record<string, unknown>,
+                  rawTag: qwenMatch[0],
+                });
+              }
+            }
+            continue;
+          }
+        } catch {}
+      }
+
+      // Case 2b: Function call syntax: [tool_name(args)] or tool_name(args)
+      const funcMatch = inner.match(/\[?\s*([a-zA-Z0-9_]+)\s*\(([\s\S]*?)\)\s*\]?/);
+      if (funcMatch) {
+        const name = funcMatch[1].trim();
+        const rawArgs = funcMatch[2].trim();
+        const args = parseArgsHelper(rawArgs);
+        calls.push({ name, args, rawTag: qwenMatch[0] });
+      }
+    }
+
+    // Format 3: <tool_call>...</tool_call>
+    const genericToolCallRegex = /<tool_call>([\s\S]*?)<\/tool_call>/gi;
+    let genericMatch;
+    while ((genericMatch = genericToolCallRegex.exec(content)) !== null) {
+      const inner = genericMatch[1].trim();
+      try {
+        const parsed = JSON.parse(inner);
+        if (parsed?.name) {
+          calls.push({
+            name: String(parsed.name).trim(),
+            args: (parsed.arguments || {}) as Record<string, unknown>,
+            rawTag: genericMatch[0],
+          });
+          continue;
+        }
+      } catch {}
+
+      const funcMatch = inner.match(/\[?\s*([a-zA-Z0-9_]+)\s*\(([\s\S]*?)\)\s*\]?/);
+      if (funcMatch) {
+        const name = funcMatch[1].trim();
+        const args = parseArgsHelper(funcMatch[2].trim());
+        calls.push({ name, args, rawTag: genericMatch[0] });
+      }
+    }
+
+    return calls;
+  }
+
+  /**
+   * Strips internal tool calling tokens from assistant text to keep UI responses clean.
+   */
+  public cleanModelRawToolTokens(content: string): string {
+    if (!content) return '';
+    return content
+      .replace(/<\|tool_call_start\|>[\s\S]*?<\|tool_call_end\|>/gi, '')
+      .replace(/<mcp_call\s+name=["'][^"']+["']\s*>[\s\S]*?<\/mcp_call>/gi, '')
+      .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
+      .trim();
+  }
+
+  /**
+   * Executes an MCP tool on enabled MCP servers.
+   */
+  public async executeMcpTool(
+    toolName: string,
+    args: Record<string, unknown> = {}
+  ): Promise<McpCallMeta> {
+    const servers = loadMcpServers().filter((s) => s.enabled);
+    if (servers.length === 0) {
+      return {
+        toolName,
+        args,
+        isError: true,
+        result: 'Ошибка: Нет активных (enabled) MCP-серверов в настройках приложения.',
+        latencyMs: 0,
+      };
+    }
+
+    let lastResult: McpToolCallResult | null = null;
+    let successfulServerName = servers[0].name;
+
+    for (const server of servers) {
+      try {
+        const res = await callMcpTool(server, toolName, args);
+        lastResult = res;
+        successfulServerName = server.name;
+        if (res.success) {
+          break;
+        }
+      } catch (err: any) {
+        lastResult = {
+          success: false,
+          toolName,
+          isError: true,
+          error: err.message,
+          result: `Ошибка: ${err.message}`,
+        };
+      }
+    }
+
+    return {
+      toolName,
+      args,
+      result: lastResult?.result || 'Инструмент не вернул данных',
+      isError: lastResult?.isError || !lastResult?.success,
+      serverName: successfulServerName,
+      latencyMs: lastResult?.latencyMs || 0,
+    };
+  }
+
+  /**
+   * Formats description and instructions for active MCP tools into the system prompt.
+   */
+  public formatMcpToolsPrompt(): string {
+    const servers = loadMcpServers().filter((s) => s.enabled);
+    if (servers.length === 0) return '';
+
+    return [
+      `[MODEL CONTEXT PROTOCOL (MCP) TOOLS]`,
+      `У тебя есть доступ к внешним инструментам подключенного локального MCP-сервера.`,
+      `Когда пользователь задает вопрос о наличии товаров, ценах, характеристиках, статусе или трекинге заказа, либо расчете доставки — НЕ ПРИДУМЫВАЙ ответ самостоятельно! Ты ОБЯЗАН вызвать соответствующий инструмент MCP-сервера.`,
+      ``,
+      `ФОРМАТ ВЫЗОВА ИНСТРУМЕНТА:`,
+      `<mcp_call name="имя_инструмента">`,
+      `{"параметр1": "значение1"}`,
+      `</mcp_call>`,
+      ``,
+      `СПИСОК ДОСТУПНЫХ ИНСТРУМЕНТОВ:`,
+      `1. store_search_products — Поиск товаров в каталоге магазина.`,
+      `   Параметры: {"query": "строка поиска", "category"?: "smartphones|laptops|audio|wearables|accessories", "max_price"?: число}`,
+      `2. store_get_product — Получить подробные данные о товаре (цену, характеристики, склад и остаток) по SKU.`,
+      `   Параметры: {"sku": "PHONE-15-PRO | LAPTOP-AIR-M3 | HEADPHONES-MAX | WATCH-ULTRA-2 | CASE-MAGSAFE"}`,
+      `3. order_get_status — Проверить статус, состав и трекинг заказа по номеру заказа.`,
+      `   Параметры: {"order_id": "ORD-7741 | ORD-8820 | ORD-9905"}`,
+      `4. delivery_calculate_cost — Рассчитать стоимость и ориентировочный срок курьерской доставки в город.`,
+      `   Параметры: {"city": "Москва|Санкт-Петербург|Казань|...", "weight_kg"?: число, "express"?: булево}`,
+      `5. calculate — Вычислить математическое выражение.`,
+      `   Параметры: {"expression": "100 * 5"}`,
+      `6. get_system_time — Получить текущее время сервера.`,
+      `   Параметры: {"format"?: "iso|locale|timestamp"}`,
+      `7. echo — Эхо-тест.`,
+      `   Параметры: {"message": "текст"}`,
+      ``,
+      `ПРАВИЛА ВЫЗОВА:`,
+      `- Если для ответа требуются данные из внешнего мира, выведи тег <mcp_call name="...">...</mcp_call>.`,
+      `- Система выполнит вызов инструмента и предоставит результат в блоке <mcp_result name="...">...</mcp_result>.`,
+      `- После получения <mcp_result> сформулируй для пользователя исчерпывающий, вежливый и структурированный ответ на основе реальных данных.`,
+    ].join('\n');
+  }
+
+  // ==========================================
   // Long-Term Memory Management (Global Profile & Knowledge)
   // ==========================================
 
@@ -2030,7 +2263,10 @@ Do NOT use markdown code fences. Pure JSON only.`,
       this.config.systemPrompt && this.config.systemPrompt.trim()
         ? this.config.systemPrompt.trim()
         : '';
-    const systemTokens = systemContent ? estimateTokens(systemContent) + 4 : 0;
+    const mcpText = this.formatMcpToolsPrompt();
+    const systemTokens =
+      (systemContent ? estimateTokens(systemContent) + 4 : 0) +
+      (mcpText ? estimateTokens(mcpText) + 4 : 0);
 
     const invariantsText = this.formatInvariantsPrompt();
     const invariantsTokens = invariantsText ? estimateTokens(invariantsText) + 4 : 0;
@@ -2145,6 +2381,15 @@ Do NOT use markdown code fences. Pure JSON only.`,
       prepared.push({
         role: 'system',
         content: invariantsPrompt,
+      });
+    }
+
+    // 1.6 MCP Tools instruction (Day 17)
+    const mcpPrompt = this.formatMcpToolsPrompt();
+    if (mcpPrompt) {
+      prepared.push({
+        role: 'system',
+        content: mcpPrompt,
       });
     }
 
@@ -2583,20 +2828,60 @@ Do NOT use markdown code fences. Pure JSON only.`,
     try {
       // 6. Call LLM
       const res = await this.callLLM(messagesToSend);
+      let executedCalls: McpCallMeta[] = [];
+      let finalContent = res.content;
+      let totalCompletionTokens = res.completionTokens;
+      let totalTokens = res.totalTokens;
+
+      // 6.1 Check if LLM requested MCP tool calls (Day 17)
+      const mcpCalls = this.parseMcpCalls(res.content);
+      if (mcpCalls.length > 0) {
+        let toolResultsText = '';
+        for (const call of mcpCalls) {
+          const callMeta = await this.executeMcpTool(call.name, call.args);
+          executedCalls.push(callMeta);
+          toolResultsText += `<mcp_result name="${call.name}" is_error="${callMeta.isError}">\n${callMeta.result}\n</mcp_result>\n`;
+        }
+
+        // Send results back to LLM to formulate synthesized user-facing response
+        const synthesisPrompt = [
+          ...messagesToSend,
+          { role: 'assistant', content: res.content },
+          {
+            role: 'user',
+            content: `[MCP TOOLS EXECUTION RESULTS]:\n${toolResultsText}\n\nПожалуйста, сформируй понятный, полезный и структурированный ответ для пользователя на человеческом естественном языке на основе полученных данных из MCP-инструментов.\nНЕ выводи повторно технические теги вызова (вроде <|tool_call_start|> или <mcp_call>), отвечай прямо по сути вопроса (наличие товара, цена, характеристики, статус заказа или доставка).`,
+          },
+        ];
+
+        try {
+          const synthesisRes = await this.callLLM(synthesisPrompt);
+          const cleanedSynthesis = this.cleanModelRawToolTokens(synthesisRes.content);
+          finalContent = cleanedSynthesis.trim() ? cleanedSynthesis : synthesisRes.content;
+          totalCompletionTokens += synthesisRes.completionTokens;
+          totalTokens += synthesisRes.completionTokens;
+        } catch (synthErr) {
+          console.warn('[Agent] Synthesis call failed, using raw tool results:', synthErr);
+          finalContent = `${this.cleanModelRawToolTokens(res.content)}\n\n[Результаты MCP инструментов]:\n${toolResultsText}`;
+        }
+      } else {
+        // If no tool calls were extracted, still ensure raw tokens are stripped if leaked
+        finalContent = this.cleanModelRawToolTokens(res.content) || res.content;
+      }
 
       // 7. Create and append assistant message
       const assistantMessage: Message = {
         id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
         role: 'assistant',
-        content: res.content,
+        content: finalContent,
         timestamp: Date.now(),
-        tokens: res.completionTokens,
+        tokens: totalCompletionTokens,
+        ...(executedCalls.length > 0 ? { mcpCalls: executedCalls } : {}),
       };
 
       this.messages.push(assistantMessage);
 
       // 7.1 If assistant emitted <task_update ... />, apply state transition; otherwise advance automatically
-      const taskUpdate = this.parseTaskUpdateTags(res.content);
+      const taskUpdate = this.parseTaskUpdateTags(finalContent);
       if (taskUpdate) {
         this.updateTaskState(taskUpdate);
       } else if (this.isAutoRunning || this.workingMemory.taskState.stage !== 'idle') {
@@ -2607,11 +2892,11 @@ Do NOT use markdown code fences. Pure JSON only.`,
       this.tokenStats = {
         currentRequest: userMessageTokens,
         conversation: res.promptTokens,
-        response: res.completionTokens,
-        total: res.totalTokens,
+        response: totalCompletionTokens,
+        total: totalTokens,
         contextWindow: this.config.contextWindow,
         isEstimated: res.isEstimated,
-        estimatedCost: calculateEstimatedCost(res.promptTokens, res.completionTokens, this.config.model, this.config.provider),
+        estimatedCost: calculateEstimatedCost(res.promptTokens, totalCompletionTokens, this.config.model, this.config.provider),
         isLocal: this.config.provider === 'ollama',
       };
 
@@ -2643,7 +2928,7 @@ Do NOT use markdown code fences. Pure JSON only.`,
         this.stopAutoExecution();
       }
 
-      return res.content;
+      return finalContent;
     } catch (err: unknown) {
       this.isLoading = false;
       const errorText = err instanceof Error ? err.message : 'An unexpected error occurred.';

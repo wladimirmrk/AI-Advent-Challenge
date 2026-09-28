@@ -15,10 +15,11 @@ import {
   HelpCircle,
   Power,
   RefreshCw,
+  Terminal,
 } from 'lucide-react';
 import { McpServerConfig, McpConnectionResult } from '../agent/mcp/types';
 import { loadMcpServers, saveMcpServers, DEFAULT_MCP_SERVERS } from '../agent/mcp/storage';
-import { testMcpConnection } from '../agent/mcp/McpClient';
+import { testMcpConnection, callMcpTool } from '../agent/mcp/McpClient';
 
 interface McpModalProps {
   isOpen: boolean;
@@ -31,12 +32,21 @@ interface TestState {
   result?: McpConnectionResult;
 }
 
+interface ToolExecutionState {
+  isOpen: boolean;
+  isLoading: boolean;
+  argsRaw: string;
+  result?: string;
+  isError?: boolean;
+}
+
 export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersChange }) => {
   const [servers, setServers] = useState<McpServerConfig[]>([]);
   const [editingServer, setEditingServer] = useState<McpServerConfig | null>(null);
   const [isAddingNew, setIsAddingNew] = useState(false);
   const [testStates, setTestStates] = useState<Record<string, TestState>>({});
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
+  const [toolExecStates, setToolExecStates] = useState<Record<string, ToolExecutionState>>({});
 
   // Form state
   const [formName, setFormName] = useState('');
@@ -204,6 +214,115 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
       ...prev,
       [serverId]: !prev[serverId],
     }));
+  };
+
+  const getSampleArgsForTool = (toolName: string): string => {
+    switch (toolName) {
+      case 'store_search_products':
+        return JSON.stringify({ query: 'iPhone', category: 'smartphones', max_price: 150000 }, null, 2);
+      case 'store_get_product':
+        return JSON.stringify({ sku: 'PHONE-15-PRO' }, null, 2);
+      case 'order_get_status':
+        return JSON.stringify({ order_id: 'ORD-7741' }, null, 2);
+      case 'delivery_calculate_cost':
+        return JSON.stringify({ city: 'Москва', weight_kg: 2.5, express: true }, null, 2);
+      case 'calculate':
+        return JSON.stringify({ expression: '25 * 4 + 10' }, null, 2);
+      case 'get_system_time':
+        return JSON.stringify({ format: 'locale' }, null, 2);
+      case 'echo':
+        return JSON.stringify({ message: 'Привет от MCP агента!' }, null, 2);
+      default:
+        return '{}';
+    }
+  };
+
+  const toggleToolExecOpen = (toolKey: string, toolName: string) => {
+    setToolExecStates((prev) => {
+      const current = prev[toolKey];
+      if (current) {
+        return {
+          ...prev,
+          [toolKey]: { ...current, isOpen: !current.isOpen },
+        };
+      }
+      return {
+        ...prev,
+        [toolKey]: {
+          isOpen: true,
+          isLoading: false,
+          argsRaw: getSampleArgsForTool(toolName),
+        },
+      };
+    });
+  };
+
+  const handleUpdateToolArgs = (toolKey: string, val: string) => {
+    setToolExecStates((prev) => ({
+      ...prev,
+      [toolKey]: {
+        ...(prev[toolKey] || { isOpen: true, isLoading: false, argsRaw: '{}' }),
+        argsRaw: val,
+      },
+    }));
+  };
+
+  const handleExecuteTool = async (server: McpServerConfig, toolName: string, toolKey: string) => {
+    const current = toolExecStates[toolKey] || {
+      isOpen: true,
+      isLoading: false,
+      argsRaw: getSampleArgsForTool(toolName),
+    };
+
+    let parsedArgs: Record<string, unknown> = {};
+    if (current.argsRaw.trim()) {
+      try {
+        parsedArgs = JSON.parse(current.argsRaw);
+      } catch (e: any) {
+        setToolExecStates((prev) => ({
+          ...prev,
+          [toolKey]: {
+            ...current,
+            isError: true,
+            result: `Ошибка парсинга JSON аргументов: ${e.message}`,
+          },
+        }));
+        return;
+      }
+    }
+
+    setToolExecStates((prev) => ({
+      ...prev,
+      [toolKey]: {
+        ...current,
+        isLoading: true,
+        result: undefined,
+        isError: undefined,
+      },
+    }));
+
+    try {
+      const res = await callMcpTool(server, toolName, parsedArgs);
+      setToolExecStates((prev) => ({
+        ...prev,
+        [toolKey]: {
+          ...current,
+          isLoading: false,
+          result: res.result,
+          isError: res.isError || !res.success,
+        },
+      }));
+    } catch (err: any) {
+      setToolExecStates((prev) => ({
+        ...prev,
+        [toolKey]: {
+          ...current,
+          isLoading: false,
+          result: `Ошибка: ${err.message}`,
+          isError: true,
+        },
+      }));
+    }
   };
 
   const isFormOpen = isAddingNew || editingServer !== null;
@@ -558,33 +677,154 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
 
                           {isToolsExpanded && (
                             <div className="mcp-tools-list">
-                              {tools.map((tool) => (
-                                <div key={tool.name} className="mcp-tool-item">
-                                  <div className="mcp-tool-header">
-                                    <Code2 size={14} className="mcp-tool-icon" />
-                                    <span className="mcp-tool-name">{tool.name}</span>
-                                  </div>
-                                  {tool.description && (
-                                    <p className="mcp-tool-desc">{tool.description}</p>
-                                  )}
-                                  {tool.inputSchema?.properties && (
-                                    <div className="mcp-tool-params">
-                                      <span className="mcp-params-label">Параметры:</span>
-                                      {Object.entries(tool.inputSchema.properties).map(
-                                        ([pName, pVal]: [string, any]) => (
-                                          <span key={pName} className="mcp-param-tag">
-                                            {pName}
-                                            {tool.inputSchema?.required?.includes(pName) && (
-                                              <span className="required-star">*</span>
-                                            )}
-                                            {pVal?.type ? `: ${pVal.type}` : ''}
-                                          </span>
-                                        )
-                                      )}
+                              {tools.map((tool) => {
+                                const toolKey = `${server.id}-${tool.name}`;
+                                const execState = toolExecStates[toolKey] || {
+                                  isOpen: false,
+                                  isLoading: false,
+                                  argsRaw: getSampleArgsForTool(tool.name),
+                                };
+
+                                return (
+                                  <div key={tool.name} className="mcp-tool-item">
+                                    <div
+                                      className="mcp-tool-header"
+                                      style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                                    >
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                        <Code2 size={14} className="mcp-tool-icon" />
+                                        <span className="mcp-tool-name">{tool.name}</span>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        className="btn btn-secondary btn-xs"
+                                        style={{ padding: '2px 8px', fontSize: '11px', height: '24px' }}
+                                        onClick={() => toggleToolExecOpen(toolKey, tool.name)}
+                                      >
+                                        <Terminal size={12} style={{ marginRight: '4px' }} />
+                                        <span>{execState.isOpen ? 'Скрыть тест' : 'Тестировать'}</span>
+                                      </button>
                                     </div>
-                                  )}
-                                </div>
-                              ))}
+                                    {tool.description && (
+                                      <p className="mcp-tool-desc">{tool.description}</p>
+                                    )}
+                                    {tool.inputSchema?.properties && (
+                                      <div className="mcp-tool-params">
+                                        <span className="mcp-params-label">Параметры:</span>
+                                        {Object.entries(tool.inputSchema.properties).map(
+                                          ([pName, pVal]: [string, any]) => (
+                                            <span key={pName} className="mcp-param-tag">
+                                              {pName}
+                                              {tool.inputSchema?.required?.includes(pName) && (
+                                                <span className="required-star">*</span>
+                                              )}
+                                              {pVal?.type ? `: ${pVal.type}` : ''}
+                                            </span>
+                                          )
+                                        )}
+                                      </div>
+                                    )}
+
+                                    {/* Interactive execution panel */}
+                                    {execState.isOpen && (
+                                      <div
+                                        style={{
+                                          marginTop: '8px',
+                                          padding: '8px',
+                                          background: 'rgba(0, 0, 0, 0.25)',
+                                          borderRadius: '6px',
+                                          border: '1px solid rgba(255, 255, 255, 0.1)',
+                                        }}
+                                      >
+                                        <div
+                                          style={{
+                                            fontSize: '11px',
+                                            marginBottom: '4px',
+                                            color: 'var(--text-secondary, #94a3b8)',
+                                          }}
+                                        >
+                                          Аргументы вызова (JSON):
+                                        </div>
+                                        <textarea
+                                          value={execState.argsRaw}
+                                          onChange={(e) => handleUpdateToolArgs(toolKey, e.target.value)}
+                                          rows={3}
+                                          style={{
+                                            width: '100%',
+                                            fontFamily: 'monospace',
+                                            fontSize: '11px',
+                                            background: 'rgba(0, 0, 0, 0.4)',
+                                            border: '1px solid rgba(255, 255, 255, 0.15)',
+                                            borderRadius: '4px',
+                                            color: '#f8fafc',
+                                            padding: '6px',
+                                            resize: 'vertical',
+                                            boxSizing: 'border-box',
+                                          }}
+                                        />
+                                        <div
+                                          style={{
+                                            marginTop: '6px',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '8px',
+                                          }}
+                                        >
+                                          <button
+                                            type="button"
+                                            className="btn btn-primary btn-xs"
+                                            disabled={execState.isLoading}
+                                            onClick={() => handleExecuteTool(server, tool.name, toolKey)}
+                                            style={{ padding: '3px 10px', fontSize: '11px' }}
+                                          >
+                                            {execState.isLoading ? (
+                                              <>
+                                                <Loader2 size={12} className="spin-icon" style={{ marginRight: '4px' }} />
+                                                <span>Выполнение...</span>
+                                              </>
+                                            ) : (
+                                              <>
+                                                <Play size={12} style={{ marginRight: '4px' }} />
+                                                <span>Выполнить вызов</span>
+                                              </>
+                                            )}
+                                          </button>
+                                        </div>
+
+                                        {execState.result && (
+                                          <div style={{ marginTop: '8px' }}>
+                                            <div
+                                              style={{
+                                                fontSize: '11px',
+                                                marginBottom: '4px',
+                                                fontWeight: 600,
+                                                color: execState.isError ? '#ef4444' : '#22c55e',
+                                              }}
+                                            >
+                                              {execState.isError ? 'Ошибка выполнения:' : 'Результат ответа MCP:'}
+                                            </div>
+                                            <pre
+                                              style={{
+                                                background: 'rgba(0, 0, 0, 0.5)',
+                                                padding: '6px',
+                                                borderRadius: '4px',
+                                                fontSize: '11px',
+                                                maxHeight: '180px',
+                                                overflowY: 'auto',
+                                                margin: 0,
+                                                color: execState.isError ? '#fca5a5' : '#86efac',
+                                                whiteSpace: 'pre-wrap',
+                                              }}
+                                            >
+                                              {execState.result}
+                                            </pre>
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
                             </div>
                           )}
                         </div>

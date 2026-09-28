@@ -18,21 +18,26 @@ export const DEFAULT_MCP_SERVERS: McpServerConfig[] = [
 export function loadMcpServers(): McpServerConfig[] {
   try {
     if (typeof localStorage === 'undefined') {
-      return [...DEFAULT_MCP_SERVERS];
+      return [];
     }
     const raw = localStorage.getItem(MCP_SERVERS_STORAGE_KEY);
     if (!raw) {
-      saveMcpServers(DEFAULT_MCP_SERVERS);
-      return [...DEFAULT_MCP_SERVERS];
+      const proc = (globalThis as any).process;
+      const isNode = typeof proc !== 'undefined' && proc.versions && proc.versions.node;
+      if (!isNode) {
+        saveMcpServers(DEFAULT_MCP_SERVERS);
+        return [...DEFAULT_MCP_SERVERS];
+      }
+      return [];
     }
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.length > 0) {
       return parsed;
     }
-    return [...DEFAULT_MCP_SERVERS];
+    return [];
   } catch (e) {
-    console.warn('Failed to load MCP servers from localStorage, using defaults:', e);
-    return [...DEFAULT_MCP_SERVERS];
+    console.warn('Failed to load MCP servers from localStorage:', e);
+    return [];
   }
 }
 

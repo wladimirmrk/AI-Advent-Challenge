@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Message, TrimInfo, ContextStrategy } from '../agent/types';
+import { Message, TrimInfo, ContextStrategy, McpCallMeta } from '../agent/types';
 import Markdown from './Markdown';
 import {
   User,
@@ -14,6 +14,7 @@ import {
   ShieldAlert,
   ChevronDown,
   ChevronRight,
+  Wrench,
 } from 'lucide-react';
 
 interface InvariantCheckResult {
@@ -129,13 +130,137 @@ const StateCheckCard: React.FC<{ check: StateCheckData }> = ({ check }) => {
   );
 };
 
+const McpToolCallCard: React.FC<{ calls: McpCallMeta[] }> = ({ calls }) => {
+  const [isOpen, setIsOpen] = useState(false);
+
+  if (!calls || calls.length === 0) return null;
+
+  const hasErrors = calls.some((c) => c.isError);
+
+  return (
+    <div
+      className={`mcp-tool-card ${hasErrors ? 'status-error' : 'status-success'}`}
+      style={{
+        marginBottom: '10px',
+        padding: '10px 12px',
+        borderRadius: '8px',
+        background: hasErrors ? 'rgba(239, 68, 68, 0.08)' : 'rgba(34, 197, 94, 0.08)',
+        border: `1px solid ${hasErrors ? 'rgba(239, 68, 68, 0.3)' : 'rgba(34, 197, 94, 0.3)'}`,
+        fontSize: '12px',
+      }}
+    >
+      <div
+        className="mcp-tool-header"
+        onClick={() => setIsOpen(!isOpen)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          cursor: 'pointer',
+          userSelect: 'none',
+        }}
+        role="button"
+        tabIndex={0}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          <Wrench size={14} style={{ color: hasErrors ? '#ef4444' : '#22c55e' }} />
+          <strong style={{ color: hasErrors ? '#ef4444' : '#22c55e' }}>
+            🔧 MCP вызов: {calls.map((c) => c.toolName).join(', ')}
+          </strong>
+          {calls[0]?.serverName && (
+            <span
+              style={{
+                background: 'rgba(255, 255, 255, 0.08)',
+                padding: '2px 6px',
+                borderRadius: '4px',
+                color: 'var(--text-secondary, #94a3b8)',
+                fontSize: '11px',
+              }}
+            >
+              {calls[0].serverName}
+            </span>
+          )}
+          {typeof calls[0]?.latencyMs === 'number' && calls[0].latencyMs > 0 && (
+            <span
+              style={{
+                background: 'rgba(255, 255, 255, 0.08)',
+                padding: '2px 6px',
+                borderRadius: '4px',
+                color: 'var(--text-secondary, #94a3b8)',
+                fontSize: '11px',
+              }}
+            >
+              {calls[0].latencyMs}ms
+            </span>
+          )}
+        </div>
+        <div style={{ color: 'var(--text-secondary, #94a3b8)', display: 'flex', alignItems: 'center' }}>
+          {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </div>
+      </div>
+
+      {isOpen && (
+        <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(255, 255, 255, 0.1)' }}>
+          {calls.map((call, idx) => (
+            <div key={idx} style={{ marginBottom: idx < calls.length - 1 ? '10px' : '0' }}>
+              <div style={{ marginBottom: '4px', color: 'var(--text-secondary, #94a3b8)', fontWeight: 600 }}>
+                Параметры:
+              </div>
+              <pre
+                style={{
+                  background: 'rgba(0, 0, 0, 0.35)',
+                  padding: '6px 8px',
+                  borderRadius: '4px',
+                  overflowX: 'auto',
+                  fontSize: '11px',
+                  margin: '0 0 6px 0',
+                  color: '#e2e8f0',
+                }}
+              >
+                {JSON.stringify(call.args, null, 2)}
+              </pre>
+              <div style={{ marginBottom: '4px', color: 'var(--text-secondary, #94a3b8)', fontWeight: 600 }}>
+                Ответ сервера MCP:
+              </div>
+              <pre
+                style={{
+                  background: 'rgba(0, 0, 0, 0.35)',
+                  padding: '6px 8px',
+                  borderRadius: '4px',
+                  overflowX: 'auto',
+                  fontSize: '11px',
+                  margin: '0',
+                  color: call.isError ? '#fca5a5' : '#86efac',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                }}
+              >
+                {call.result}
+              </pre>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+function cleanMessageContent(content: string): string {
+  return content
+    .replace(/<task_update\s+[^>]+\/?>/gi, '')
+    .replace(/<\|tool_call_start\|>[\s\S]*?<\|tool_call_end\|>/gi, '')
+    .replace(/<mcp_call\s+name=["'][^"']+["']\s*>[\s\S]*?<\/mcp_call>/gi, '')
+    .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
+    .trim();
+}
+
 function parseInvariantCheck(content: string): {
   check: InvariantCheckResult | null;
   cleanedContent: string;
 } {
   const match = content.match(/<invariant_check>([\s\S]*?)<\/invariant_check>/i);
   if (!match) {
-    const cleaned = content.replace(/<task_update\s+[^>]+\/?>/gi, '').trim();
+    const cleaned = cleanMessageContent(content);
     return { check: null, cleanedContent: cleaned };
   }
 
@@ -164,10 +289,7 @@ function parseInvariantCheck(content: string): {
       .trim();
   }
 
-  const cleanedContent = content
-    .replace(raw, '')
-    .replace(/<task_update\s+[^>]+\/?>/gi, '')
-    .trim();
+  const cleanedContent = cleanMessageContent(content.replace(raw, ''));
 
   return {
     check: { status, violated, analysis, raw },
@@ -446,6 +568,9 @@ export const MessageList: React.FC<MessageListProps> = ({
                           const { check, cleanedContent } = parseInvariantCheck(afterStateCleaned);
                           return (
                             <>
+                              {msg.mcpCalls && msg.mcpCalls.length > 0 && (
+                                <McpToolCallCard calls={msg.mcpCalls} />
+                              )}
                               {stateCheck && <StateCheckCard check={stateCheck} />}
                               {check && <InvariantCheckCard check={check} />}
                               <div className="message-content">
