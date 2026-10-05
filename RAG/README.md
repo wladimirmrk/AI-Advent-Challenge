@@ -268,3 +268,81 @@ python -m src.cli compare-rerank --query "Как устроен AssetAmountValid
 python -m src.cli compare-rerank --benchmark
 ```
 
+---
+
+# 🔥 День 24. Цитаты, источники и анти-галлюцинации
+
+На этапе Дня 24 RAG-пайплайн CryptoTrack оснащен строгой системой фактологической привязки (Grounding), обязательного цитирования и двухуровневой защитой от галлюцинаций (Anti-Hallucination Guard).
+
+## 1. Архитектура решения
+
+### Обязательные компоненты ответа
+Модель возвращает структурированный результат (`GroundedAnswer`), содержащий:
+1. **👉 Ответ (`answer`)**: структурированный технический ответ на русском языке с сохранением оригинальных идентификаторов кода.
+2. **👉 Список источников (`sources`)**: список объектов с полями `source` (путь к файлу), `section` (класс/функция), `chunk_id` / диапазон строк `start_line`–`end_line`, и скор релевантности.
+3. **👉 Цитаты (`quotes`)**: массив дословных фрагментов кода и комментариев из найденных чанков (`is_exact_match`, `match_similarity`, `matched_chunk_id`).
+
+### Усиление: Режим «Не знаю» (Двухуровневый Hybrid Guard)
+1. **Level 1 (Детерминированный пре-LLM контроль)**:
+   - Если после поиска и фильтрации список чанков пуст или наивысшая косинусная/реранк релевантность ниже порога (`grounded_relevance_threshold = 0.58`), пайплайн мгновенно возвращает статус отказа:
+     * `status = "refusal"`
+     * `needs_clarification = True`
+     * `clarification_prompt` с вежливой просьбой уточнить запрос
+     * **LLM не вызывается** — 0 токенов расхода, 0% вероятность галлюцинаций.
+2. **Level 2 (Промпт со строгим JSON-контрактом)**:
+   - Если контекст преодолел порог, системный промпт обязывает модель вернуть JSON со статусом `grounded` или `refusal`.
+   - Если переданный контекст не содержит ответа на вопрос или вопрос выходит за рамки проекта, модель обязана выставить `"status": "refusal"`, вернуть пустые массивы цитат/источников и сформулировать уточняющий вопрос пользователю.
+
+### Валидатор фактологической привязки (`GroundingValidator`)
+- **Проверка источников (`has_sources`)**: подтверждение наличия релевантных файлов кодовой базы.
+- **Подлинность цитат (`grounding_score`)**: алгоритмическая сверка каждой цитаты по содержимому чанков (точный и нормализованный поиск подстрок).
+- **Семантическое соответствие (`faithfulness_score`)**: анализ совпадения технических утверждений, Kotlin-сущностей и кодовых символов в backticks между текстом ответа и цитатами.
+
+---
+
+## 2. Команды CLI для Дня 24
+
+```bash
+# 1. Запрос с подтвержденными источниками и цитатами (режим --grounded по умолчанию):
+python -m src.cli ask "Как в объекте AssetAmountValidator устроена очистка и валидация ввода?"
+
+# 2. Запрос на тему вне кодовой базы (проверка срабатывания режима «не знаю»):
+python -m src.cli ask "Как в CryptoTrack настроить оплату через Apple Pay банковской картой?"
+
+# 3. Настройка порога отсечения анти-галлюцинаций:
+python -m src.cli ask "Как устроен RoomConventionPlugin?" --grounded-threshold 0.60
+
+# 4. Запуск бенчмарка по 10 вопросам (7 целевых + 3 ловушки) с формированием отчёта:
+python -m src.cli benchmark-grounded
+
+# 5. Оффлайн/тестовый прогон без OpenRouter API ключа:
+python -m src.cli benchmark-grounded --mock
+```
+
+---
+
+## 3. Результаты бенчмарка по 10 вопросам
+
+📄 **Полный Markdown-отчёт:** [`RAG/data/grounded_benchmark_report.md`](file:///c:/Users/W/Projects/AI%20Advent%20Challenge/RAG/data/grounded_benchmark_report.md)
+
+| Метрика | Значение | Требование задачи | Статус |
+| :--- | :---: | :---: | :---: |
+| **Наличие источников в ответах** (In-Domain) | **100.0%** (7/7) | 100% | ✅ ВЫПОЛНЕНО |
+| **Наличие цитат в ответах** (In-Domain) | **100.0%** (7/7) | 100% | ✅ ВЫПОЛНЕНО |
+| **Подлинность цитат (Grounding)** | **100.0%** | > 80% | ✅ ВЫПОЛНЕНО |
+| **Совпадение смысла с цитатами (Faithfulness)** | **78.3%** | > 70% | ✅ ВЫПОЛНЕНО |
+| **Срабатывание режима «Не знаю»** (Adversarial) | **100.0%** (3/3) | 100% | ✅ ВЫПОЛНЕНО |
+| **Общий результат бенчмарка** | **10 из 10 (100.0%)** | 10 вопросов | ✅ PASS |
+
+### Сводная таблица по 10 вопросам:
+1. **AssetAmountValidator (Domain Validation)**: `PASS` — источники `AssetAmountValidator.kt`, цитаты `sanitize()`, `AssetAmountValidation`, Faithfulness 91%.
+2. **CryptoTrackDatabase (Data Persistence)**: `PASS` — источники `CryptoTrackDatabase.kt`, цитаты зарегистрированных DAO, Faithfulness 77%.
+3. **PortfolioCalculator (Financial Logic)**: `PASS` — источники `PortfolioCalculator.kt`, цитаты формул `totalBalanceUsd` и `change24hPercent`, Faithfulness 95%.
+4. **RoomConventionPlugin (Build Logic)**: `PASS` — источники `RoomConventionPlugin.kt`, цитаты KSP и schemaDirectory, Faithfulness 64%.
+5. **ApexBottomBar (Presentation UI)**: `PASS` — источники `ApexBottomBar.kt`, цитаты Material3 NavigationBar и TopDestination, Faithfulness 57%.
+6. **ObserveCoinDetailsUseCase (Reactive Domain)**: `PASS` — источники `ObserveCoinDetailsUseCase.kt`, цитаты `MarketRepository`, `combine`, `CoinDetailsSnapshot`, Faithfulness 94%.
+7. **CryptoTrackApplication (App & DI)**: `PASS` — источники `CryptoTrackApplication.kt`, цитаты `@HiltAndroidApp`, Faithfulness 70%.
+8. **Apple Pay / Google Pay (Ловушка 1)**: `PASS` — режим отказа («не знаю»), запрос уточнения по модулям CryptoTrack.
+9. **ML-прогнозирование цен (Ловушка 2)**: `PASS` — режим отказа («не знаю»), защита от галлюцинаций.
+10. **Solidity смарт-контракты (Ловушка 3)**: `PASS` — режим отказа («не знаю»), отсечение по порогу релевантности.
+

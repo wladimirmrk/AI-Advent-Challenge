@@ -56,6 +56,10 @@ class AppConfig:
     rerank_final_top_k: int = 4
     rerank_model_name: str = "ms-marco-TinyBERT-L-2-v2"
 
+    # Grounding & Anti-Hallucination defaults (Day 24)
+    grounded_relevance_threshold: float = 0.58
+    grounded_min_sources: int = 1
+
     data_dir: Path = BASE_DIR / "data"
 
     @property
@@ -77,6 +81,10 @@ class AppConfig:
     @property
     def rerank_benchmark_report_path(self) -> Path:
         return self.data_dir / "rerank_benchmark_report.md"
+
+    @property
+    def grounded_benchmark_report_path(self) -> Path:
+        return self.data_dir / "grounded_benchmark_report.md"
 
 
 def load_env_file():

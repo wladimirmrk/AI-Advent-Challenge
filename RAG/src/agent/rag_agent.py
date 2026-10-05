@@ -5,6 +5,13 @@ from typing import List, Optional
 from src.agent.openrouter_client import OpenRouterClient, OpenRouterResponse
 from src.agent.query_rewriter import QueryRewriter, QueryRewriteResult
 from src.embeddings.ollama_embedder import OllamaEmbedder
+from src.grounding.models import (
+    GroundedAnswer,
+    GroundedCitation,
+    GroundedQuote,
+    GroundedSource,
+)
+from src.grounding.validator import GroundingValidator, ValidationResult
 from src.reranking.pipeline import TwoStageRetrievalPipeline, PipelineResult
 from src.storage.vector_store import SearchResult, VectorStore
 
@@ -47,6 +54,7 @@ class RAGResult:
     initial_sources_count: int = 0
     dropped_by_filter_count: int = 0
     pipeline_result: Optional[PipelineResult] = None
+    grounded_answer: Optional[GroundedAnswer] = None
 
 
 class RAGAgent:
@@ -62,6 +70,7 @@ class RAGAgent:
         rerank_pipeline: Optional[TwoStageRetrievalPipeline] = None,
         initial_top_k: int = 15,
         similarity_threshold: float = 0.45,
+        grounded_threshold: float = 0.58,
     ):
         self.vector_store = vector_store
         self.embedder = embedder
@@ -71,6 +80,7 @@ class RAGAgent:
         self.rerank_pipeline = rerank_pipeline or TwoStageRetrievalPipeline(default_threshold=similarity_threshold)
         self.initial_top_k = initial_top_k
         self.similarity_threshold = similarity_threshold
+        self.grounded_threshold = grounded_threshold
 
     def build_rag_prompt(self, question: str, sources: List[RetrievedSource]) -> List[dict]:
         """Construct system and user messages containing retrieved context chunks."""
@@ -121,6 +131,239 @@ class RAGAgent:
             {"role": "system", "content": system_instruction},
             {"role": "user", "content": user_content},
         ]
+
+    def build_grounded_rag_prompt(self, question: str, sources: List[RetrievedSource]) -> List[dict]:
+        """Construct prompt enforcing structured JSON with answer, sources, exact quotes, and refusal rules."""
+        context_parts = []
+        for src in sources:
+            lines_info = (
+                f" (строки L{src.start_line}-L{src.end_line})"
+                if src.start_line is not None and src.end_line is not None
+                else ""
+            )
+            score_info = f"Косинусная релевантность: {src.score:.4f}"
+            if src.rerank_score is not None:
+                score_info += f" | Реранк-скор: {src.rerank_score:.4f}"
+
+            context_parts.append(
+                f"### Источник #{src.rank}: `{src.source}`{lines_info}\n"
+                f"Секция / Символ: `{src.section}`\n"
+                f"{score_info}\n"
+                f"```text\n{src.content.strip()}\n```"
+            )
+
+        context_block = "\n\n".join(context_parts)
+
+        system_instruction = (
+            "Вы — экспертный AI-архитектор кодовой базы проекта CryptoTrack "
+            "(Android-приложение: Kotlin, Jetpack Compose, Room, Hilt, Clean Architecture, Gradle Convention Plugins).\n\n"
+            "Ваша задача — предоставить точный и правдивый ответ на вопрос пользователя, "
+            "опираясь СТРОГО на предоставленный проверенный контекст из кодовой базы.\n\n"
+            "СТРОГИЕ ПРАВИЛА ВЫВОДА (JSON ONLY):\n"
+            "Вы ОБЯЗАНЫ вернуть валидный JSON без лишнего форматирования и markdown-тегов вокруг, содержащий поля:\n"
+            "{\n"
+            '  "status": "grounded" или "refusal",\n'
+            '  "answer": "Подробный ответ на русском языке...",\n'
+            '  "sources": [\n'
+            '    {\n'
+            '      "source": "путь к файлу (например core/data/.../CryptoTrackDatabase.kt)",\n'
+            '      "section": "имя класса/функции",\n'
+            '      "chunk_id": "L10-L40"\n'
+            '    }\n'
+            '  ],\n'
+            '  "quotes": [\n'
+            '    "Точная ДОСЛОВНАЯ цитата (фрагмент текста из сниппета)...",\n'
+            '    "Вторая точная ДОСЛОВНАЯ цитата..."\n'
+            '  ],\n'
+            '  "needs_clarification": false,\n'
+            '  "clarification_prompt": null\n'
+            "}\n\n"
+            "ПРАВИЛО АНТИ-ГАЛЛЮЦИНАЦИЙ И ОТКАЗА:\n"
+            "- Если в предоставленном контексте НЕТ достаточной информации для ответа на вопрос, "
+            'или вопрос касается тем, отсутствующих в CryptoTrack (например, сторонние платежные шлюзы Apple Pay, ML-прогноз курсов, Solidity):\n'
+            '  * Установите "status": "refusal", "needs_clarification": true.\n'
+            '  * В поле "answer" прямо напишите: «В кодовой базе проекта CryptoTrack отсутствуют сведения о ... Не могу ответить на данный вопрос без домыслов.»\n'
+            '  * В поле "clarification_prompt" вежливо попросите пользователя уточнить вопрос.\n'
+            '  * Поля "sources" и "quotes" верните пустыми: [].\n\n'
+            "ПРАВИЛО ЦИТИРОВАНИЯ:\n"
+            "- Каждое ключевое утверждение ответа должно подтверждаться дословной цитатой в массиве `quotes`.\n"
+            "- Запрещено выдумывать текст цитат: они обязаны быть фрагментами из переданного контекста.\n"
+            "- В массиве `sources` укажите все использованные файлы."
+        )
+
+        user_content = (
+            f"КОНТЕКСТ ИЗ КОДОВОЙ БАЗЫ CRYPTOTRACK:\n\n"
+            f"{context_block}\n\n"
+            f"----------------------------------------\n"
+            f"ВОПРОС ПОЛЬЗОВАТЕЛЯ:\n{question}\n\n"
+            f"Сформируйте ответ строго в указанном JSON-формате:"
+        )
+
+        return [
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": user_content},
+        ]
+
+    def _fallback_parse_markdown(
+        self,
+        raw_text: str,
+        sources: List[RetrievedSource],
+        model: str = "",
+        cutoff_threshold: float = 0.58,
+        top_score: float = 0.0,
+    ) -> GroundedAnswer:
+        """Fallback parser when LLM returns Markdown or plain text instead of raw JSON."""
+        import re
+
+        refusal_keywords = [
+            "не знаю",
+            "не найден",
+            "отсутствуют сведения",
+            "не содержит",
+            "нет достаточной информации",
+            "не нашел",
+            "не удалось найти",
+            "нет информации",
+        ]
+        is_refusal = any(kw in raw_text.lower() for kw in refusal_keywords)
+
+        # Extract quotes: lines starting with '>' or enclosed in quotes
+        quote_matches = re.findall(r"^>\s*(.+)$", raw_text, re.MULTILINE)
+        if not quote_matches:
+            # Try finding quoted strings
+            quote_matches = re.findall(r'["«]([^"»\n]{15,})["»]', raw_text)
+
+        quotes = [GroundedQuote(text=q.strip()) for q in quote_matches if q.strip()]
+
+        # Extract sources from text or use retrieved sources
+        found_sources = []
+        source_paths = re.findall(r"\[Source:\s*([^:\]]+)(?::L\d+(?:-L\d+)?)?\]", raw_text)
+        for sp in source_paths:
+            found_sources.append(GroundedSource(source=sp.strip()))
+
+        if not found_sources and not is_refusal:
+            # Map top retrieved sources
+            for s in sources[:3]:
+                found_sources.append(
+                    GroundedSource(
+                        source=s.source,
+                        section=s.section,
+                        start_line=s.start_line,
+                        end_line=s.end_line,
+                        score=s.score,
+                        rerank_score=s.rerank_score,
+                        rank=s.rank,
+                    )
+                )
+
+        status = "refusal" if is_refusal else "grounded"
+        needs_clarification = is_refusal
+        clarification = (
+            "Пожалуйста, уточните интересующий вас компонент, класс или модуль кодовой базы CryptoTrack."
+            if is_refusal else None
+        )
+
+        return GroundedAnswer(
+            answer=raw_text.strip(),
+            sources=found_sources,
+            quotes=quotes,
+            status=status,
+            needs_clarification=needs_clarification,
+            clarification_prompt=clarification,
+            top_relevance_score=top_score,
+            cutoff_threshold=cutoff_threshold,
+            model=model,
+            raw_response_text=raw_text,
+        )
+
+    def parse_grounded_response(
+        self,
+        raw_text: str,
+        sources: List[RetrievedSource],
+        model: str = "",
+        cutoff_threshold: float = 0.58,
+        top_score: float = 0.0,
+    ) -> GroundedAnswer:
+        """Parse structured JSON LLM output into a GroundedAnswer and execute GroundingValidator."""
+        import json, re
+
+        clean_text = raw_text.strip()
+        if clean_text.startswith("```"):
+            clean_text = re.sub(r"^```(?:json)?\s*", "", clean_text, flags=re.IGNORECASE)
+            clean_text = re.sub(r"\s*```$", "", clean_text)
+            clean_text = clean_text.strip()
+
+        parsed = None
+        try:
+            parsed = json.loads(clean_text)
+        except Exception:
+            m = re.search(r"\{[\s\S]*\}", clean_text)
+            if m:
+                try:
+                    parsed = json.loads(m.group(0))
+                except Exception:
+                    pass
+
+        if isinstance(parsed, dict) and "answer" in parsed:
+            raw_sources = parsed.get("sources", [])
+            sources_list = []
+            for s in raw_sources:
+                if isinstance(s, dict):
+                    sources_list.append(
+                        GroundedSource(
+                            source=s.get("source", ""),
+                            section=s.get("section", ""),
+                            chunk_id=s.get("chunk_id"),
+                        )
+                    )
+                elif isinstance(s, str) and s.strip():
+                    sources_list.append(GroundedSource(source=s.strip()))
+
+            raw_quotes = parsed.get("quotes", [])
+            quotes_list = []
+            for q in raw_quotes:
+                if isinstance(q, str) and q.strip():
+                    quotes_list.append(GroundedQuote(text=q.strip()))
+                elif isinstance(q, dict) and "text" in q:
+                    quotes_list.append(
+                        GroundedQuote(
+                            text=q["text"].strip(),
+                            source=q.get("source"),
+                            section=q.get("section"),
+                            chunk_id=q.get("chunk_id"),
+                        )
+                    )
+
+            status = parsed.get("status", "grounded")
+            needs_clarification = parsed.get("needs_clarification", False)
+            clarification = parsed.get("clarification_prompt")
+
+            refusal_kw = ["отсутствуют сведения", "не знаю", "не нашел", "нет информации", "не содержится"]
+            if any(kw in parsed["answer"].lower() for kw in refusal_kw):
+                status = "refusal"
+                needs_clarification = True
+                if not clarification:
+                    clarification = "Пожалуйста, уточните интересующий вас компонент или модуль кодовой базы CryptoTrack."
+
+            ans = GroundedAnswer(
+                answer=parsed.get("answer", "").strip(),
+                sources=sources_list,
+                quotes=quotes_list,
+                status=status,
+                needs_clarification=needs_clarification,
+                clarification_prompt=clarification,
+                top_relevance_score=top_score,
+                cutoff_threshold=cutoff_threshold,
+                model=model,
+                raw_response_text=raw_text,
+            )
+        else:
+            ans = self._fallback_parse_markdown(raw_text, sources, model, cutoff_threshold, top_score)
+
+        # Run verification and calculation of scores
+        validator = GroundingValidator()
+        validator.validate(ans, sources)
+        return ans
 
     def build_no_rag_prompt(self, question: str) -> List[dict]:
         """Construct standard prompt without any codebase context."""
@@ -233,14 +476,16 @@ class RAGAgent:
         use_rag: bool = True,
         use_rewrite: bool = False,
         use_rerank: bool = False,
+        use_grounded: bool = False,
         top_k: Optional[int] = None,
         initial_top_k: Optional[int] = None,
         similarity_threshold: Optional[float] = None,
+        grounded_threshold: Optional[float] = None,
         model: Optional[str] = None,
         filter_source: Optional[str] = None,
         temperature: float = 0.2,
     ) -> RAGResult:
-        """Execute full pipeline: question -> optional rewrite -> retrieval -> optional filter & rerank -> prompt assembly -> LLM response."""
+        """Execute full pipeline: question -> optional rewrite -> retrieval -> optional filter & rerank -> prompt assembly -> LLM response -> optional grounding verification."""
         t_start = time.time()
         k_final = top_k or self.default_top_k
         sources: List[RetrievedSource] = []
@@ -252,6 +497,7 @@ class RAGAgent:
         pipeline_res = None
         initial_count = 0
         dropped_count = 0
+        grounded_ans: Optional[GroundedAnswer] = None
 
         if use_rag:
             search_query = question
@@ -286,7 +532,60 @@ class RAGAgent:
                 initial_count = len(sources)
                 dropped_count = 0
 
-            messages = self.build_rag_prompt(question, sources)
+            # Level 1 Anti-Hallucination Guard (Day 24)
+            top_score = max([s.score for s in sources], default=0.0)
+            g_thresh = grounded_threshold if grounded_threshold is not None else self.grounded_threshold
+
+            if use_grounded and (not sources or top_score < g_thresh):
+                refusal_answer = (
+                    "В кодовой базе проекта CryptoTrack отсутствуют релевантные сведения для ответа на данный вопрос "
+                    f"(наивысшая релевантность {top_score:.4f} ниже допустимого порога {g_thresh:.2f}). "
+                    "Ассистент переведен в режим анти-галлюцинаций («не знаю»)."
+                )
+                clarification_p = (
+                    "Пожалуйста, уточните ваш запрос: назовите конкретный класс, экран, модуль или сценарий Android-проекта CryptoTrack."
+                )
+                grounded_ans = GroundedAnswer(
+                    answer=refusal_answer,
+                    sources=[],
+                    quotes=[],
+                    status="refusal",
+                    needs_clarification=True,
+                    clarification_prompt=clarification_p,
+                    grounding_score=0.0,
+                    faithfulness_score=1.0,
+                    top_relevance_score=top_score,
+                    cutoff_threshold=g_thresh,
+                    model=model or self.llm_client.default_model,
+                    raw_response_text="[LEVEL 1 RELEVANCE CUTOFF]",
+                )
+                total_latency = time.time() - t_start
+                return RAGResult(
+                    question=question,
+                    answer=grounded_ans.answer,
+                    use_rag=use_rag,
+                    sources=[],
+                    model=grounded_ans.model,
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    total_tokens=0,
+                    latency_seconds=total_latency,
+                    retrieval_latency=retrieval_latency,
+                    llm_latency=0.0,
+                    context_text="",
+                    rewritten_query=rewritten_q,
+                    rewrite_latency=rewrite_latency,
+                    rerank_latency=rerank_latency,
+                    initial_sources_count=initial_count,
+                    dropped_by_filter_count=dropped_count,
+                    pipeline_result=pipeline_res,
+                    grounded_answer=grounded_ans,
+                )
+
+            if use_grounded:
+                messages = self.build_grounded_rag_prompt(question, sources)
+            else:
+                messages = self.build_rag_prompt(question, sources)
             context_text = messages[1]["content"]
         else:
             messages = self.build_no_rag_prompt(question)
@@ -298,10 +597,23 @@ class RAGAgent:
         )
 
         total_latency = time.time() - t_start
+        final_answer = llm_resp.content
+
+        if use_grounded and use_rag:
+            g_thresh = grounded_threshold if grounded_threshold is not None else self.grounded_threshold
+            top_score = max([s.score for s in sources], default=0.0)
+            grounded_ans = self.parse_grounded_response(
+                raw_text=llm_resp.content,
+                sources=sources,
+                model=llm_resp.model,
+                cutoff_threshold=g_thresh,
+                top_score=top_score,
+            )
+            final_answer = grounded_ans.answer
 
         return RAGResult(
             question=question,
-            answer=llm_resp.content,
+            answer=final_answer,
             use_rag=use_rag,
             sources=sources,
             model=llm_resp.model,
@@ -318,4 +630,5 @@ class RAGAgent:
             initial_sources_count=initial_count,
             dropped_by_filter_count=dropped_count,
             pipeline_result=pipeline_res,
+            grounded_answer=grounded_ans,
         )

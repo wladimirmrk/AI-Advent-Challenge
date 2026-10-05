@@ -35,6 +35,7 @@ from src.agent.rag_agent import RAGAgent
 from src.evaluation.benchmark_dataset import BENCHMARK_QUESTIONS
 from src.evaluation.rag_evaluator import RAGEvaluator
 from src.evaluation.rerank_evaluator import RerankEvaluator
+from src.evaluation.grounded_evaluator import GroundedEvaluator, GROUNDED_BENCHMARK_SUITE
 
 console = Console(soft_wrap=True)
 
@@ -331,12 +332,16 @@ def run_ask(args):
     use_rag = getattr(args, "rag", True)
     use_rewrite = getattr(args, "rewrite", False)
     use_rerank = getattr(args, "rerank", False)
+    use_grounded = getattr(args, "grounded", True)
+    grounded_thresh = getattr(args, "grounded_threshold", default_config.grounded_relevance_threshold)
 
     mode_parts = []
     if not use_rag:
         mode_parts.append("[bold yellow]БЕЗ RAG (Pretrained Baseline)[/bold yellow]")
     else:
         mode_parts.append("[bold green]С RAG[/bold green]")
+        if use_grounded:
+            mode_parts.append(f"[bold green]+ Grounded Citations (cutoff={grounded_thresh})[/bold green]")
         if use_rewrite:
             mode_parts.append("[bold cyan]+ Query Rewrite[/bold cyan]")
         if use_rerank:
@@ -360,9 +365,11 @@ def run_ask(args):
                 use_rag=use_rag,
                 use_rewrite=use_rewrite,
                 use_rerank=use_rerank,
+                use_grounded=use_grounded,
                 top_k=args.top_k,
                 initial_top_k=getattr(args, "initial_top_k", None),
                 similarity_threshold=getattr(args, "threshold", None),
+                grounded_threshold=grounded_thresh,
                 model=args.model,
                 filter_source=args.filter,
             )
@@ -393,21 +400,61 @@ def run_ask(args):
             f"(время 2-го этапа: {res.rerank_latency:.3f}s, движок: {p.rerank_engine})[/dim]"
         )
 
-    # 3. Display retrieved context if RAG
-    if use_rag and res.sources:
-        console.print(f"\n[bold magenta]📚 Отобранные релевантные источники ({len(res.sources)} чанков):[/bold magenta]")
-        for s in res.sources:
-            rerank_info = f" | Rerank: {s.rerank_score:.4f}" if s.rerank_score is not None else ""
-            header = f"Rank #{s.rank} | Cosine: {s.score:.4f}{rerank_info} | {s.source} (L{s.start_line}-L{s.end_line})"
-            preview = s.content[:250].strip() + ("..." if len(s.content) > 250 else "")
-            console.print(Panel(preview, title=header, title_align="left", border_style="blue"))
+    # 3. Grounded Answer Formatting (Day 24)
+    g = res.grounded_answer
+    if g:
+        if g.is_refusal:
+            console.print(Panel(
+                f"[bold yellow]{g.answer}[/bold yellow]\n\n"
+                f"[cyan]💡 Уточнение:[/cyan] {g.clarification_prompt or 'Пожалуйста, уточните ваш вопрос по проекту CryptoTrack.'}",
+                title="🛡️ Анти-галлюцинация: Режим отказа («не знаю»)",
+                border_style="yellow",
+            ))
+        else:
+            # Model Answer
+            console.print(Panel(g.answer, title=f"🤖 Ответ модели ({res.model}) [Grounded RAG]", border_style="green"))
 
-    # 4. Display Model Answer
-    border_style = "green" if use_rag else "yellow"
-    title = f"🤖 Ответ модели ({res.model}) [{'RAG: ON' if use_rag else 'RAG: OFF'}]"
-    console.print(Panel(res.answer, title=title, border_style=border_style))
+            # Sources Table
+            if g.sources:
+                st = Table(title="📚 Список подтвержденных источников", show_lines=False)
+                st.add_column("#", justify="center", style="cyan")
+                st.add_column("Файл / Источник", style="bold white")
+                st.add_column("Секция / Символ", style="green")
+                st.add_column("Строки", justify="center", style="yellow")
+                st.add_column("Chunk ID", justify="center", style="dim")
+                st.add_column("Релевантность", justify="right", style="magenta")
 
-    # 5. Timing & token stats
+                for idx, src in enumerate(g.sources, 1):
+                    lines_str = f"L{src.start_line}-L{src.end_line}" if src.start_line is not None else "—"
+                    score_str = f"{src.score:.3f}" if src.score else "—"
+                    st.add_row(str(idx), src.source, src.section or "—", lines_str, src.chunk_id or "—", score_str)
+                console.print(st)
+
+            # Quotes Panel
+            if g.quotes:
+                console.print(f"\n[bold cyan]💬 Подтвержденные цитаты из контекста ({len(g.quotes)} фрагментов):[/bold cyan]")
+                for idx, q in enumerate(g.quotes, 1):
+                    v_icon = "[bold green]✓ Verified[/bold green]" if q.is_exact_match else "[yellow]~ Partial[/yellow]"
+                    src_tag = f" ({q.source})" if q.source else ""
+                    console.print(Panel(
+                        f"[white]{q.text}[/white]",
+                        title=f"Цитата #{idx}{src_tag} [{v_icon}]",
+                        border_style="cyan" if q.is_exact_match else "dim yellow"
+                    ))
+
+            # Grounding and Faithfulness Metrics
+            console.print(
+                f"\n[dim]Метрики привязки: Подлинность цитат: [bold]{g.grounding_score*100:.1f}%[/bold] | "
+                f"Семантическое соответствие: [bold]{g.faithfulness_score*100:.1f}%[/bold] | "
+                f"Top Relevance: [bold]{g.top_relevance_score:.4f}[/bold] (Порог: {g.cutoff_threshold:.2f})[/dim]"
+            )
+    else:
+        # Fallback raw answer
+        border_style = "green" if use_rag else "yellow"
+        title = f"🤖 Ответ модели ({res.model}) [{'RAG: ON' if use_rag else 'RAG: OFF'}]"
+        console.print(Panel(res.answer, title=title, border_style=border_style))
+
+    # 4. Timing & token stats
     stats_text = (
         f"[dim]Время: общ {res.latency_seconds:.2f}s "
         f"(rewrite: {res.rewrite_latency:.2f}s, поиск: {res.retrieval_latency:.2f}s, rerank: {res.rerank_latency:.2f}s, LLM: {res.llm_latency:.2f}s) | "
@@ -651,6 +698,44 @@ def run_compare_rerank(args):
         console.print(f"\n[bold green]✓ Full Multi-Mode Benchmark Report saved to:[/bold green] [white]{report_path}[/white]\n")
 
 
+def run_benchmark_grounded(args):
+    console.print(f"\n[bold green]=== Day 24 Benchmark: Citations, Sources & Anti-Hallucinations ===[/bold green]")
+    try:
+        agent = get_rag_agent(args)
+    except Exception as exc:
+        console.print(f"[red]Initialization error: {exc}[/red]")
+        sys.exit(1)
+
+    evaluator = GroundedEvaluator(agent)
+    suite = GROUNDED_BENCHMARK_SUITE
+    if args.limit and args.limit > 0:
+        suite = suite[:args.limit]
+        console.print(f"[yellow]Note: Limiting benchmark to first {args.limit} questions[/yellow]")
+
+    console.print(f"[cyan]Target Model:[/cyan] {args.model or agent.llm_client.default_model}")
+    console.print(f"[cyan]Total Questions:[/cyan] {len(suite)} (7 In-Domain + 3 Adversarial)")
+    console.print(f"[cyan]Cutoff Threshold:[/cyan] {args.threshold} | Top-K: {args.top_k}\n")
+
+    def on_progress(current, total, q):
+        q_type = "[green]In-Domain[/green]" if q.is_in_domain else "[yellow]Adversarial[/yellow]"
+        console.print(f"[{current}/{total}] {q_type} [bold white]Q{q.id}:[/bold white] [cyan]{q.question[:65]}...[/cyan]")
+
+    summary = evaluator.run_benchmark(
+        questions=suite,
+        top_k=args.top_k,
+        threshold=args.threshold,
+        model=args.model,
+        progress_callback=on_progress,
+    )
+
+    console.print("\n")
+    evaluator.render_table(summary)
+
+    report_path = Path(args.output) if args.output else default_config.grounded_benchmark_report_path
+    evaluator.generate_markdown_report(summary, report_path)
+    console.print(f"\n[bold green]✓ Full Grounded Benchmark Report saved to:[/bold green] [white]{report_path}[/white]\n")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="RAG-Indexer",
@@ -682,12 +767,16 @@ def main():
     p_compare.add_argument("--query", default=None, help="Single query to compare (if omitted, launches interactive mode)")
     p_compare.add_argument("--top-k", type=int, default=3, help="Top K results per strategy")
 
-    # 5. ask (NEW Day 22, updated Day 23)
+    # 5. ask (NEW Day 22, updated Day 23 & 24)
     p_ask = subparsers.add_parser("ask", help="Query the AI Agent with RAG or without RAG")
     p_ask.add_argument("question", help="User question to ask the agent")
     p_rag_group = p_ask.add_mutually_exclusive_group()
     p_rag_group.add_argument("--rag", dest="rag", action="store_true", default=True, help="Enable RAG mode (default)")
     p_rag_group.add_argument("--no-rag", dest="rag", action="store_false", help="Disable RAG mode (pure LLM baseline)")
+    p_grounded_group = p_ask.add_mutually_exclusive_group()
+    p_grounded_group.add_argument("--grounded", dest="grounded", action="store_true", default=True, help="Enable Grounded Citations & Anti-Hallucination mode (default)")
+    p_grounded_group.add_argument("--no-grounded", dest="grounded", action="store_false", help="Disable Grounded mode")
+    p_ask.add_argument("--grounded-threshold", type=float, default=default_config.grounded_relevance_threshold, help="Relevance cutoff threshold for 'I don't know' refusal")
     p_ask.add_argument("--rewrite", action="store_true", default=False, help="Enable Query Rewrite")
     p_ask.add_argument("--rerank", action="store_true", default=False, help="Enable Stage 2 Filter & Rerank")
     p_ask.add_argument("--initial-top-k", type=int, default=default_config.rerank_initial_top_k, help="Candidate chunks before filtering")
@@ -737,6 +826,17 @@ def main():
     p_cr.add_argument("--output", default=None, help="Custom output path for markdown report")
     p_cr.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
 
+    # 9. benchmark-grounded (NEW Day 24)
+    p_bg = subparsers.add_parser("benchmark-grounded", help="Run 10-question citations, quotes, and anti-hallucination benchmark (Day 24)")
+    p_bg.add_argument("--strategy", choices=["fixed", "structural"], default="structural")
+    p_bg.add_argument("--top-k", type=int, default=default_config.rerank_final_top_k, help="Number of retrieved chunks")
+    p_bg.add_argument("--threshold", type=float, default=default_config.grounded_relevance_threshold, help="Cutoff threshold for 'I don't know' refusal")
+    p_bg.add_argument("--model", default=None)
+    p_bg.add_argument("--api-key", default=None)
+    p_bg.add_argument("--limit", type=int, default=None, help="Limit number of benchmark questions")
+    p_bg.add_argument("--output", default=None, help="Custom output path for markdown report")
+    p_bg.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
+
     args = parser.parse_args()
 
     if args.command == "index":
@@ -755,6 +855,8 @@ def main():
         run_eval(args)
     elif args.command == "compare-rerank":
         run_compare_rerank(args)
+    elif args.command == "benchmark-grounded":
+        run_benchmark_grounded(args)
 
 
 if __name__ == "__main__":
