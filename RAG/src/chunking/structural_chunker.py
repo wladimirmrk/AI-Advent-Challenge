@@ -5,314 +5,257 @@ from src.loader.project_loader import Document
 from src.chunking.base import BaseChunker, Chunk
 
 class StructuralChunker(BaseChunker):
-    """
-    Structural chunker that respects document syntax and hierarchy:
-    - Markdown: splits by header hierarchy (#, ##, ###)
-    - Kotlin: splits by package/imports, class/interface, and function declarations
-    - Config (XML/Gradle/TOML): splits by structural blocks
-    """
-
-    def __init__(self, max_chunk_size: int = 1200, overlap: int = 100):
-        super().__init__(strategy_name="structural")
+    def __init__(self, max_chunk_size: int = 2500, overlap: int = 150):
+        super().__init__(strategy_name='structural')
         self.max_chunk_size = max_chunk_size
         self.overlap = overlap
 
-    def chunk_document(self, doc: Document) -> List[Chunk]:
-        if not doc.content.strip():
+    def chunk_document(self, doc: Document) -> list:
+        content = doc.content.strip()
+        if not content:
             return []
 
-        if doc.file_type == "kotlin":
+        if doc.file_type == 'kotlin':
             return self._chunk_kotlin(doc)
-        elif doc.file_type == "config":
+        elif doc.file_type == 'config':
             return self._chunk_config(doc)
         else:
             return self._chunk_fallback(doc)
 
-    def _split_oversized_block(
-        self,
-        text: str,
-        section_name: str,
-        doc: Document,
-        base_line: int,
-        start_chunk_idx: int,
-    ) -> List[Chunk]:
-        """Split a large structural unit into smaller chunks while preserving section context."""
-        file_stem = re.sub(r"[^a-zA-Z0-9_]", "_", doc.relative_path)
-        chunks: List[Chunk] = []
+    def _slug(self, path: str) -> str:
+        return re.sub(r'[^a-zA-Z0-9_]', '_', path)
 
-        paragraphs = text.split("\n\n")
-        current_content = ""
-        current_start_line = base_line
-        rel_line = 0
-
-        for para in paragraphs:
-            para_lines = len(para.splitlines())
-            if len(current_content) + len(para) + 2 <= self.max_chunk_size:
-                if current_content:
-                    current_content += "\n\n" + para
-                else:
-                    current_content = para
-                    current_start_line = base_line + rel_line
-            else:
-                if current_content.strip():
-                    end_line = current_start_line + len(current_content.splitlines()) - 1
-                    chunks.append(
-                        Chunk(
-                            chunk_id=f"struct_{file_stem}_{start_chunk_idx + len(chunks):04d}",
-                            content=current_content.strip(),
-                            source=doc.relative_path,
-                            title=Path(doc.file_path).name,
-                            section=section_name,
-                            chunk_index=start_chunk_idx + len(chunks),
-                            strategy=self.strategy_name,
-                            metadata={
-                                "start_line": current_start_line,
-                                "end_line": end_line,
-                                "section": section_name,
-                                "is_subchunk": True,
-                                "file_type": doc.file_type,
-                                "language": doc.extension.lstrip("."),
-                            },
-                        )
-                    )
-                # If paragraph itself is huge, slice it
-                if len(para) > self.max_chunk_size:
-                    for i in range(0, len(para), self.max_chunk_size - self.overlap):
-                        slice_text = para[i : i + self.max_chunk_size].strip()
-                        if slice_text:
-                            s_line = base_line + rel_line
-                            chunks.append(
-                                Chunk(
-                                    chunk_id=f"struct_{file_stem}_{start_chunk_idx + len(chunks):04d}",
-                                    content=slice_text,
-                                    source=doc.relative_path,
-                                    title=Path(doc.file_path).name,
-                                    section=section_name,
-                                    chunk_index=start_chunk_idx + len(chunks),
-                                    strategy=self.strategy_name,
-                                    metadata={
-                                        "start_line": s_line,
-                                        "end_line": s_line + len(slice_text.splitlines()) - 1,
-                                        "section": section_name,
-                                        "is_subchunk": True,
-                                        "file_type": doc.file_type,
-                                        "language": doc.extension.lstrip("."),
-                                    },
-                                )
-                            )
-                    current_content = ""
-                else:
-                    current_content = para
-                    current_start_line = base_line + rel_line
-
-            rel_line += para_lines + 1
-
-        if current_content.strip():
-            end_line = current_start_line + len(current_content.splitlines()) - 1
-            chunks.append(
-                Chunk(
-                    chunk_id=f"struct_{file_stem}_{start_chunk_idx + len(chunks):04d}",
-                    content=current_content.strip(),
-                    source=doc.relative_path,
-                    title=Path(doc.file_path).name,
-                    section=section_name,
-                    chunk_index=start_chunk_idx + len(chunks),
-                    strategy=self.strategy_name,
-                    metadata={
-                        "start_line": current_start_line,
-                        "end_line": end_line,
-                        "section": section_name,
-                        "is_subchunk": len(chunks) > 0,
-                        "file_type": doc.file_type,
-                        "language": doc.extension.lstrip("."),
-                    },
-                )
-            )
-
-        return chunks
-
-    def _chunk_kotlin(self, doc: Document) -> List[Chunk]:
-        """Split Kotlin code into imports, classes, companion objects, and functions."""
+    def _chunk_kotlin(self, doc: Document) -> list:
         lines = doc.content.splitlines()
-        file_stem = re.sub(r"[^a-zA-Z0-9_]", "_", doc.relative_path)
-        chunks: List[Chunk] = []
+        chunks = []
+        slug = self._slug(doc.relative_path)
+        file_stem = Path(doc.file_path).stem
 
-        # Find package & imports
-        package_name = ""
-        imports_lines: List[str] = []
-        body_start_line = 1
-
-        for idx, line in enumerate(lines, start=1):
-            stripped = line.strip()
-            if stripped.startswith("package "):
-                package_name = stripped.replace("package ", "").rstrip(";")
-            elif stripped.startswith("import "):
-                imports_lines.append(line)
-            elif stripped and not stripped.startswith("//") and not stripped.startswith("/*"):
-                body_start_line = idx
+        # 1. Parse package & imports
+        package_name = ''
+        imports = []
+        body_start = 1
+        for idx, line in enumerate(lines, 1):
+            s = line.strip()
+            if s.startswith('package '):
+                package_name = s.replace('package ', '').rstrip(';')
+            elif s.startswith('import '):
+                imports.append(line)
+            elif s and not s.startswith('//') and not s.startswith('/*') and not s.startswith('*'):
+                body_start = idx
                 break
 
-        # Check if file has package/imports block
-        if package_name or imports_lines:
-            header_text = []
-            if package_name:
-                header_text.append(f"package {package_name}")
-            if imports_lines:
-                header_text.extend(imports_lines)
-            full_header = "\n".join(header_text).strip()
-            if full_header and len(full_header) > 20:
-                chunks.append(
-                    Chunk(
-                        chunk_id=f"struct_{file_stem}_{len(chunks):04d}",
-                        content=full_header,
-                        source=doc.relative_path,
-                        title=Path(doc.file_path).name,
-                        section=f"Package & Imports: {package_name or 'Default'}",
-                        chunk_index=len(chunks),
-                        strategy=self.strategy_name,
-                        metadata={
-                            "start_line": 1,
-                            "end_line": body_start_line - 1,
-                            "section": "Package & Imports",
-                            "package": package_name,
-                            "file_type": "kotlin",
-                            "language": "kt",
-                        },
-                    )
-                )
+        body_lines = lines[body_start - 1:]
 
-        # Parse body by structural boundaries (class, interface, object, fun)
-        body_lines = lines[body_start_line - 1 :]
-        decl_regex = re.compile(
-            r"^(?:\s*@\w+(?:\([^)]*\))?\s*)*"
-            r"(?:public|private|internal|protected|open|abstract|data|sealed|enum)?\s*"
-            r"(class|interface|object|enum class|fun)\s+([A-Za-z0-9_]+)"
+        # Regex for top-level declarations (at brace_depth == 0)
+        decl_re = re.compile(
+            r'^(?:(?:public|private|internal|protected|open|abstract|data|sealed|inline|value)\s+)*'
+            r'(class|interface|object|enum class|fun)\s+([A-Za-z0-9_]+)'
         )
 
-        blocks: List[Tuple[str, List[str], int]] = []
-        curr_decl_name = Path(doc.file_path).stem
-        curr_block_lines: List[str] = []
-        curr_start = body_start_line
+        blocks = []
+        curr_lines = []
+        curr_name = file_stem
+        curr_start = body_start
         brace_depth = 0
+        pending_decorations = []
+        in_multiline_comment = False
+        annotation_paren_depth = 0
 
         for offset, line in enumerate(body_lines):
-            line_no = body_start_line + offset
+            line_no = body_start + offset
             stripped = line.strip()
 
-            # Check if this line starts a top-level or class-level declaration at brace_depth <= 1
-            if brace_depth <= 1:
-                m = decl_regex.search(stripped)
+            # At top level, collect multi-line comments
+            if brace_depth == 0:
+                if in_multiline_comment:
+                    pending_decorations.append(line)
+                    if '*/' in stripped:
+                        in_multiline_comment = False
+                    continue
+                elif stripped.startswith('/*'):
+                    pending_decorations.append(line)
+                    if '*/' not in stripped:
+                        in_multiline_comment = True
+                    continue
+
+                # Collect single line comments or empty lines
+                if stripped.startswith('//') or stripped == '':
+                    pending_decorations.append(line)
+                    continue
+
+                # Collect multi-line or single-line annotations
+                if annotation_paren_depth > 0:
+                    pending_decorations.append(line)
+                    annotation_paren_depth += line.count('(') - line.count(')')
+                    if annotation_paren_depth < 0:
+                        annotation_paren_depth = 0
+                    continue
+                elif stripped.startswith('@'):
+                    pending_decorations.append(line)
+                    annotation_paren_depth = line.count('(') - line.count(')')
+                    if annotation_paren_depth < 0:
+                        annotation_paren_depth = 0
+                    continue
+
+            # Check for top-level declaration at brace_depth == 0
+            if brace_depth == 0:
+                m = decl_re.search(stripped)
                 if m:
                     kind = m.group(1)
                     name = m.group(2)
-                    if curr_block_lines and len("\n".join(curr_block_lines).strip()) > 30:
-                        blocks.append((curr_decl_name, curr_block_lines, curr_start))
-                        curr_block_lines = []
-                        curr_start = line_no
-                    curr_decl_name = f"{kind} {name}"
+                    if curr_lines and len('\n'.join(curr_lines).strip()) > 0:
+                        blocks.append((curr_name, curr_lines, curr_start))
+                        curr_lines = []
+                        curr_start = line_no - len(pending_decorations)
 
-            curr_block_lines.append(line)
-            brace_depth += line.count("{") - line.count("}")
+                    curr_name = f'{kind} {name}'
+                    if pending_decorations:
+                        curr_lines.extend(pending_decorations)
+                        pending_decorations = []
+
+            if pending_decorations:
+                curr_lines.extend(pending_decorations)
+                pending_decorations = []
+
+            curr_lines.append(line)
+            brace_depth += line.count('{') - line.count('}')
             if brace_depth < 0:
                 brace_depth = 0
 
-        if curr_block_lines:
-            blocks.append((curr_decl_name, curr_block_lines, curr_start))
+        if pending_decorations:
+            curr_lines.extend(pending_decorations)
+        if curr_lines:
+            blocks.append((curr_name, curr_lines, curr_start))
 
-        # Convert blocks to Chunks
+        # Prepend package declaration to the first block so fully qualified context is preserved without creating noisy standalone import chunks
+        if package_name and blocks:
+            first_name, first_lines, first_start = blocks[0]
+            if not any(l.strip().startswith("package ") for l in first_lines):
+                blocks[0] = (first_name, [f"package {package_name}", ""] + first_lines, first_start)
+
+        # Convert blocks to chunks
         for decl_name, blk_lines, s_line in blocks:
-            blk_text = "\n".join(blk_lines).strip()
+            blk_text = '\n'.join(blk_lines).strip()
             if not blk_text:
                 continue
-
             if len(blk_text) <= self.max_chunk_size:
                 e_line = s_line + len(blk_lines) - 1
                 chunks.append(
                     Chunk(
-                        chunk_id=f"struct_{file_stem}_{len(chunks):04d}",
+                        chunk_id=f'struct_{slug}_{len(chunks):04d}',
                         content=blk_text,
                         source=doc.relative_path,
                         title=Path(doc.file_path).name,
-                        section=f"{Path(doc.file_path).stem} > {decl_name}",
+                        section=f'{file_stem} > {decl_name}',
                         chunk_index=len(chunks),
                         strategy=self.strategy_name,
                         metadata={
-                            "start_line": s_line,
-                            "end_line": e_line,
-                            "section": decl_name,
-                            "package": package_name,
-                            "file_type": "kotlin",
-                            "language": doc.extension.lstrip("."),
-                        },
+                            'start_line': s_line,
+                            'end_line': e_line,
+                            'section': decl_name,
+                            'package': package_name,
+                            'file_type': 'kotlin',
+                            'language': 'kt',
+                        }
                     )
                 )
             else:
-                sub_chunks = self._split_oversized_block(
-                    blk_text, f"{Path(doc.file_path).stem} > {decl_name}", doc, s_line, len(chunks)
+                sub_chunks = self._split_oversized_lines(
+                    blk_lines, decl_name, doc, s_line, len(chunks), package_name
                 )
                 chunks.extend(sub_chunks)
 
         return chunks
 
-    def _chunk_config(self, doc: Document) -> List[Chunk]:
-        """Split XML or Gradle configuration into logical blocks."""
-        lines = doc.content.splitlines()
-        file_stem = re.sub(r"[^a-zA-Z0-9_]", "_", doc.relative_path)
-        chunks: List[Chunk] = []
+    def _split_oversized_lines(self, lines, decl_name, doc, base_line, start_idx, package_name):
+        chunks = []
+        slug = self._slug(doc.relative_path)
+        file_stem = Path(doc.file_path).stem
+        cur_lines = []
+        cur_start = base_line
 
-        if doc.extension == ".xml":
-            # Split XML by major tags like <activity, <service, <uses-permission, <string
-            tag_regex = re.compile(r"^\s*<([A-Za-z0-9_\-]+)")
-            curr_lines: List[str] = []
-            curr_tag = "XML Root"
-            curr_start = 1
-
-            for line_no, line in enumerate(lines, start=1):
-                m = tag_regex.match(line)
-                if m and m.group(1) not in {"resources", "manifest", "?xml"}:
-                    if curr_lines:
-                        text = "\n".join(curr_lines).strip()
-                        if text:
-                            chunks.append(
-                                Chunk(
-                                    chunk_id=f"struct_{file_stem}_{len(chunks):04d}",
-                                    content=text,
-                                    source=doc.relative_path,
-                                    title=Path(doc.file_path).name,
-                                    section=f"XML: <{curr_tag}>",
-                                    chunk_index=len(chunks),
-                                    strategy=self.strategy_name,
-                                    metadata={"start_line": curr_start, "end_line": line_no - 1, "section": curr_tag},
-                                )
-                            )
-                        curr_lines = []
-                        curr_start = line_no
-                    curr_tag = m.group(1)
-                curr_lines.append(line)
-
-            if curr_lines:
-                text = "\n".join(curr_lines).strip()
-                if text:
-                    chunks.append(
-                        Chunk(
-                            chunk_id=f"struct_{file_stem}_{len(chunks):04d}",
-                            content=text,
-                            source=doc.relative_path,
-                            title=Path(doc.file_path).name,
-                            section=f"XML: <{curr_tag}>",
-                            chunk_index=len(chunks),
-                            strategy=self.strategy_name,
-                            metadata={"start_line": curr_start, "end_line": len(lines), "section": curr_tag},
-                        )
+        for idx, line in enumerate(lines):
+            line_no = base_line + idx
+            test_text = '\n'.join(cur_lines + [line])
+            if len(test_text) > self.max_chunk_size and cur_lines:
+                text = '\n'.join(cur_lines).strip()
+                chunks.append(
+                    Chunk(
+                        chunk_id=f'struct_{slug}_{start_idx + len(chunks):04d}',
+                        content=text,
+                        source=doc.relative_path,
+                        title=Path(doc.file_path).name,
+                        section=f'{file_stem} > {decl_name} (Part {len(chunks)+1})',
+                        chunk_index=start_idx + len(chunks),
+                        strategy=self.strategy_name,
+                        metadata={
+                            'start_line': cur_start,
+                            'end_line': line_no - 1,
+                            'section': decl_name,
+                            'package': package_name,
+                            'file_type': 'kotlin',
+                            'language': 'kt',
+                        }
                     )
-            return chunks
+                )
+                cur_lines = [line]
+                cur_start = line_no
+            else:
+                cur_lines.append(line)
 
-        # Fallback for TOML/Properties/Gradle
-        return self._chunk_fallback(doc)
+        if cur_lines:
+            text = '\n'.join(cur_lines).strip()
+            if text:
+                chunks.append(
+                    Chunk(
+                        chunk_id=f'struct_{slug}_{start_idx + len(chunks):04d}',
+                        content=text,
+                        source=doc.relative_path,
+                        title=Path(doc.file_path).name,
+                        section=f'{file_stem} > {decl_name} (Part {len(chunks)+1})',
+                        chunk_index=start_idx + len(chunks),
+                        strategy=self.strategy_name,
+                        metadata={
+                            'start_line': cur_start,
+                            'end_line': base_line + len(lines) - 1,
+                            'section': decl_name,
+                            'package': package_name,
+                            'file_type': 'kotlin',
+                            'language': 'kt',
+                        }
+                    )
+                )
+        return chunks
 
-    def _chunk_fallback(self, doc: Document) -> List[Chunk]:
-        """Fallback block splitting by double newlines or lines."""
-        file_stem = re.sub(r"[^a-zA-Z0-9_]", "_", doc.relative_path)
-        return self._split_oversized_block(
-            doc.content, f"File: {Path(doc.file_path).name}", doc, 1, 0
+    def _chunk_config(self, doc: Document) -> list:
+        content = doc.content.strip()
+        if not content:
+            return []
+        if len(content) <= self.max_chunk_size:
+            return [
+                Chunk(
+                    chunk_id=f'struct_{self._slug(doc.relative_path)}_0000',
+                    content=content,
+                    source=doc.relative_path,
+                    title=Path(doc.file_path).name,
+                    section=f'Config: {Path(doc.file_path).name}',
+                    chunk_index=0,
+                    strategy=self.strategy_name,
+                    metadata={
+                        'start_line': 1,
+                        'end_line': doc.line_count,
+                        'section': Path(doc.file_path).name,
+                        'file_type': 'config',
+                        'language': doc.extension.lstrip('.'),
+                    }
+                )
+            ]
+        return self._split_oversized_lines(
+            doc.content.splitlines(), f'Config: {Path(doc.file_path).name}', doc, 1, 0, ''
+        )
+
+    def _chunk_fallback(self, doc: Document) -> list:
+        return self._split_oversized_lines(
+            doc.content.splitlines(), f'File: {Path(doc.file_path).name}', doc, 1, 0, ''
         )

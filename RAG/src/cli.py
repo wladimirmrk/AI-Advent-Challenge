@@ -25,6 +25,10 @@ from src.chunking.structural_chunker import StructuralChunker
 from src.embeddings.ollama_embedder import OllamaEmbedder
 from src.storage.vector_store import VectorStore
 from src.evaluation.comparator import ChunkComparator
+from src.agent.openrouter_client import OpenRouterClient, OpenRouterError
+from src.agent.rag_agent import RAGAgent
+from src.evaluation.benchmark_dataset import BENCHMARK_QUESTIONS
+from src.evaluation.rag_evaluator import RAGEvaluator
 
 console = Console(soft_wrap=True)
 
@@ -279,10 +283,220 @@ def run_compare(args):
                 break
 
 
+def get_rag_agent(args, default_strat: str = "structural") -> RAGAgent:
+    strat = getattr(args, "strategy", None) or default_strat
+    index_dir = default_config.fixed_index_dir if strat == "fixed" else default_config.structural_index_dir
+
+    if not (index_dir / "index.faiss").exists():
+        console.print(f"[red]Error: Index for strategy '{strat}' not found in {index_dir}. Run `index` first.[/red]")
+        sys.exit(1)
+
+    store = VectorStore.load(index_dir)
+    embedder = OllamaEmbedder(
+        base_url=default_config.ollama_base_url,
+        model=default_config.ollama_model,
+    )
+
+    api_key = getattr(args, "api_key", None) or default_config.openrouter_api_key
+    model = getattr(args, "model", None) or default_config.openrouter_model
+    mock_mode = getattr(args, "mock", False)
+
+    llm_client = OpenRouterClient(
+        api_key=api_key,
+        base_url=default_config.openrouter_base_url,
+        default_model=model,
+        mock_mode=mock_mode,
+    )
+    return RAGAgent(
+        vector_store=store,
+        embedder=embedder,
+        llm_client=llm_client,
+        default_top_k=getattr(args, "top_k", default_config.default_top_k) or default_config.default_top_k,
+    )
+
+
+
+def run_ask(args):
+    use_rag = getattr(args, "rag", True)
+    mode_label = "[bold green]С RAG (Grounded Knowledge)[/bold green]" if use_rag else "[bold yellow]БЕЗ RAG (Pretrained Baseline)[/bold yellow]"
+
+    console.print(f"\n[bold cyan]=== CryptoTrack AI Agent Query ===[/bold cyan]")
+    console.print(f"[white]Режим:[/white] {mode_label}")
+    console.print(f"[white]Вопрос:[/white] [bold white]{args.question}[/bold white]")
+
+    try:
+        agent = get_rag_agent(args)
+    except Exception as exc:
+        console.print(f"[red]Initialization error: {exc}[/red]")
+        sys.exit(1)
+
+    with console.status(f"[cyan]Generating response using {agent.llm_client.default_model}...[/cyan]"):
+        try:
+            res = agent.query(
+                question=args.question,
+                use_rag=use_rag,
+                top_k=args.top_k,
+                model=args.model,
+                filter_source=args.filter,
+            )
+        except OpenRouterError as err:
+            console.print(f"\n[bold red]OpenRouter API Error:[/bold red] {err}")
+            if err.status_code == 401:
+                console.print("[yellow]Hint: Provide your OpenRouter API key via OPENROUTER_API_KEY env var or --api-key flag.[/yellow]")
+            sys.exit(1)
+        except Exception as exc:
+            console.print(f"\n[bold red]Query failed:[/bold red] {exc}")
+            sys.exit(1)
+
+    # 1. Display retrieved context if RAG
+    if use_rag and res.sources:
+        console.print(f"\n[bold magenta]📚 Найденные релевантные источники ({len(res.sources)} чанков):[/bold magenta]")
+        for s in res.sources:
+            header = f"Rank #{s.rank} | Cosine: {s.score:.4f} | {s.source} (L{s.start_line}-L{s.end_line})"
+            preview = s.content[:250].strip() + ("..." if len(s.content) > 250 else "")
+            console.print(Panel(preview, title=header, title_align="left", border_style="blue"))
+
+    # 2. Display Model Answer
+    border_style = "green" if use_rag else "yellow"
+    title = f"🤖 Ответ модели ({res.model}) [{'RAG: ON' if use_rag else 'RAG: OFF'}]"
+    console.print(Panel(res.answer, title=title, border_style=border_style))
+
+    # 3. Timing & token stats
+    stats_text = (
+        f"[dim]Время: общ {res.latency_seconds:.2f}s "
+        f"(поиск: {res.retrieval_latency:.2f}s, LLM: {res.llm_latency:.2f}s) | "
+        f"Токены: {res.total_tokens} (prompt: {res.prompt_tokens}, completion: {res.completion_tokens})[/dim]"
+    )
+    console.print(stats_text + "\n")
+
+
+def run_chat(args):
+    use_rag = getattr(args, "rag", True)
+    console.print(f"\n[bold green]=== Interactive CryptoTrack AI Chat ===[/bold green]")
+    console.print("Commands: `/rag on`, `/rag off`, `/model <name>`, `/topk <k>`, `/sources`, `/exit` or `q`\n")
+
+    try:
+        agent = get_rag_agent(args)
+    except Exception as exc:
+        console.print(f"[red]Initialization error: {exc}[/red]")
+        sys.exit(1)
+
+    last_sources = []
+    current_model = args.model or agent.llm_client.default_model
+
+    while True:
+        try:
+            rag_badge = "[bold green]RAG:ON[/bold green]" if use_rag else "[bold yellow]RAG:OFF[/bold yellow]"
+            prompt_str = f"\nCryptoTrack [{rag_badge} | {current_model.split('/')[-1]}] > "
+            user_input = input(prompt_str).strip()
+
+            if not user_input:
+                continue
+
+            if user_input.lower() in {"exit", "quit", "q", "/exit", "/quit"}:
+                console.print("[dim]Goodbye![/dim]")
+                break
+
+            if user_input.lower() in {"/rag on", "rag on"}:
+                use_rag = True
+                console.print("[green]✓ RAG mode ENABLED (Grounding in CryptoTrack codebase)[/green]")
+                continue
+            elif user_input.lower() in {"/rag off", "rag off"}:
+                use_rag = False
+                console.print("[yellow]✓ RAG mode DISABLED (Pretrained baseline)[/yellow]")
+                continue
+            elif user_input.startswith("/model "):
+                current_model = user_input.split(maxsplit=1)[1].strip()
+                console.print(f"[cyan]✓ Model switched to: {current_model}[/cyan]")
+                continue
+            elif user_input.startswith("/topk "):
+                try:
+                    args.top_k = int(user_input.split()[1])
+                    agent.default_top_k = args.top_k
+                    console.print(f"[cyan]✓ Top-K set to: {args.top_k}[/cyan]")
+                except ValueError:
+                    console.print("[red]Invalid integer for top_k[/red]")
+                continue
+            elif user_input.lower() in {"/sources", "sources"}:
+                if not last_sources:
+                    console.print("[dim]No sources in the last query.[/dim]")
+                else:
+                    console.print(f"[bold magenta]Last query sources ({len(last_sources)}):[/bold magenta]")
+                    for s in last_sources:
+                        console.print(f"  • #{s.rank} [{s.score:.4f}] [yellow]{s.source}[/yellow] (L{s.start_line}-L{s.end_line})")
+                continue
+            elif user_input.lower() in {"/help", "help"}:
+                console.print("Available commands:\n  /rag on\n  /rag off\n  /model <name>\n  /topk <k>\n  /sources\n  /exit")
+                continue
+
+            with console.status(f"[cyan]Querying...[/cyan]"):
+                res = agent.query(
+                    question=user_input,
+                    use_rag=use_rag,
+                    top_k=args.top_k,
+                    model=current_model,
+                )
+            last_sources = res.sources
+
+            border_style = "green" if use_rag else "yellow"
+            title = f"🤖 [{rag_badge}] ({res.total_tokens} tok | {res.latency_seconds:.2f}s)"
+            console.print(Panel(res.answer, title=title, border_style=border_style))
+
+        except KeyboardInterrupt:
+            break
+        except OpenRouterError as err:
+            console.print(f"[red]OpenRouter API Error: {err}[/red]")
+        except Exception as exc:
+            console.print(f"[red]Error: {exc}[/red]")
+
+
+def run_eval(args):
+    console.print(f"\n[bold green]=== Running RAG vs No-RAG 10 Questions Benchmark ===[/bold green]")
+    try:
+        agent = get_rag_agent(args)
+    except Exception as exc:
+        console.print(f"[red]Initialization error: {exc}[/red]")
+        sys.exit(1)
+
+    evaluator = RAGEvaluator(agent=agent, console=console)
+    questions = BENCHMARK_QUESTIONS
+    if args.limit and args.limit > 0:
+        questions = questions[:args.limit]
+        console.print(f"[yellow]Note: Limiting benchmark to first {args.limit} questions[/yellow]")
+
+    console.print(f"[cyan]Target Model:[/cyan] {args.model or agent.llm_client.default_model}")
+    console.print(f"[cyan]Total Questions:[/cyan] {len(questions)}")
+    console.print(f"[cyan]Strategy:[/cyan] {args.strategy}\n")
+
+    def on_progress(current, total, bq):
+        console.print(f"[{current}/{total}] [bold white]Evaluating Q{bq.id}:[/bold white] [cyan]{bq.question[:60]}...[/cyan]")
+
+    summary = evaluator.run_benchmark(
+        questions=questions,
+        top_k=args.top_k,
+        model=args.model,
+        progress_callback=on_progress,
+    )
+
+    console.print("\n")
+    evaluator.print_summary_table(summary)
+
+    # Generate Markdown report
+    model_name = args.model or agent.llm_client.default_model
+    report_content = evaluator.generate_markdown_report(summary, model_name)
+    report_path = Path(args.output) if args.output else default_config.rag_benchmark_report_path
+
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(report_content)
+
+    console.print(f"\n[bold green]✓ Full Benchmark Report saved to:[/bold green] [white]{report_path}[/white]\n")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="RAG-Indexer",
-        description="Document Indexing and Vector Search Pipeline for Android Project (Week 5 Day 21)",
+        description="RAG Pipeline and Document Indexing for Android Project CryptoTrack (Week 5)",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -310,6 +524,40 @@ def main():
     p_compare.add_argument("--query", default=None, help="Single query to compare (if omitted, launches interactive mode)")
     p_compare.add_argument("--top-k", type=int, default=3, help="Top K results per strategy")
 
+    # 5. ask (NEW Day 22)
+    p_ask = subparsers.add_parser("ask", help="Query the AI Agent with RAG or without RAG")
+    p_ask.add_argument("question", help="User question to ask the agent")
+    p_rag_group = p_ask.add_mutually_exclusive_group()
+    p_rag_group.add_argument("--rag", dest="rag", action="store_true", default=True, help="Enable RAG mode (default)")
+    p_rag_group.add_argument("--no-rag", dest="rag", action="store_false", help="Disable RAG mode (pure LLM baseline)")
+    p_ask.add_argument("--strategy", choices=["fixed", "structural"], default="structural", help="Vector index strategy")
+    p_ask.add_argument("--top-k", type=int, default=default_config.default_top_k, help="Number of retrieved chunks")
+    p_ask.add_argument("--model", default=None, help="OpenRouter model identifier")
+    p_ask.add_argument("--api-key", default=None, help="OpenRouter API Key")
+    p_ask.add_argument("--filter", default=None, help="Filter sources by substring")
+    p_ask.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
+
+    # 6. chat (NEW Day 22)
+    p_chat = subparsers.add_parser("chat", help="Interactive terminal chat with RAG toggle")
+    p_chat.add_argument("--rag", dest="rag", action="store_true", default=True, help="Start in RAG mode (default)")
+    p_chat.add_argument("--no-rag", dest="rag", action="store_false", help="Start in No-RAG mode")
+    p_chat.add_argument("--strategy", choices=["fixed", "structural"], default="structural")
+    p_chat.add_argument("--top-k", type=int, default=default_config.default_top_k)
+    p_chat.add_argument("--model", default=None)
+    p_chat.add_argument("--api-key", default=None)
+    p_chat.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
+
+    # 7. eval (NEW Day 22)
+    p_eval = subparsers.add_parser("eval", help="Run 10 benchmark questions comparing No-RAG vs With-RAG")
+    p_eval.add_argument("--strategy", choices=["fixed", "structural"], default="structural")
+    p_eval.add_argument("--top-k", type=int, default=default_config.default_top_k)
+    p_eval.add_argument("--model", default=None)
+    p_eval.add_argument("--api-key", default=None)
+    p_eval.add_argument("--limit", type=int, default=None, help="Limit number of questions to evaluate")
+    p_eval.add_argument("--output", default=None, help="Custom output path for markdown report")
+    p_eval.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
+
+
     args = parser.parse_args()
 
     if args.command == "index":
@@ -320,6 +568,13 @@ def main():
         run_search(args)
     elif args.command == "compare":
         run_compare(args)
+    elif args.command == "ask":
+        run_ask(args)
+    elif args.command == "chat":
+        run_chat(args)
+    elif args.command == "eval":
+        run_eval(args)
+
 
 if __name__ == "__main__":
     main()

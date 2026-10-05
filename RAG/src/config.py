@@ -32,8 +32,23 @@ class AppConfig:
     fixed_chunk_size: int = 500
     fixed_chunk_overlap: int = 50
 
-    structural_max_chunk_size: int = 1200
-    structural_chunk_overlap: int = 100
+    structural_max_chunk_size: int = 2500
+    structural_chunk_overlap: int = 150
+
+    # LLM & OpenRouter Settings
+    openrouter_base_url: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    openrouter_model: str = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free")
+    openrouter_api_key: str = field(
+        default_factory=lambda: (
+            os.getenv("OPENROUTER_API_KEY")
+            or os.getenv("VITE_OPENROUTER_API_KEY")
+            or ""
+        )
+    )
+
+    # RAG defaults
+    default_top_k: int = 5
+    default_strategy: str = "structural"
 
     data_dir: Path = BASE_DIR / "data"
 
@@ -49,4 +64,34 @@ class AppConfig:
     def comparison_report_path(self) -> Path:
         return self.data_dir / "comparison_report.md"
 
+    @property
+    def rag_benchmark_report_path(self) -> Path:
+        return self.data_dir / "rag_benchmark_report.md"
+
+
+def load_env_file():
+    """Load key-value pairs from .env into os.environ if not already set."""
+    candidates = [
+        BASE_DIR / ".env",
+        BASE_DIR.parent / ".env",
+    ]
+    for env_path in candidates:
+        if env_path.is_file():
+            try:
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#") or "=" not in line:
+                            continue
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip().strip("\"'")
+                        if k and k not in os.environ:
+                            os.environ[k] = v
+            except Exception:
+                pass
+
+
+load_env_file()
 default_config = AppConfig()
+

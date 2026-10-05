@@ -38,3 +38,4 @@ __pycache__/
 /data/
 RAG/data/*
 !RAG/data/comparison_report.md
+!RAG/data/rag_benchmark_report.md
