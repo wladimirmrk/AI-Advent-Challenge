@@ -160,7 +160,8 @@ class RAGAgent:
             "Ваша задача — предоставить точный и правдивый ответ на вопрос пользователя, "
             "опираясь СТРОГО на предоставленный проверенный контекст из кодовой базы.\n\n"
             "СТРОГИЕ ПРАВИЛА ВЫВОДА (JSON ONLY):\n"
-            "Вы ОБЯЗАНЫ вернуть валидный JSON без лишнего форматирования и markdown-тегов вокруг, содержащий поля:\n"
+            "Вы ОБЯЗАНЫ вернуть валидный JSON-объект. НЕ выводите вступительные рассуждения или CoT-текст (preamble), "
+            "начинайте вывод строго с символа `{` и заканчивайте `}`:\n"
             "{\n"
             '  "status": "grounded" или "refusal",\n'
             '  "answer": "Подробный ответ на русском языке...",\n'
@@ -172,8 +173,8 @@ class RAGAgent:
             '    }\n'
             '  ],\n'
             '  "quotes": [\n'
-            '    "Точная ДОСЛОВНАЯ цитата (фрагмент текста из сниппета)...",\n'
-            '    "Вторая точная ДОСЛОВНАЯ цитата..."\n'
+            '    "Краткая точная ДОСЛОВНАЯ цитата из сниппета...",\n'
+            '    "Вторая краткая точная ДОСЛОВНАЯ цитата из сниппета..."\n'
             '  ],\n'
             '  "needs_clarification": false,\n'
             '  "clarification_prompt": null\n'
@@ -186,8 +187,8 @@ class RAGAgent:
             '  * В поле "clarification_prompt" вежливо попросите пользователя уточнить вопрос.\n'
             '  * Поля "sources" и "quotes" верните пустыми: [].\n\n'
             "ПРАВИЛО ЦИТИРОВАНИЯ:\n"
-            "- Каждое ключевое утверждение ответа должно подтверждаться дословной цитатой в массиве `quotes`.\n"
-            "- Запрещено выдумывать текст цитат: они обязаны быть фрагментами из переданного контекста.\n"
+            "- В массиве `quotes` верните от 2 до 5 ключевых дословных фрагментов (1-3 строки) непосредственно из переданных сниппетов.\n"
+            "- Категорически запрещено цитировать фразы из текста данного системного промпта.\n"
             "- В массиве `sources` укажите все использованные файлы."
         )
 
@@ -276,6 +277,70 @@ class RAGAgent:
             raw_response_text=raw_text,
         )
 
+    def _extract_json_object(self, text: str) -> Optional[dict]:
+        """Robustly extract a JSON object from raw LLM text using direct parsing, markdown extraction, or bracket balancing."""
+        import json, re
+        raw = text.strip()
+        # 1. Direct parse
+        try:
+            val = json.loads(raw)
+            if isinstance(val, dict):
+                return val
+        except Exception:
+            pass
+
+        # 2. Markdown fenced json block
+        matches = re.findall(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", raw, flags=re.IGNORECASE)
+        for m in matches:
+            try:
+                val = json.loads(m)
+                if isinstance(val, dict) and ("answer" in val or "status" in val):
+                    return val
+            except Exception:
+                pass
+
+        # 3. Bracket-balanced search for object with "answer" or "status"
+        start_idx = 0
+        while True:
+            pos = raw.find("{", start_idx)
+            if pos == -1:
+                break
+            depth = 0
+            in_string = False
+            escape = False
+            end_pos = -1
+            for i in range(pos, len(raw)):
+                c = raw[i]
+                if escape:
+                    escape = False
+                    continue
+                if c == "\\":
+                    escape = True
+                    continue
+                if c == '"':
+                    in_string = not in_string
+                    continue
+                if not in_string:
+                    if c == '{':
+                        depth += 1
+                    elif c == '}':
+                        depth -= 1
+                        if depth == 0:
+                            end_pos = i + 1
+                            break
+            if end_pos != -1:
+                candidate = raw[pos:end_pos]
+                if '"answer"' in candidate or '"status"' in candidate:
+                    try:
+                        val = json.loads(candidate)
+                        if isinstance(val, dict):
+                            return val
+                    except Exception:
+                        pass
+            start_idx = pos + 1
+
+        return None
+
     def parse_grounded_response(
         self,
         raw_text: str,
@@ -285,24 +350,7 @@ class RAGAgent:
         top_score: float = 0.0,
     ) -> GroundedAnswer:
         """Parse structured JSON LLM output into a GroundedAnswer and execute GroundingValidator."""
-        import json, re
-
-        clean_text = raw_text.strip()
-        if clean_text.startswith("```"):
-            clean_text = re.sub(r"^```(?:json)?\s*", "", clean_text, flags=re.IGNORECASE)
-            clean_text = re.sub(r"\s*```$", "", clean_text)
-            clean_text = clean_text.strip()
-
-        parsed = None
-        try:
-            parsed = json.loads(clean_text)
-        except Exception:
-            m = re.search(r"\{[\s\S]*\}", clean_text)
-            if m:
-                try:
-                    parsed = json.loads(m.group(0))
-                except Exception:
-                    pass
+        parsed = self._extract_json_object(raw_text)
 
         if isinstance(parsed, dict) and "answer" in parsed:
             raw_sources = parsed.get("sources", [])
@@ -590,10 +638,12 @@ class RAGAgent:
         else:
             messages = self.build_no_rag_prompt(question)
 
+        resp_format = {"type": "json_object"} if (use_grounded and use_rag) else None
         llm_resp: OpenRouterResponse = self.llm_client.chat_completion(
             messages=messages,
             model=model,
             temperature=temperature,
+            response_format=resp_format,
         )
 
         total_latency = time.time() - t_start

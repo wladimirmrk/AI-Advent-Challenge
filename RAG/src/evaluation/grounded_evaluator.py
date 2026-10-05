@@ -250,6 +250,7 @@ class GroundedEvaluator:
         threshold: float = 0.58,
         model: Optional[str] = None,
         progress_callback: Optional[Callable[[int, int, GroundedEvalQuestion], None]] = None,
+        delay: float = 1.0,
     ) -> GroundedBenchmarkSummary:
         suite = questions or GROUNDED_BENCHMARK_SUITE
         results: List[QuestionEvalResult] = []
@@ -257,8 +258,34 @@ class GroundedEvaluator:
         for idx, q in enumerate(suite, 1):
             if progress_callback:
                 progress_callback(idx, len(suite), q)
-            res = self.evaluate_question(q, top_k=top_k, threshold=threshold, model=model)
+            try:
+                res = self.evaluate_question(q, top_k=top_k, threshold=threshold, model=model)
+            except Exception as exc:
+                res = QuestionEvalResult(
+                    question_id=q.id,
+                    category=q.category,
+                    question=q.question,
+                    is_in_domain=q.is_in_domain,
+                    expected_refusal=q.expected_refusal,
+                    has_sources=False,
+                    has_quotes=False,
+                    sources_count=0,
+                    quotes_count=0,
+                    grounding_score=0.0,
+                    faithfulness_score=0.0,
+                    top_relevance=0.0,
+                    status="error",
+                    is_refusal=False,
+                    needs_clarification=False,
+                    clarification_prompt=None,
+                    answer_preview=f"Error: {exc}"[:120],
+                    passed=False,
+                    latency_seconds=0.0,
+                    grounded_answer=None,
+                )
             results.append(res)
+            if idx < len(suite) and delay > 0:
+                time.sleep(delay)
 
         in_domain_res = [r for r in results if r.is_in_domain]
         ood_res = [r for r in results if not r.is_in_domain]

@@ -131,13 +131,23 @@ class GroundingValidator:
 
         # 1. Technical identifier extraction (Latin class/method/variable names)
         # e.g., AssetAmountValidator, sanitize, RoomDatabase, CryptoTrackDatabase
-        tech_entities = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b", answer))
-        # Filter out common stop words
+        raw_tech = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b", answer))
         stop_tech = {
             "the", "and", "for", "with", "this", "that", "from", "are", "not", "use", "val", "var", "fun",
-            "class", "source", "true", "false", "null", "all", "out", "new", "get", "set"
+            "class", "source", "true", "false", "null", "all", "out", "new", "get", "set", "add", "edit",
+            "sheet", "screen", "view", "item", "list", "mode", "type", "data", "app", "core", "test", "case",
+            "line", "user", "time", "date", "form", "text", "state", "rule", "code", "json", "show", "call",
+            "see", "only", "one", "two", "top", "end", "tag", "per", "key", "has", "had", "may", "can", "row"
         }
-        tech_entities = {e for e in tech_entities if e.lower() not in stop_tech}
+        # Prioritize true code identifiers (PascalCase, camelCase, snake_case)
+        tech_entities = {
+            e for e in raw_tech
+            if e.lower() not in stop_tech and (
+                any(c.isupper() for c in e[1:]) or "_" in e or any(c.isdigit() for c in e) or e.startswith("@")
+            )
+        }
+        if not tech_entities:
+            tech_entities = {e for e in raw_tech if e.lower() not in stop_tech}
 
         if tech_entities:
             matched_entities = sum(1 for e in tech_entities if e.lower() in ctx_norm)
@@ -148,8 +158,16 @@ class GroundingValidator:
         # 2. Backtick code symbols in answer (e.g. `AssetAmountValidator`, `sanitize`)
         backtick_symbols = set(re.findall(r"`([^`]+)`", answer))
         if backtick_symbols:
-            matched_backticks = sum(1 for s in backtick_symbols if self._normalize_text(s) in ctx_norm)
-            backtick_score = matched_backticks / len(backtick_symbols)
+            matched_b = 0.0
+            for s in backtick_symbols:
+                s_norm = self._normalize_text(s)
+                if s_norm in ctx_norm:
+                    matched_b += 1.0
+                else:
+                    tokens = [t for t in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", s) if len(t) >= 3 and t.lower() not in stop_tech]
+                    if tokens and any(t.lower() in ctx_norm for t in tokens):
+                        matched_b += 0.8
+            backtick_score = min(1.0, matched_b / len(backtick_symbols))
         else:
             backtick_score = entity_score
 
@@ -168,7 +186,7 @@ class GroundingValidator:
                     unsupported.append(sent)
 
         # Composite technical faithfulness score
-        faithfulness = 0.50 * entity_score + 0.30 * backtick_score + 0.20 * quote_support_score
+        faithfulness = 0.40 * quote_support_score + 0.35 * entity_score + 0.25 * backtick_score
         return round(min(1.0, max(0.0, faithfulness)), 4), unsupported
 
     def validate(

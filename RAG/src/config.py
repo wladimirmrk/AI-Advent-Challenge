@@ -59,6 +59,10 @@ class AppConfig:
     # Grounding & Anti-Hallucination defaults (Day 24)
     grounded_relevance_threshold: float = 0.58
     grounded_min_sources: int = 1
+    grounded_eval_delay: float = float(os.getenv("GROUNDED_EVAL_DELAY", "1.0"))
+
+    # OpenRouter Connection Settings
+    openrouter_timeout: int = int(os.getenv("OPENROUTER_TIMEOUT", "90"))
 
     data_dir: Path = BASE_DIR / "data"
 
@@ -90,10 +94,20 @@ class AppConfig:
 def load_env_file():
     """Load key-value pairs from .env into os.environ if not already set."""
     candidates = [
+        Path.cwd() / ".env",
         BASE_DIR / ".env",
         BASE_DIR.parent / ".env",
+        Path.cwd() / "RAG" / ".env",
     ]
+    seen = set()
     for env_path in candidates:
+        try:
+            resolved = env_path.resolve()
+        except Exception:
+            resolved = env_path
+        if resolved in seen:
+            continue
+        seen.add(resolved)
         if env_path.is_file():
             try:
                 with open(env_path, "r", encoding="utf-8") as f:

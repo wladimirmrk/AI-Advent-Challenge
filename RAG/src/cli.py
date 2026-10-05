@@ -312,6 +312,7 @@ def get_rag_agent(args, default_strat: str = "structural") -> RAGAgent:
         api_key=api_key,
         base_url=default_config.openrouter_base_url,
         default_model=model,
+        timeout=default_config.openrouter_timeout,
         mock_mode=mock_mode,
     )
     initial_top_k = getattr(args, "initial_top_k", default_config.rerank_initial_top_k) or default_config.rerank_initial_top_k
@@ -720,12 +721,14 @@ def run_benchmark_grounded(args):
         q_type = "[green]In-Domain[/green]" if q.is_in_domain else "[yellow]Adversarial[/yellow]"
         console.print(f"[{current}/{total}] {q_type} [bold white]Q{q.id}:[/bold white] [cyan]{q.question[:65]}...[/cyan]")
 
+    delay = getattr(args, "delay", default_config.grounded_eval_delay)
     summary = evaluator.run_benchmark(
         questions=suite,
         top_k=args.top_k,
         threshold=args.threshold,
         model=args.model,
         progress_callback=on_progress,
+        delay=delay,
     )
 
     console.print("\n")
@@ -834,6 +837,7 @@ def main():
     p_bg.add_argument("--model", default=None)
     p_bg.add_argument("--api-key", default=None)
     p_bg.add_argument("--limit", type=int, default=None, help="Limit number of benchmark questions")
+    p_bg.add_argument("--delay", type=float, default=default_config.grounded_eval_delay, help="Delay in seconds between questions to prevent rate limits")
     p_bg.add_argument("--output", default=None, help="Custom output path for markdown report")
     p_bg.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
 

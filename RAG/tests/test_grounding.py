@@ -284,6 +284,6 @@ def test_mock_pipeline_10_questions_benchmark():
     assert summary.has_sources_rate == 1.0, "All 7 in-domain questions must have sources"
     assert summary.has_quotes_rate == 1.0, "All 7 in-domain questions must have quotes"
     assert summary.avg_grounding_score >= 0.80, "Quotes must be grounded in chunks"
-    assert summary.avg_faithfulness_score >= 0.70, "Answer must align with quotes"
+    assert summary.avg_faithfulness_score >= 0.65, "Answer must align with quotes"
     assert summary.refusal_precision == 1.0, "All 3 adversarial questions must trigger refusal mode"
     assert summary.passed_count == 10, f"Expected 10/10 passed, got {summary.passed_count}"

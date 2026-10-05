@@ -38,15 +38,15 @@ class OpenRouterClient:
         self,
         api_key: Optional[str] = None,
         base_url: str = "https://openrouter.ai/api/v1",
-        default_model: str = "nvidia/nemotron-3-ultra-550b-a55b:free",
-        timeout: int = 15,
+        default_model: str = "nvidia/nemotron-3.5-lightning:free",
+        timeout: int = 90,
         max_retries: int = 2,
         mock_mode: bool = False,
     ):
         self.api_key = (api_key or "").strip()
         self.base_url = base_url.rstrip("/")
-        self.default_model = default_model
-        self.timeout = timeout
+        self.default_model = default_model or os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free")
+        self.timeout = timeout or int(os.getenv("OPENROUTER_TIMEOUT", "60"))
         self.max_retries = max_retries
         self.mock_mode = mock_mode or os.getenv("OPENROUTER_MOCK", "").lower() in {"1", "true", "yes"}
 
@@ -328,6 +328,7 @@ class OpenRouterClient:
         model: Optional[str] = None,
         temperature: float = 0.2,
         max_tokens: int = 2500,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> OpenRouterResponse:
         """Execute a chat completion request to OpenRouter with automatic retries or mock fallback."""
         target_model = model or self.default_model
@@ -349,12 +350,14 @@ class OpenRouterClient:
             "HTTP-Referer": "https://github.com/wladimirmrk/AI-Advent-Challenge",
             "X-Title": "AI-Advent-CryptoTrack-RAG",
         }
-        payload = {
+        payload: Dict[str, Any] = {
             "model": target_model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if response_format:
+            payload["response_format"] = response_format
 
         last_err: Optional[Exception] = None
         t_start = time.time()
