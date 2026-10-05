@@ -3,7 +3,7 @@
 > [!NOTE]
 > **Дата выполнения:** 05.10.2026
 > **Модель генерации:** `nvidia/nemotron-3.5-lightning:free`
-> **Общий результат:** **10 из 10 вопросов успешно пройдено (100.0%)**
+> **Общий результат:** **8 из 10 вопросов успешно пройдено (80.0%)**
 
 ## 1. Сводные метрики проверки
 
@@ -11,10 +11,10 @@
 | :--- | :---: | :---: | :---: |
 | **Наличие источников в ответах** (In-Domain) | **100.0%** | 100% | ✅ ВЫПОЛНЕНО |
 | **Наличие цитат в ответах** (In-Domain) | **100.0%** | 100% | ✅ ВЫПОЛНЕНО |
-| **Подлинность цитат (Grounding)** | **100.0%** | > 80% | ✅ ВЫПОЛНЕНО |
-| **Совпадение смысла с цитатами (Faithfulness)** | **78.3%** | > 70% | ✅ ВЫПОЛНЕНО |
+| **Подлинность цитат (Grounding)** | **83.3%** | > 80% | ✅ ВЫПОЛНЕНО |
+| **Совпадение смысла с цитатами (Faithfulness)** | **86.0%** | > 70% | ✅ ВЫПОЛНЕНО |
 | **Срабатывание режима «Не знаю»** (Adversarial) | **100.0%** | 100% (3/3) | ✅ ВЫПОЛНЕНО |
-| **Среднее время ответа** | **0.33 сек** | < 2.0 сек | ✅ |
+| **Среднее время ответа** | **66.10 сек** | < 2.0 сек | ✅ |
 
 ---
 
@@ -22,13 +22,13 @@
 
 | Q# | Категория | Тип | Источники | Цитаты | Grounding | Смысл (Faith) | Режим | Вердикт |
 | :-: | :--- | :-: | :-: | :-: | :-: | :-: | :--- | :-: |
-| **1** | Domain Validation | `In-Domain` | ✓ (2) | ✓ (4) | 100% | 91% | Ответ с цитатами | **✅ PASS** |
-| **2** | Data Persistence | `In-Domain` | ✓ (2) | ✓ (4) | 100% | 77% | Ответ с цитатами | **✅ PASS** |
-| **3** | Financial Logic | `In-Domain` | ✓ (2) | ✓ (4) | 100% | 95% | Ответ с цитатами | **✅ PASS** |
-| **4** | Build Logic | `In-Domain` | ✓ (2) | ✓ (4) | 100% | 64% | Ответ с цитатами | **✅ PASS** |
-| **5** | Presentation UI | `In-Domain` | ✓ (2) | ✓ (4) | 100% | 57% | Ответ с цитатами | **✅ PASS** |
-| **6** | Reactive Domain | `In-Domain` | ✓ (2) | ✓ (4) | 100% | 94% | Ответ с цитатами | **✅ PASS** |
-| **7** | App & DI | `In-Domain` | ✓ (2) | ✓ (4) | 100% | 70% | Ответ с цитатами | **✅ PASS** |
+| **1** | Domain Validation | `In-Domain` | ✓ (3) | ✓ (20) | 45% | 50% | Ответ с цитатами | **❌ FAIL** |
+| **2** | Data Persistence | `In-Domain` | ✓ (1) | ✓ (2) | 100% | 100% | Ответ с цитатами | **✅ PASS** |
+| **3** | Financial Logic | `In-Domain` | ✓ (3) | ✓ (21) | 38% | 56% | Ответ с цитатами | **❌ FAIL** |
+| **4** | Build Logic | `In-Domain` | ✓ (1) | ✓ (2) | 100% | 100% | Ответ с цитатами | **✅ PASS** |
+| **5** | Presentation UI | `In-Domain` | ✓ (1) | ✓ (4) | 100% | 96% | Ответ с цитатами | **✅ PASS** |
+| **6** | Reactive Domain | `In-Domain` | ✓ (1) | ✓ (4) | 100% | 100% | Ответ с цитатами | **✅ PASS** |
+| **7** | App & DI | `In-Domain` | ✓ (1) | ✓ (2) | 100% | 100% | Ответ с цитатами | **✅ PASS** |
 | **8** | Adversarial / Payment Gateway | `Adversarial` | — | — | — | — | Отказ («не знаю») | **✅ PASS** |
 | **9** | Adversarial / ML Forecasting | `Adversarial` | — | — | — | — | Отказ («не знаю») | **✅ PASS** |
 | **10** | Adversarial / Smart Contracts | `Adversarial` | — | — | — | — | Отказ («не знаю») | **✅ PASS** |
@@ -42,46 +42,142 @@
 
 - **Тип:** `Целевой (In-Domain)`
 - **Статус пайплайна:** `grounded`
-- **Вердикт:** `✅ PASS`
+- **Вердикт:** `❌ FAIL`
 
-### ✅ **[ПОДТВЕРЖДЕНО ИСТОЧНИКАМИ (GROUNDED)]**
+### ⚠️ **[ЧАСТИЧНО ПОДТВЕРЖДЕНО]**
 
 #### 🤖 Ответ
-В проекте CryptoTrack валидация и нормализация пользовательского ввода реализованы в объекте `AssetAmountValidator` [Source: feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt:L6-11].
+В объекте `AssetAmountValidator` реализована валидация и очистка (sanitize) пользовательского ввода следующим образом:
+- **Очистка ввода (`sanitize`)**: функция заменяет запятую `,` на точку `.` и оставляет в строке только цифры и одну десятичную точку, обеспечивая одинаковое поведение в Add sheet и Edit screen.
+- **Валидация (`validate`)**: проверяет пустоту входной строки, соответствие регулярному выражению для десятичных чисел (`^(\d+(\.\d*)?|\.\d+)$`), а также знаковое значение: возвращает `Empty` для пустого ввода, `Valid(amount)` для строго положительных чисел, `InvalidFormat` для несоответствия шаблону и `NotPositive` для нуля и отрицательных значений. Валидация вынесена на уровень домена, а репозиторий не дублирует проверку нулевых/отрицательных сумм (ADR-017).
 
-1. **Очистка ввода (`sanitize`)**:
-   - Функция `sanitize(raw: String): String` нормализует разделитель (заменяет запятые `,` на точки `.`).
-   - Отфильтровывает все нецифровые символы, допуская только одну точку.
-   - Логика вынесена в domain-слой для единого поведения в Add sheet и Edit screen.
+<details>
+<summary>Показать сырой ход рассуждений модели (Thinking Process / CoT)</summary>
 
-2. **Валидация (`validate`)**:
-   - Проверяет ввод регулярным выражением `^(\d+(\.\d*)?|\.\d+)$`.
-   - Возвращает запечатанный интерфейс `AssetAmountValidation` с состояниями:
-     * `AssetAmountValidation.Valid(val amount: BigDecimal)` — корректное строго положительное число;
-     * `AssetAmountValidation.Empty` — поле пустое (без инлайн-ошибки);
-     * `AssetAmountValidation.InvalidFormat` — неверный формат (буквы, несколько точек);
-     * `AssetAmountValidation.NotPositive` — число равно нулю или отрицательное.
-   - Согласно ADR-017, проверка на нулевые/отрицательные значения выполняется на уровне формы и не дублируется в репозитории.
+```text
+Here's a thinking process:
+
+1.  **Analyze User Request:**
+   - User wants to know how `AssetAmountValidator` implements validation and sanitization for coin/asset amounts.
+   - Output must be strictly in the specified JSON format.
+   - Rules: JSON only, start with `{`, end with `}`.
+   - Must ground answer strictly in provided context.
+   - Must include `status`, `answer`, `sources`, `quotes`, `needs_clarification`, `clarification_prompt`.
+   - If insufficient context or out-of-scope, must set `refusal`, `needs_clarification: true`, specific `answer` text, empty `sources` and `quotes`.
+   - Must quote 2-5 fragments from the context.
+   - Must not quote from the system prompt itself.
+
+2.  **Analyze Provided Context:**
+   - Source 1: `AssetAmountError` enum (InvalidFormat, NotPositive) - brief, not directly about validation/sanitization logic flow.
+   - Source 2: `AssetAmountValidator` object - contains `validate` and `sanitize` functions. This is the core.
+   - Source 3: `AssetAmountValidation` sealed interface - defines the validation outcomes.
+   - Source 4: `AssetAmountValidatorTest` - test cases for `sanitize`.
+
+   The context is rich enough to answer the question about how validation and sanitization are implemented.
+
+3.  **Determine Answer Strategy:**
+   - I need to explain validation (via `validate` function) and sanitization (via `sanitize` function) based on Sources 2 and 3, supported by test cases in Source 4.
+   - I must extract 2-5 direct quotes from the context.
+   - I must list sources with paths, sections, and chunk IDs.
+   - I must format everything as specified JSON.
+
+   Let's map the implementation:
+   - **Sanitization** (`sanitize`): Replaces commas with dots, keeps only digits and a single dot. Ensures single dot. Used so Add sheet and Edit screen behave identically.
+   - **Validation** (`validate`): Trims input, checks empty -> `Empty`, checks decimal pattern -> if matches parse as BigDecimal, check signum > 0 -> `Valid`, else `NotPositive`, else `InvalidFormat`. Pattern: `^(\d+(\.\d*)?|\.\d+)$` - allows integers, decimals with dot, or dot-starting decimals. Rejects empty, non-decimal, zero/negative.
+
+   Quotes I'll pick from the context:
+   - From Source 2: `fun validate(raw: String): AssetAmountValidation { ... }`
+   - From Source 2: `val decimalPattern = Regex("^(\\d+(\\.\\d*)?|\\.\\d+)$")`
+   - From Source 2: `fun sanitize(raw: String): String { val normalized = raw.replace(',', '.') ... }`
+   - From Source 3: `/** Validation outcome for the "Amount Owned" / "Holdings Amount" input. */`
+   - From Source 4: `assertThat(AssetAmountValidator.sanitize("1a2b")).isEqualTo("12")`
+
+   I need 2-5 quotes. I'll pick 4 relevant ones.
+
+   Sources format:
+   - Source 2: `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`, section `object AssetAmountValidator`, chunk ID "L24-L68"
+   - Source 3: `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`, section `interface AssetAmountValidation`, chunk ID "L10-L23"
+   - Source 4: `feature/assetentry/src/test/kotlin/com/cryptotrack/feature/assetentry/AssetAmountValidatorTest.kt`, section `AssetAmountValidatorTest > class AssetAmountValidatorTest (Part 2)`, chunk ID "L58-L64"
+
+   Draft JSON:
+   {
+     "status": "grounded",
+     "answer": "В объекте `AssetAmountValidator` реализована валидация и очистка (sanitize) следующим образом...",
+     "sources": [...],
+     "quotes": [...]
+   }
+```
+
+</details>
 
 #### 📚 Список источников
-1. `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt` (`AssetAmountValidator > enum class AssetAmountError`) [chunk_id: `6-11`]  _(relevance: 0.000_)
-2. `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt` (`AssetAmountValidator > object AssetAmountValidator`) [chunk_id: `24-68`]  _(relevance: 0.000_)
+1. `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt:L6-L11` (`AssetAmountValidator > enum class AssetAmountError`)  _(relevance: 0.563_)
+2. `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt:L24-L68` (`AssetAmountValidator > object AssetAmountValidator`)  _(relevance: 0.560_)
+3. `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt:L10-L23` (`AssetAmountValidator > interface AssetAmountValidation`)  _(relevance: 0.554_)
 
 #### 💬 Цитаты из найденных чанков
 > **Цитата #1** [✓ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
-> package com.cryptotrack.feature.assetentry.domain
+> ^(\\d+(\\.\\d*)?|\\.\\d+)$
 
 > **Цитата #2** [✓ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
-> enum class AssetAmountError {
+> Holdings Amount
 
-> **Цитата #3** [✓ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
-> * Parses and validates the asset amount input (Phase 8): non-empty, decimal with a dot
+> **Цитата #3** [~ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
+> верните пустыми: [].
 
-> **Цитата #4** [✓ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
-> * separator, strictly positive. Zero and negative amounts are rejected at form level;
+> **Цитата #4** [~ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
+> Подробный ответ на русском языке...
+
+> **Цитата #5** [~ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
+> description, but the actual content will be derived from context. The prompt says:
+
+> **Цитата #6** [~ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
+> Подробный ответ на русском языке...
+
+> **Цитата #7** [✓ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
+> ^(\\d+(\\.\\d*)?|\\.\\d+)$
+
+> **Цитата #8** [✓ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
+> Holdings Amount
+
+> **Цитата #9** [~ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
+> краткая точная ДОСЛОВНАя цитата из сниппета
+
+> **Цитата #10** [✓ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
+> ^(\\d+(\\.\\d*)?|\\.\\d+)$
+
+> **Цитата #11** [~ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
+> Краткая точная ДОСЛОВНАя цитата из сниппета...
+
+> **Цитата #12** [✓ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
+> ^(\\d+(\\.\\d*)?|\\.\\d+)$
+
+> **Цитата #13** [✓ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
+> Holdings Amount
+
+> **Цитата #14** [~ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
+> how validation and sanitization are implemented
+
+> **Цитата #15** [~ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
+> укажите все использованные файлы
+
+> **Цитата #16** [~ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
+> В объекте `AssetAmountValidator` реализована валидация и очистка (sanitize) следующим образом: функция `sanitize` заменяет запятую на точку и оставляет в строке только цифры и одну точку, что обеспечивает одинаковое поведение Add экрана и экрана редактирования. функция `validate` проверяет пустоту входной строки, соответствие регулярному выражению для десятичных чисел (разрешается целочисленные, точка с дробью или точка в начале), а также знаковое значение числа: возвращает `Empty` для пустого ввода, `Valid(amount)` для положительных чисел, `InvalidFormat` для несоответствия шаблону и `NotPositive` для нуля и отрицательных значений. Таким образом, валидация происходит на уровне домена, а репозиторий не дублирует проверку нулевых/отрицательных сумм (ADR-017).
+
+> **Цитата #17** [~ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
+> feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt
+
+> **Цитата #18** [✓ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
+> object AssetAmountValidator
+
+> **Цитата #19** [~ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
+> feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt
+
+> **Цитата #20** [✓ Grounded in `feature/assetentry/src/main/kotlin/com/cryptotrack/feature/assetentry/domain/AssetAmountValidator.kt`]:
+> interface AssetAmountValidation
 
 ---
-**Метрики проверки:** Источники: `✓` (2) | Цитаты: `✓` (4) | Подлинность цитат (Grounding): `100.0%` | Семантическое соответствие (Faithfulness): `91.1%` | Top Relevance: `0.7025` (Порог: `0.58`)
+**Метрики проверки:** Источники: `✓` (3) | Цитаты: `✓` (20) | Подлинность цитат (Grounding): `45.0%` | Семантическое соответствие (Faithfulness): `49.6%` | Top Relevance: `0.7025` (Порог: `0.58`)
 
 ---
 
@@ -95,36 +191,43 @@
 ### ✅ **[ПОДТВЕРЖДЕНО ИСТОЧНИКАМИ (GROUNDED)]**
 
 #### 🤖 Ответ
-Основная локальная база данных проекта реализована в абстрактном классе `CryptoTrackDatabase` (наследует `RoomDatabase`, версия 1) [Source: core/data/src/main/kotlin/com/cryptotrack/core/data/database/CryptoTrackDatabase.kt:L18-48].
+В основной базе данных Room CryptoTrackDatabase зарегистрированы следующие сущности (Entities) и DAO-интерфейсы (abstract-функции в классе базы данных):
 
-В базе зарегистрированы следующие DAO интерфейсы:
-1. `CacheMetaDao` — метаданные времени жизни кэша;
-2. `CoinDetailsDao` — подробная информация о монетах и исторические графики цен;
-3. `FavoriteDao` — список избранных пользователем криптовалют;
-4. `HoldingDao` — портфельные позиции и транзакции пользователя;
-5. `MarketCoinDao` — котировки и сводные данные рынка криптовалют.
+**Сущности (Entities):**
+- HoldingEntity
+- FavoriteEntity
+- MarketCoinEntity
+- CoinDetailsEntity
+- PriceHistoryEntity
+- CacheMetaEntity
 
-База данных является единственным источником истины (Single Source of Truth) для оффлайн-доступа.
+**DAO (abstract-функции в CryptoTrackDatabase):**
+- holdingDao()
+- favoriteDao()
+- marketDao()
+- coinDetailsDao()
+- priceHistoryDao()
+- cacheMetaDao()
+
+Все перечисленные сущности и DAO объявлены в аннотации @Database и теле абстрактного класса CryptoTrackDatabase (Source #1).
 
 #### 📚 Список источников
-1. `core/data/src/main/kotlin/com/cryptotrack/core/data/database/CryptoTrackDatabase.kt` (`CryptoTrackDatabase > class CryptoTrackDatabase`) [chunk_id: `18-48`]  _(relevance: 0.000_)
-2. `core/data/src/main/kotlin/com/cryptotrack/core/data/database/dao/PriceHistoryDao.kt` (`PriceHistoryDao > class PriceHistoryDao`) [chunk_id: `11-50`]  _(relevance: 0.000_)
+1. `core/data/src/main/kotlin/com/cryptotrack/core/data/database/CryptoTrackDatabase.kt` (`CryptoTrackDatabase > class CryptoTrackDatabase`) [chunk_id: `L18-L48`]  _(relevance: 0.000_)
 
 #### 💬 Цитаты из найденных чанков
 > **Цитата #1** [✓ Grounded in `core/data/src/main/kotlin/com/cryptotrack/core/data/database/CryptoTrackDatabase.kt`]:
-> package com.cryptotrack.core.data.database
+> entities = [ HoldingEntity::class, FavoriteEntity::class, MarketCoinEntity::class, CoinDetailsEntity::class, PriceHistoryEntity::class, CacheMetaEntity::class ]
 
 > **Цитата #2** [✓ Grounded in `core/data/src/main/kotlin/com/cryptotrack/core/data/database/CryptoTrackDatabase.kt`]:
-> HoldingEntity::class,
-
-> **Цитата #3** [✓ Grounded in `core/data/src/main/kotlin/com/cryptotrack/core/data/database/dao/PriceHistoryDao.kt`]:
-> package com.cryptotrack.core.data.database.dao
-
-> **Цитата #4** [✓ Grounded in `core/data/src/main/kotlin/com/cryptotrack/core/data/database/dao/PriceHistoryDao.kt`]:
-> abstract class PriceHistoryDao {
+> abstract fun holdingDao(): HoldingDao
+>     abstract fun favoriteDao(): FavoriteDao
+>     abstract fun marketDao(): MarketDao
+>     abstract fun coinDetailsDao(): CoinDetailsDao
+>     abstract fun priceHistoryDao(): PriceHistoryDao
+>     abstract fun cacheMetaDao(): CacheMetaDao
 
 ---
-**Метрики проверки:** Источники: `✓` (2) | Цитаты: `✓` (4) | Подлинность цитат (Grounding): `100.0%` | Семантическое соответствие (Faithfulness): `77.3%` | Top Relevance: `0.7168` (Порог: `0.58`)
+**Метрики проверки:** Источники: `✓` (1) | Цитаты: `✓` (2) | Подлинность цитат (Grounding): `100.0%` | Семантическое соответствие (Faithfulness): `100.0%` | Top Relevance: `0.7168` (Порог: `0.58`)
 
 ---
 
@@ -133,42 +236,115 @@
 
 - **Тип:** `Целевой (In-Domain)`
 - **Статус пайплайна:** `grounded`
-- **Вердикт:** `✅ PASS`
+- **Вердикт:** `❌ FAIL`
 
-### ✅ **[ПОДТВЕРЖДЕНО ИСТОЧНИКАМИ (GROUNDED)]**
+### ⚠️ **[ЧАСТИЧНО ПОДТВЕРЖДЕНО]**
 
 #### 🤖 Ответ
-В объекте `PortfolioCalculator` метод `compute` выполняет расчет финансовых метрик портфеля [Source: feature/portfolio/src/main/kotlin/com/cryptotrack/feature/portfolio/domain/PortfolioCalculator.kt:L11-67].
+В классе `PortfolioCalculator` метод `compute` рассчитывает общую стоимость портфеля и относительный PnL (суточное изменение в процентах) следующим образом:
+- **Общая стоимость (`totalBalanceUsd`)**: суммируется произведение текущей цены каждой монеты на её количество (`coin.currentPrice.multiply(holding.amount, MathContext.DECIMAL32)`) для каждой позиции, после чего все позиции суммируются через `positions.fold(BigDecimal.ZERO)`.
+- **Относительный PnL (`change24hPercent`)**: вычисляется как абсолютное суточное изменение в долларах (`change24hUsd`), деленное на стоимость портфеля на прошлый день (`yesterdayValue`), умноженное на 100. Абсолютное изменение суммируется как `valueUsd * (priceChangePercentage24h / 100)`. Прошлый день рассчитывается как `total - change24hUsd`. Если `yesterdayValue <= 0`, процент изменений возвращается как 0.0.
 
-1. **Общий баланс (`totalBalanceUsd`)**:
-   - Вычисляется суммированием рыночной стоимости позиций через `positions.fold(BigDecimal.ZERO)` и сохраняется в `PortfolioSummary`.
+<details>
+<summary>Показать сырой ход рассуждений модели (Thinking Process / CoT)</summary>
 
-2. **Суточное изменение и процент (`change24hUsd`, `change24hPercent`)**:
-   - Рассчитывается изменение за 24 часа (`change24hUsd`) с учетом `priceChangePercentage24h` и `MathContext.DECIMAL32`.
-   - Относительный процент `change24hPercent` вычисляется делением суточного изменения на вчерашнюю стоимость `yesterdayValue`.
+```text
+Here's a thinking process:
 
-3. **Аллокация (`allocations`)**:
-   - Для каждого актива вычисляется его доля `position.valueUsd.divide(total, MathContext.DECIMAL32)` в списке объектов `Allocation`.
+1.  **Analyze User Input:**
+   - User asks: "How are total portfolio value and relative PnL (profit/loss) calculated in the PortfolioCalculator class?"
+   - They want the answer in a strict JSON format as specified.
+   - I have access to a specific codebase context for the CryptoTrack project.
+
+2.  **Identify the Core Question:**
+   - The user wants to know how `PortfolioCalculator` computes:
+     - Total portfolio value (totalBalanceUsd)
+     - Relative PnL (change24hPercent)
+   - I need to extract this information from the provided code snippets.
+
+3.  **Review the Provided Context:**
+   - Source #1: `PortfolioCalculator.kt` (L11-L67)
+   - Source #2: `PortfolioSummary` data class
+   - Source #3 & #4: Test cases
+
+4.  **Formulate the Answer:**
+   - Общая стоимость (totalBalanceUsd): суммируется произведение текущей цены каждой монеты на её количество (amount), то есть currentPrice * amount для каждой позиции, затем все значения складываются через fold.
+   - Относительный PnL (change24hPercent): вычисляется как абсолютное изменение в USD (change24hUsd) деленное на стоимость портфеля на прошлый день (yesterdayValue), умноженное на 100.
+```
+
+</details>
 
 #### 📚 Список источников
-1. `feature/portfolio/src/main/kotlin/com/cryptotrack/feature/portfolio/domain/PortfolioCalculator.kt` (`PortfolioCalculator > object PortfolioCalculator`) [chunk_id: `11-67`]  _(relevance: 0.000_)
-2. `core/model/src/main/kotlin/com/cryptotrack/core/model/Portfolio.kt` (`Portfolio > class PortfolioSummary`) [chunk_id: `19-28`]  _(relevance: 0.000_)
+1. `feature/portfolio/src/main/kotlin/com/cryptotrack/feature/portfolio/domain/PortfolioCalculator.kt:L11-L67` (`PortfolioCalculator > object PortfolioCalculator`)  _(relevance: 0.657_)
+2. `core/model/src/main/kotlin/com/cryptotrack/core/model/Portfolio.kt:L19-L28` (`Portfolio > class PortfolioSummary`)  _(relevance: 0.758_)
+3. `feature/portfolio/src/test/kotlin/com/cryptotrack/feature/portfolio/PortfolioCalculatorTest.kt:L12-L73` (`PortfolioCalculatorTest > class PortfolioCalculatorTest (Part 1)`)  _(relevance: 0.618_)
 
 #### 💬 Цитаты из найденных чанков
-> **Цитата #1** [✓ Grounded in `feature/portfolio/src/main/kotlin/com/cryptotrack/feature/portfolio/domain/PortfolioCalculator.kt`]:
-> package com.cryptotrack.feature.portfolio.domain
+> **Цитата #1** [~ Grounded in `feature/portfolio/src/test/kotlin/com/cryptotrack/feature/portfolio/PortfolioCalculatorTest.kt`]:
+> How are total portfolio value and relative PnL (profit/loss) calculated in the PortfolioCalculator class?
 
-> **Цитата #2** [✓ Grounded in `feature/portfolio/src/main/kotlin/com/cryptotrack/feature/portfolio/domain/PortfolioCalculator.kt`]:
-> object PortfolioCalculator {
+> **Цитата #2** [~ Grounded in `core/model/src/main/kotlin/com/cryptotrack/core/model/Portfolio.kt`]:
+> Подробный ответ на русском языке...
 
-> **Цитата #3** [✓ Grounded in `core/model/src/main/kotlin/com/cryptotrack/core/model/Portfolio.kt`]:
-> * Сводка портфеля для карточки Total Balance и секции Allocation (макет Portfolio Overview).
+> **Цитата #3** [✓ Grounded in `feature/portfolio/src/main/kotlin/com/cryptotrack/feature/portfolio/domain/PortfolioCalculator.kt`]:
+> val total = positions.fold(BigDecimal.ZERO) { acc, p -> acc.add(p.valueUsd) }
 
-> **Цитата #4** [✓ Grounded in `core/model/src/main/kotlin/com/cryptotrack/core/model/Portfolio.kt`]:
-> data class PortfolioSummary(
+> **Цитата #4** [✓ Grounded in `feature/portfolio/src/main/kotlin/com/cryptotrack/feature/portfolio/domain/PortfolioCalculator.kt`]:
+> val change24hUsd = positions.fold(BigDecimal.ZERO) { acc, p -> acc.add(p.valueUsd.multiply(change, MathContext.DECIMAL32)) }
+
+> **Цитата #5** [✓ Grounded in `feature/portfolio/src/main/kotlin/com/cryptotrack/feature/portfolio/domain/PortfolioCalculator.kt`]:
+> val yesterdayValue = total.subtract(change24hUsd)
+
+> **Цитата #6** [✓ Grounded in `feature/portfolio/src/main/kotlin/com/cryptotrack/feature/portfolio/domain/PortfolioCalculator.kt`]:
+> val changePercent = if (yesterdayValue.signum() > 0) { change24hUsd.divide(yesterdayValue, MathContext.DECIMAL32).toDouble() * 100.0 } else { 0.0 }
+
+> **Цитата #7** [~ Grounded in `core/model/src/main/kotlin/com/cryptotrack/core/model/Portfolio.kt`]:
+> needs_clarification
+
+> **Цитата #8** [~ Grounded in `core/model/src/main/kotlin/com/cryptotrack/core/model/Portfolio.kt`]:
+> clarification_prompt
+
+> **Цитата #9** [~ Grounded in `feature/portfolio/src/test/kotlin/com/cryptotrack/feature/portfolio/PortfolioCalculatorTest.kt`]:
+> Как в классе PortfolioCalculator рассчитываются общая стоимость портфеля и относительный PnL (прибыль/убыток)?
+
+> **Цитата #10** [✓ Grounded in `feature/portfolio/src/main/kotlin/com/cryptotrack/feature/portfolio/domain/PortfolioCalculator.kt`]:
+> val total = positions.fold(BigDecimal.ZERO) { acc, p -> acc.add(p.valueUsd) }
+
+> **Цитата #11** [✓ Grounded in `feature/portfolio/src/main/kotlin/com/cryptotrack/feature/portfolio/domain/PortfolioCalculator.kt`]:
+> val change24hUsd = positions.fold(BigDecimal.ZERO) { acc, p -> acc.add(p.valueUsd.multiply(change, MathContext.DECIMAL32)) }
+
+> **Цитата #12** [✓ Grounded in `feature/portfolio/src/main/kotlin/com/cryptotrack/feature/portfolio/domain/PortfolioCalculator.kt`]:
+> val yesterdayValue = total.subtract(change24hUsd)
+
+> **Цитата #13** [✓ Grounded in `feature/portfolio/src/main/kotlin/com/cryptotrack/feature/portfolio/domain/PortfolioCalculator.kt`]:
+> val changePercent = if (yesterdayValue.signum() > 0) { change24hUsd.divide(yesterdayValue, MathContext.DECIMAL32).toDouble() * 100.0 } else { 0.0 }
+
+> **Цитата #14** [~ Grounded in `feature/portfolio/src/main/kotlin/com/cryptotrack/feature/portfolio/domain/PortfolioCalculator.kt`]:
+> or similar. The prompt says chunk_id format like
+
+> **Цитата #15** [~ Grounded in `feature/portfolio/src/test/kotlin/com/cryptotrack/feature/portfolio/PortfolioCalculatorTest.kt`]:
+> (implied, but the text says
+
+> **Цитата #16** [~ Grounded in `feature/portfolio/src/test/kotlin/com/cryptotrack/feature/portfolio/PortfolioCalculatorTest.kt`]:
+> in the description, but the actual code block might be within that. I'll use
+
+> **Цитата #17** [~ Grounded in `feature/portfolio/src/test/kotlin/com/cryptotrack/feature/portfolio/PortfolioCalculatorTest.kt`]:
+> . The example in the prompt says
+
+> **Цитата #18** [~ Grounded in `feature/portfolio/src/test/kotlin/com/cryptotrack/feature/portfolio/PortfolioCalculatorTest.kt`]:
+> . I'll match the style:
+
+> **Цитата #19** [~ Grounded in `core/model/src/main/kotlin/com/cryptotrack/core/model/Portfolio.kt`]:
+> core/data/.../CryptoTrackDatabase.kt
+
+> **Цитата #20** [~ Grounded in `feature/portfolio/src/main/kotlin/com/cryptotrack/feature/portfolio/domain/PortfolioCalculator.kt`]:
+> PortfolioCalculator > object PortfolioCalculator
+
+> **Цитата #21** [~ Grounded in `feature/portfolio/src/main/kotlin/com/cryptotrack/feature/portfolio/domain/PortfolioCalculator.kt`]:
+> путь к файлу (например core/data/.../CryptoTrackDatabase.kt)
 
 ---
-**Метрики проверки:** Источники: `✓` (2) | Цитаты: `✓` (4) | Подлинность цитат (Grounding): `100.0%` | Семантическое соответствие (Faithfulness): `94.8%` | Top Relevance: `0.7578` (Порог: `0.58`)
+**Метрики проверки:** Источники: `✓` (3) | Цитаты: `✓` (21) | Подлинность цитат (Grounding): `38.1%` | Семантическое соответствие (Faithfulness): `56.4%` | Top Relevance: `0.7578` (Порог: `0.58`)
 
 ---
 
@@ -179,35 +355,23 @@
 - **Статус пайплайна:** `grounded`
 - **Вердикт:** `✅ PASS`
 
-### ⚠️ **[ЧАСТИЧНО ПОДТВЕРЖДЕНО]**
+### ✅ **[ПОДТВЕРЖДЕНО ИСТОЧНИКАМИ (GROUNDED)]**
 
 #### 🤖 Ответ
-Плагин конвенций `RoomConventionPlugin` стандартизирует настройку локальной БД Room во всех модулях проекта [Source: build-logic/src/main/kotlin/com/cryptotrack/buildlogic/RoomConventionPlugin.kt:L17-33].
-
-1. **Подключаемые плагины**: применяет `androidx.room` и `com.google.devtools.ksp`.
-2. **Директория схем**: через расширение `RoomExtension` конфигурирует свойство `schemaDirectory` по пути `$projectDir/schemas`.
-3. **KSP аргументы**: устанавливает аргумент компилятора `'room.generateKotlin' = 'true'`.
-4. **Зависимости**: автоматически добавляет библиотеки `room.runtime`, `room.ktx` и ksp-процессор `room.compiler` из Version Catalog.
+RoomConventionPlugin конфигурирует KSP-компилятор, применяя плагин KSP и задавая аргумент room.schemaLocation, указывающий путь к директории схем: $projectDir/schemas. Это настройка определяет, где Room будет искать файлы схем базы данных при генерации кода.
 
 #### 📚 Список источников
-1. `build-logic/src/main/kotlin/com/cryptotrack/buildlogic/RoomConventionPlugin.kt` (`RoomConventionPlugin > class RoomConventionPlugin`) [chunk_id: `17-33`]  _(relevance: 0.000_)
-2. `build-logic/build.gradle.kts` (`build.gradle > build.gradle`) [chunk_id: `1-42`]  _(relevance: 0.000_)
+1. `build-logic/src/main/kotlin/com/cryptotrack/buildlogic/RoomConventionPlugin.kt` (`RoomConventionPlugin`) [chunk_id: `L17-L33`]  _(relevance: 0.000_)
 
 #### 💬 Цитаты из найденных чанков
 > **Цитата #1** [✓ Grounded in `build-logic/src/main/kotlin/com/cryptotrack/buildlogic/RoomConventionPlugin.kt`]:
-> package com.cryptotrack.buildlogic
+> arg("room.schemaLocation", "$projectDir/schemas")
 
 > **Цитата #2** [✓ Grounded in `build-logic/src/main/kotlin/com/cryptotrack/buildlogic/RoomConventionPlugin.kt`]:
-> class RoomConventionPlugin : Plugin<Project> {
-
-> **Цитата #3** [✓ Grounded in `build-logic/build.gradle.kts`]:
-> register("androidApplication") {
-
-> **Цитата #4** [✓ Grounded in `build-logic/build.gradle.kts`]:
-> id = "cryptotrack.android.application"
+> pluginManager.apply("com.google.devtools.ksp")
 
 ---
-**Метрики проверки:** Источники: `✓` (2) | Цитаты: `✓` (4) | Подлинность цитат (Grounding): `100.0%` | Семантическое соответствие (Faithfulness): `64.2%` | Top Relevance: `0.6381` (Порог: `0.58`)
+**Метрики проверки:** Источники: `✓` (1) | Цитаты: `✓` (2) | Подлинность цитат (Grounding): `100.0%` | Семантическое соответствие (Faithfulness): `100.0%` | Top Relevance: `0.6381` (Порог: `0.58`)
 
 ---
 
@@ -218,35 +382,29 @@
 - **Статус пайплайна:** `grounded`
 - **Вердикт:** `✅ PASS`
 
-### ⚠️ **[ЧАСТИЧНО ПОДТВЕРЖДЕНО]**
+### ✅ **[ПОДТВЕРЖДЕНО ИСТОЧНИКАМИ (GROUNDED)]**
 
 #### 🤖 Ответ
-Нижняя панель навигации приложения представлена Composable-функцией `ApexBottomBar` [Source: app/src/main/kotlin/com/cryptotrack/app/ApexBottomBar.kt:L16-40].
-
-Использует Material3 `NavigationBar` и `NavigationBarItem`. Экраны инкапсулированы в `TopDestination`:
-1. **Market** (Рынок) — иконка `Icons.Default.ShowChart`, переходит к общему листингу монет;
-2. **Portfolio** (Портфель) — иконка `Icons.Default.AccountBalanceWallet`, просмотр баланса и позиций;
-3. **Watchlist / Favorites** (Избранное) — иконки `Icons.Default.Star` / `StarBorder`, отслеживаемые монеты.
+Нижняя панель ApexBottomBar реализована как composable-функция, использующая компонент Material3 NavigationBar. Вкладки (tabs) формируются динамически на основе коллекции `topLevelDestinations`. Для каждого пункта навигации создается `NavigationBarItem` с иконкой (через `selectedIcon`) и текстовым лейблом, взятым из свойства `destination.label`. Состояние активной вкладки определяется вызовом функции-приемника `isTopLevelDestination(destination.routeClass)`. При нажатии на вкладку вызывается callback `onDestinationSelected(destination)`, передающий соответствующий пункт навигации. Таким образом, структура навигации нижней панели зависит от того, какие маршруты включены в `topLevelDestinations`, а их метки берутся из соответствующих объектов назначения.
 
 #### 📚 Список источников
-1. `app/src/main/kotlin/com/cryptotrack/app/ApexBottomBar.kt` (`ApexBottomBar > fun ApexBottomBar`) [chunk_id: `16-40`]  _(relevance: 0.000_)
-2. `feature/market/src/main/kotlin/com/cryptotrack/feature/market/presentation/MarketFiltersSheet.kt` (`MarketFiltersSheet > fun MarketFiltersSheet (Part 2)`) [chunk_id: `102-112`]  _(relevance: 0.000_)
+1. `app/src/main/kotlin/com/cryptotrack/app/ApexBottomBar.kt` (`fun ApexBottomBar`) [chunk_id: `L16-L40`]  _(relevance: 0.000_)
 
 #### 💬 Цитаты из найденных чанков
 > **Цитата #1** [✓ Grounded in `app/src/main/kotlin/com/cryptotrack/app/ApexBottomBar.kt`]:
-> package com.cryptotrack.app
+> topLevelDestinations.forEach { destination ->
 
 > **Цитата #2** [✓ Grounded in `app/src/main/kotlin/com/cryptotrack/app/ApexBottomBar.kt`]:
-> fun ApexBottomBar(
+> val selected = isTopLevelDestination(destination.routeClass)
 
-> **Цитата #3** [✓ Grounded in `feature/market/src/main/kotlin/com/cryptotrack/feature/market/presentation/MarketFiltersSheet.kt`]:
-> style = ApexButtonStyle.Ghost,
+> **Цитата #3** [✓ Grounded in `app/src/main/kotlin/com/cryptotrack/app/ApexBottomBar.kt`]:
+> NavigationBarItem(..., label = { Text(text = destination.label) }, ...)
 
-> **Цитата #4** [✓ Grounded in `feature/market/src/main/kotlin/com/cryptotrack/feature/market/presentation/MarketFiltersSheet.kt`]:
-> text = "Apply Filters",
+> **Цитата #4** [✓ Grounded in `app/src/main/kotlin/com/cryptotrack/app/ApexBottomBar.kt`]:
+> onClick = { onDestinationSelected(destination) }
 
 ---
-**Метрики проверки:** Источники: `✓` (2) | Цитаты: `✓` (4) | Подлинность цитат (Grounding): `100.0%` | Семантическое соответствие (Faithfulness): `56.7%` | Top Relevance: `0.6103` (Порог: `0.58`)
+**Метрики проверки:** Источники: `✓` (1) | Цитаты: `✓` (4) | Подлинность цитат (Grounding): `100.0%` | Семантическое соответствие (Faithfulness): `96.1%` | Top Relevance: `0.6103` (Порог: `0.58`)
 
 ---
 
@@ -260,32 +418,26 @@
 ### ✅ **[ПОДТВЕРЖДЕНО ИСТОЧНИКАМИ (GROUNDED)]**
 
 #### 🤖 Ответ
-UseCase `ObserveCoinDetailsUseCase` объединяет данные о коине и настройки валюты в единый реактивный поток [Source: feature/coin-details/src/main/kotlin/com/cryptotrack/feature/coindetails/domain/ObserveCoinDetailsUseCase.kt:L19-41].
-
-1. Внедряет через конструктор `@Inject` репозитории `MarketRepository` и `SettingsRepository`.
-2. Отслеживает изменения валюты пользователя через `settingsRepository.settings` операторами `map`, `distinctUntilChanged` и `flatMapLatest`.
-3. Корутинным оператором `combine` объединяет вызовы `marketRepository.observeCoinDetails` и `marketRepository.observeMarketLastUpdated`.
-4. Возвращает поток `Flow<CoinDetailsSnapshot>` для экрана детальной информации о монете.
+UseCase ObserveCoinDetailsUseCase реализует паттерн offline-first через комбинацию настроек и рыночных репозиториев. При вызове с coinId он получает текущую валюту из settingsRepository, отслеживает её изменения (distinctUntilChanged), и для каждой валюты комбинирует два потока через combine: детали коина через marketRepository.observeCoinDetails(coinId, currency.apiCode) и время последнего обновления через marketRepository.observeMarketLastUpdated(currency.apiCode). Результат собирается в объект CoinDetailsSnapshot, содержащий символ валюты, данные коина и метку времени последнего обновления. Это обеспечивает автоматическое переключение потока при смене валюты в настройках, соответствуя архитектурному требованию ADR-005.
 
 #### 📚 Список источников
-1. `feature/coin-details/src/main/kotlin/com/cryptotrack/feature/coindetails/domain/ObserveCoinDetailsUseCase.kt` (`ObserveCoinDetailsUseCase > class ObserveCoinDetailsUseCase`) [chunk_id: `19-41`]  _(relevance: 0.000_)
-2. `feature/market/src/main/kotlin/com/cryptotrack/feature/market/domain/ObserveMarketUseCase.kt` (`ObserveMarketUseCase > class ObserveMarketUseCase`) [chunk_id: `20-45`]  _(relevance: 0.000_)
+1. `feature/coin-details/src/main/kotlin/com/cryptotrack/feature/coindetails/domain/ObserveCoinDetailsUseCase.kt` (`ObserveCoinDetailsUseCase > class ObserveCoinDetailsUseCase`) [chunk_id: `L19-L41`]  _(relevance: 0.000_)
 
 #### 💬 Цитаты из найденных чанков
 > **Цитата #1** [✓ Grounded in `feature/coin-details/src/main/kotlin/com/cryptotrack/feature/coindetails/domain/ObserveCoinDetailsUseCase.kt`]:
-> /** Детали коина из кэша; смена валюты настроек переключает поток (offline-first, ADR-005). */
+> / * Детали коина из кэша; смена валюты настроек переключает поток (offline-first, ADR-005). * /
 
 > **Цитата #2** [✓ Grounded in `feature/coin-details/src/main/kotlin/com/cryptotrack/feature/coindetails/domain/ObserveCoinDetailsUseCase.kt`]:
-> class ObserveCoinDetailsUseCase @Inject constructor(
+> marketRepository.observeCoinDetails(coinId, currency.apiCode)
 
-> **Цитата #3** [✓ Grounded in `feature/market/src/main/kotlin/com/cryptotrack/feature/market/domain/ObserveMarketUseCase.kt`]:
-> * UI читает только кэш Room (offline-first, ADR-005). Смена валюты в настройках
+> **Цитата #3** [✓ Grounded in `feature/coin-details/src/main/kotlin/com/cryptotrack/feature/coindetails/domain/ObserveCoinDetailsUseCase.kt`]:
+> marketRepository.observeMarketLastUpdated(currency.apiCode)
 
-> **Цитата #4** [✓ Grounded in `feature/market/src/main/kotlin/com/cryptotrack/feature/market/domain/ObserveMarketUseCase.kt`]:
-> * автоматически переключает поток данных.
+> **Цитата #4** [✓ Grounded in `feature/coin-details/src/main/kotlin/com/cryptotrack/feature/coindetails/domain/ObserveCoinDetailsUseCase.kt`]:
+> CoinDetailsSnapshot(currencySymbol = currency.symbol, details = details, lastUpdatedMillis = lastUpdated)
 
 ---
-**Метрики проверки:** Источники: `✓` (2) | Цитаты: `✓` (4) | Подлинность цитат (Grounding): `100.0%` | Семантическое соответствие (Faithfulness): `94.4%` | Top Relevance: `0.7490` (Порог: `0.58`)
+**Метрики проверки:** Источники: `✓` (1) | Цитаты: `✓` (4) | Подлинность цитат (Grounding): `100.0%` | Семантическое соответствие (Faithfulness): `100.0%` | Top Relevance: `0.7490` (Порог: `0.58`)
 
 ---
 
@@ -296,32 +448,23 @@ UseCase `ObserveCoinDetailsUseCase` объединяет данные о кои�
 - **Статус пайплайна:** `grounded`
 - **Вердикт:** `✅ PASS`
 
-### ⚠️ **[ЧАСТИЧНО ПОДТВЕРЖДЕНО]**
+### ✅ **[ПОДТВЕРЖДЕНО ИСТОЧНИКАМИ (GROUNDED)]**
 
 #### 🤖 Ответ
-Класс `CryptoTrackApplication` является точкой входа приложения Android [Source: app/src/main/kotlin/com/cryptotrack/app/CryptoTrackApplication.kt:L7-10].
-
-Он наследуется от `android.app.Application` и аннотирован `@HiltAndroidApp`, что генерирует базовый Hilt-граф зависимостей уровня приложения. В `onCreate()` запускается инициализация общих служб.
+Корневой класс приложения CryptoTrackApplication находится в пакете com.cryptotrack.app и расширяет Application. В нем используется аннотация @HiltAndroidApp, обязательная для инициализации Hilt в приложении.
 
 #### 📚 Список источников
-1. `app/src/main/kotlin/com/cryptotrack/app/CryptoTrackApplication.kt` (`CryptoTrackApplication > class CryptoTrackApplication`) [chunk_id: `7-10`]  _(relevance: 0.000_)
-2. `feature/market/src/main/kotlin/com/cryptotrack/feature/market/presentation/MarketViewModel.kt` (`MarketViewModel > class MarketViewModel (Part 1)`) [chunk_id: `33-96`]  _(relevance: 0.000_)
+1. `app/src/main/kotlin/com/cryptotrack/app/CryptoTrackApplication.kt` (`CryptoTrackApplication > class CryptoTrackApplication`) [chunk_id: `L7-L10`]  _(relevance: 0.000_)
 
 #### 💬 Цитаты из найденных чанков
 > **Цитата #1** [✓ Grounded in `app/src/main/kotlin/com/cryptotrack/app/CryptoTrackApplication.kt`]:
-> package com.cryptotrack.app
-
-> **Цитата #2** [✓ Grounded in `app/src/main/kotlin/com/cryptotrack/app/CryptoTrackApplication.kt`]:
 > @HiltAndroidApp
 
-> **Цитата #3** [✓ Grounded in `feature/market/src/main/kotlin/com/cryptotrack/feature/market/presentation/MarketViewModel.kt`]:
-> package com.cryptotrack.feature.market.presentation
-
-> **Цитата #4** [✓ Grounded in `feature/market/src/main/kotlin/com/cryptotrack/feature/market/presentation/MarketViewModel.kt`]:
-> class MarketViewModel @Inject constructor(
+> **Цитата #2** [✓ Grounded in `app/src/main/kotlin/com/cryptotrack/app/CryptoTrackApplication.kt`]:
+> class CryptoTrackApplication : Application()
 
 ---
-**Метрики проверки:** Источники: `✓` (2) | Цитаты: `✓` (4) | Подлинность цитат (Grounding): `100.0%` | Семантическое соответствие (Faithfulness): `69.6%` | Top Relevance: `0.6619` (Порог: `0.58`)
+**Метрики проверки:** Источники: `✓` (1) | Цитаты: `✓` (2) | Подлинность цитат (Grounding): `100.0%` | Семантическое соответствие (Faithfulness): `100.0%` | Top Relevance: `0.6619` (Порог: `0.58`)
 
 ---
 
@@ -335,10 +478,10 @@ UseCase `ObserveCoinDetailsUseCase` объединяет данные о кои�
 ### 🛡️ **[РЕЖИМ ОТКАЗА: НЕДОСТАТОЧНЫЙ КОНТЕКСТ]**
 
 #### 🤖 Ответ
-В кодовой базе проекта CryptoTrack отсутствуют сведения по данному вопросу. Архитектура приложения не включает указанных модулей.
+В кодовой базе проекта CryptoTrack отсутствуют сведения о Apple Pay и Google Pay для покупки криптовалюты банковской картой. Не могу ответить на данный вопрос без домыслов.
 
 > [!TIP]
-> **Уточнение для пользователя:** Пожалуйста, уточните ваш запрос: интересуют ли вас существующие модули кодовой базы CryptoTrack (Room, Hilt, Jetpack Compose, доменная валидация)?
+> **Уточнение для пользователя:** Пожалуйста, задайте вопрос, связанный с функционалом или архитектурой CryptoTrack, представленной в кодовой базе.
 
 #### 📚 Список источников
 _Источники отсутствуют (релевантные фрагменты не найдены в кодовой базе)_
@@ -361,10 +504,10 @@ _Цитаты не предоставлены._
 ### 🛡️ **[РЕЖИМ ОТКАЗА: НЕДОСТАТОЧНЫЙ КОНТЕКСТ]**
 
 #### 🤖 Ответ
-В кодовой базе проекта CryptoTrack отсутствуют сведения по данному вопросу. Архитектура приложения не включает указанных модулей.
+В кодовой базе проекта CryptoTrack отсутствуют сведения о нейросетевых моделях машинного обучения для прогнозирования курса биткоина. Не могу ответить на данный вопрос без домыслов.
 
 > [!TIP]
-> **Уточнение для пользователя:** Пожалуйста, уточните ваш запрос: интересуют ли вас существующие модули кодовой базы CryptoTrack (Room, Hilt, Jetpack Compose, доменная валидация)?
+> **Уточнение для пользователя:** Пожалуйста, уточните вопрос, так как в предоставленном контексте CryptoTrack нет информации о моделях машинного обучения.
 
 #### 📚 Список источников
 _Источники отсутствуют (релевантные фрагменты не найдены в кодовой базе)_
@@ -387,10 +530,10 @@ _Цитаты не предоставлены._
 ### 🛡️ **[РЕЖИМ ОТКАЗА: НЕДОСТАТОЧНЫЙ КОНТЕКСТ]**
 
 #### 🤖 Ответ
-В кодовой базе проекта CryptoTrack отсутствуют сведения по данному вопросу. Архитектура приложения не включает указанных модулей.
+В кодовой базе проекта CryptoTrack отсутствуют сведения о Solidity-смарт-контрактах для стейкинга и фарминга ликвидности ERC-20 токенов. Не могу ответить на данный вопрос без домыслов.
 
 > [!TIP]
-> **Уточнение для пользователя:** Пожалуйста, уточните ваш запрос: интересуют ли вас существующие модули кодовой базы CryptoTrack (Room, Hilt, Jetpack Compose, доменная валидация)?
+> **Уточнение для пользователя:** Тема Solidity-смарт-контрактов не охвачена кодовой базой CryptoTrack. Пожалуйста, уточните вопрос или уточните, нужный функционал внутри приложения.
 
 #### 📚 Список источников
 _Источники отсутствуют (релевантные фрагменты не найдены в кодовой базе)_
