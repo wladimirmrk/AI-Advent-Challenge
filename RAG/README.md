@@ -217,3 +217,54 @@ python -m src.cli eval
 2. **Прослеживаемость (Auditability)**: В RAG-режиме 100% ответов снабжаются прямыми ссылками на исходный код вида `[Source: feature/assetentry/.../AssetAmountValidator.kt:L15-L35]`.
 3. **Эффективность поиска**: Асимметричный префикс `search_query:` в связке с Reciprocal Rank Fusion (RRF) обеспечил **95.0% Source Recall** целевых модулей проекта.
 
+---
+
+# 🚀 День 23. Реранкинг, фильтрация и Query Rewrite
+
+На этапе Дня 23 реализован двухэтапный RAG-пайплайн с оптимизацией запросов и очисткой контекста:
+
+1. **Query Rewrite (переписывание запроса)**:
+   - Класс `QueryRewriter` (`src/agent/query_rewriter.py`).
+   - Преобразует пользовательский вопрос на естественном языке (русском/разговорном) в оптимизированный технический поисковый запрос (Kotlin классы, аннотации Room/Hilt, слои Clean Architecture, ключевые сигнатуры).
+   - Поддерживает работу через OpenRouter LLM с автоматическим fallback на детерминированный эвристический экстрактор кодовых терминов при оффлайн-режиме или rate limit.
+
+2. **Relevance Filter (фильтрация по порогу сходства)**:
+   - Класс `RelevanceFilter` (`src/reranking/relevance_filter.py`).
+   - Настраиваемый порог косинусного отсечения (`--threshold`, по умолчанию `0.45`–`0.50`).
+   - Элиминирует нерелевантные фрагменты и информационный шум до подачи в контекст модели.
+   - Механизм **Fall-soft**: предотвращает пустой контекст при жестких порогах, гарантированно сохраняя лучший кандидат.
+
+3. **Cross-Encoder Reranker (реранкинг)**:
+   - Класс `CrossEncoderReranker` (`src/reranking/cross_encoder_reranker.py`).
+   - Нейросетевая модель `FlashRank` (`ms-marco-TinyBERT-L-2-v2`) с fallback на кросс-энкодер сопоставления токенов и сигнатур.
+   - Оценивает пары `(query, chunk)` через механизм глубокого внимания и поднимает точные сигнатуры и реализации на первые места в контексте.
+
+4. **Двухэтапный пайплайн (`TwoStageRetrievalPipeline`)**:
+   - `Initial Top-K` (15 кандидатов) -> `RelevanceFilter` (отсечение шума) -> `CrossEncoderReranker` -> `Final Top-K` (4-5 чанков).
+
+5. **Сравнение 3 режимов**:
+   - **Baseline RAG** (без rewrite и реранкинга)
+   - **RAG + Query Rewrite** (только оптимизация запроса)
+   - **Enhanced RAG** (Query Rewrite + Similarity Filter + Cross-Encoder Rerank)
+   - Автоматическая генерация отчета в `RAG/data/rerank_benchmark_report.md`.
+
+### Команды CLI для Дня 23:
+
+```bash
+# 1. Запрос с переписыванием и реранкингом:
+python -m src.cli ask "Как в CryptoTrack устроен Room?" --rewrite --rerank
+
+# 2. Настройка порогов и количества кандидатов:
+python -m src.cli ask "Где объявлен CryptoPriceDao?" --rewrite --rerank --initial-top-k 15 --threshold 0.50 --top-k 4
+
+# 3. Интерактивный чат с командами переключения:
+python -m src.cli chat
+# Внутри чата: /rewrite on, /rerank on, /thresh 0.50, /sources, /help
+
+# 4. Сравнение одного вопроса во всех 3 режимах:
+python -m src.cli compare-rerank --query "Как устроен AssetAmountValidator?"
+
+# 5. Запуск сравнительного бенчмарка по всем 10 вопросам и генерация отчета:
+python -m src.cli compare-rerank --benchmark
+```
+

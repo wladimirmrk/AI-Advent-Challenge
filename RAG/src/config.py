@@ -50,6 +50,12 @@ class AppConfig:
     default_top_k: int = 5
     default_strategy: str = "structural"
 
+    # Reranking & Filtering defaults (Day 23)
+    rerank_initial_top_k: int = 15
+    rerank_similarity_threshold: float = 0.58
+    rerank_final_top_k: int = 4
+    rerank_model_name: str = "ms-marco-TinyBERT-L-2-v2"
+
     data_dir: Path = BASE_DIR / "data"
 
     @property
@@ -67,6 +73,10 @@ class AppConfig:
     @property
     def rag_benchmark_report_path(self) -> Path:
         return self.data_dir / "rag_benchmark_report.md"
+
+    @property
+    def rerank_benchmark_report_path(self) -> Path:
+        return self.data_dir / "rerank_benchmark_report.md"
 
 
 def load_env_file():

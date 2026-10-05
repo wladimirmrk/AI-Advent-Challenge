@@ -3,7 +3,9 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from src.agent.openrouter_client import OpenRouterClient, OpenRouterResponse
+from src.agent.query_rewriter import QueryRewriter, QueryRewriteResult
 from src.embeddings.ollama_embedder import OllamaEmbedder
+from src.reranking.pipeline import TwoStageRetrievalPipeline, PipelineResult
 from src.storage.vector_store import SearchResult, VectorStore
 
 
@@ -16,6 +18,7 @@ class RetrievedSource:
     start_line: Optional[int]
     end_line: Optional[int]
     content: str
+    rerank_score: Optional[float] = None
 
     @property
     def citation(self) -> str:
@@ -38,6 +41,12 @@ class RAGResult:
     retrieval_latency: float = 0.0
     llm_latency: float = 0.0
     context_text: str = ""
+    rewritten_query: Optional[str] = None
+    rewrite_latency: float = 0.0
+    rerank_latency: float = 0.0
+    initial_sources_count: int = 0
+    dropped_by_filter_count: int = 0
+    pipeline_result: Optional[PipelineResult] = None
 
 
 class RAGAgent:
@@ -49,11 +58,19 @@ class RAGAgent:
         embedder: OllamaEmbedder,
         llm_client: OpenRouterClient,
         default_top_k: int = 5,
+        query_rewriter: Optional[QueryRewriter] = None,
+        rerank_pipeline: Optional[TwoStageRetrievalPipeline] = None,
+        initial_top_k: int = 15,
+        similarity_threshold: float = 0.45,
     ):
         self.vector_store = vector_store
         self.embedder = embedder
         self.llm_client = llm_client
         self.default_top_k = default_top_k
+        self.query_rewriter = query_rewriter or QueryRewriter(llm_client=llm_client)
+        self.rerank_pipeline = rerank_pipeline or TwoStageRetrievalPipeline(default_threshold=similarity_threshold)
+        self.initial_top_k = initial_top_k
+        self.similarity_threshold = similarity_threshold
 
     def build_rag_prompt(self, question: str, sources: List[RetrievedSource]) -> List[dict]:
         """Construct system and user messages containing retrieved context chunks."""
@@ -64,10 +81,14 @@ class RAGAgent:
                 if src.start_line is not None and src.end_line is not None
                 else ""
             )
+            score_info = f"Косинусная релевантность: {src.score:.4f}"
+            if src.rerank_score is not None:
+                score_info += f" | Реранк-скор: {src.rerank_score:.4f}"
+
             context_parts.append(
                 f"### Источник #{src.rank}: `{src.source}`{lines_info}\n"
                 f"Секция / Символ: `{src.section}`\n"
-                f"Косинусная релевантность: {src.score:.4f}\n"
+                f"{score_info}\n"
                 f"```text\n{src.content.strip()}\n```"
             )
 
@@ -210,22 +231,61 @@ class RAGAgent:
         self,
         question: str,
         use_rag: bool = True,
+        use_rewrite: bool = False,
+        use_rerank: bool = False,
         top_k: Optional[int] = None,
+        initial_top_k: Optional[int] = None,
+        similarity_threshold: Optional[float] = None,
         model: Optional[str] = None,
         filter_source: Optional[str] = None,
         temperature: float = 0.2,
     ) -> RAGResult:
-        """Execute full pipeline: question -> retrieval (if RAG) -> prompt assembly -> LLM response."""
+        """Execute full pipeline: question -> optional rewrite -> retrieval -> optional filter & rerank -> prompt assembly -> LLM response."""
         t_start = time.time()
-        k = top_k or self.default_top_k
+        k_final = top_k or self.default_top_k
         sources: List[RetrievedSource] = []
         retrieval_latency = 0.0
+        rewrite_latency = 0.0
+        rerank_latency = 0.0
         context_text = ""
+        rewritten_q = None
+        pipeline_res = None
+        initial_count = 0
+        dropped_count = 0
 
         if use_rag:
+            search_query = question
+            # 1. Optional Query Rewrite
+            if use_rewrite and self.query_rewriter:
+                rw_res = self.query_rewriter.rewrite(question)
+                rewritten_q = rw_res.rewritten_query
+                search_query = rw_res.rewritten_query
+                rewrite_latency = rw_res.latency_seconds
+
+            # 2. Retrieval & optional Stage 2 reranking
             t_r0 = time.time()
-            sources = self.retrieve_chunks(question, top_k=k, filter_source=filter_source)
-            retrieval_latency = time.time() - t_r0
+            if use_rerank and self.rerank_pipeline:
+                k_initial = initial_top_k or self.initial_top_k
+                thresh = similarity_threshold if similarity_threshold is not None else self.similarity_threshold
+                raw_sources = self.retrieve_chunks(search_query, top_k=k_initial, filter_source=filter_source)
+                retrieval_latency = time.time() - t_r0
+
+                pipeline_res = self.rerank_pipeline.process(
+                    query=search_query,
+                    candidates=raw_sources,
+                    threshold=thresh,
+                    final_top_k=k_final,
+                )
+                sources = pipeline_res.final_sources
+                initial_count = pipeline_res.initial_count
+                dropped_count = pipeline_res.dropped_by_filter
+                rerank_latency = pipeline_res.total_latency
+            else:
+                sources = self.retrieve_chunks(search_query, top_k=k_final, filter_source=filter_source)
+                retrieval_latency = time.time() - t_r0
+                initial_count = len(sources)
+                dropped_count = 0
+
             messages = self.build_rag_prompt(question, sources)
             context_text = messages[1]["content"]
         else:
@@ -252,4 +312,10 @@ class RAGAgent:
             retrieval_latency=retrieval_latency,
             llm_latency=llm_resp.latency_seconds,
             context_text=context_text,
+            rewritten_query=rewritten_q,
+            rewrite_latency=rewrite_latency,
+            rerank_latency=rerank_latency,
+            initial_sources_count=initial_count,
+            dropped_by_filter_count=dropped_count,
+            pipeline_result=pipeline_res,
         )

@@ -39,8 +39,8 @@ class OpenRouterClient:
         api_key: Optional[str] = None,
         base_url: str = "https://openrouter.ai/api/v1",
         default_model: str = "nvidia/nemotron-3-ultra-550b-a55b:free",
-        timeout: int = 60,
-        max_retries: int = 3,
+        timeout: int = 15,
+        max_retries: int = 2,
         mock_mode: bool = False,
     ):
         self.api_key = (api_key or "").strip()
@@ -284,6 +284,7 @@ class OpenRouterClient:
                         err_code = err_data.get("code", 503) if isinstance(err_data, dict) else 503
                         if "free-models-per-day" in err_msg:
                             logger.warning("Daily free tier quota exhausted on OpenRouter. Falling back to mock response.")
+                            self.mock_mode = True
                             return self._generate_mock_response(messages, target_model)
                         if attempt < self.max_retries:
                             time.sleep(self.retry_delay * attempt)
@@ -340,6 +341,7 @@ class OpenRouterClient:
                     logger.warning("Rate limit (429) hit on attempt %d/%d: %s", attempt, self.max_retries, error_msg)
                     if "free-models-per-day" in error_msg:
                         logger.warning("Daily free tier quota exhausted on OpenRouter. Falling back to mock response.")
+                        self.mock_mode = True
                         return self._generate_mock_response(messages, target_model)
                     if attempt < self.max_retries:
                         time.sleep(2 * attempt)

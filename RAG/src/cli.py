@@ -5,6 +5,11 @@ import sys
 import time
 from pathlib import Path
 
+# Ensure RAG project root is on sys.path
+BASE_DIR = Path(__file__).resolve().parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
 # Ensure UTF-8 output on Windows console
 if sys.platform.startswith("win"):
     os.environ["PYTHONIOENCODING"] = "utf-8"
@@ -29,6 +34,7 @@ from src.agent.openrouter_client import OpenRouterClient, OpenRouterError
 from src.agent.rag_agent import RAGAgent
 from src.evaluation.benchmark_dataset import BENCHMARK_QUESTIONS
 from src.evaluation.rag_evaluator import RAGEvaluator
+from src.evaluation.rerank_evaluator import RerankEvaluator
 
 console = Console(soft_wrap=True)
 
@@ -307,21 +313,38 @@ def get_rag_agent(args, default_strat: str = "structural") -> RAGAgent:
         default_model=model,
         mock_mode=mock_mode,
     )
+    initial_top_k = getattr(args, "initial_top_k", default_config.rerank_initial_top_k) or default_config.rerank_initial_top_k
+    threshold = getattr(args, "threshold", default_config.rerank_similarity_threshold) or default_config.rerank_similarity_threshold
+
     return RAGAgent(
         vector_store=store,
         embedder=embedder,
         llm_client=llm_client,
         default_top_k=getattr(args, "top_k", default_config.default_top_k) or default_config.default_top_k,
+        initial_top_k=initial_top_k,
+        similarity_threshold=threshold,
     )
 
 
 
 def run_ask(args):
     use_rag = getattr(args, "rag", True)
-    mode_label = "[bold green]С RAG (Grounded Knowledge)[/bold green]" if use_rag else "[bold yellow]БЕЗ RAG (Pretrained Baseline)[/bold yellow]"
+    use_rewrite = getattr(args, "rewrite", False)
+    use_rerank = getattr(args, "rerank", False)
+
+    mode_parts = []
+    if not use_rag:
+        mode_parts.append("[bold yellow]БЕЗ RAG (Pretrained Baseline)[/bold yellow]")
+    else:
+        mode_parts.append("[bold green]С RAG[/bold green]")
+        if use_rewrite:
+            mode_parts.append("[bold cyan]+ Query Rewrite[/bold cyan]")
+        if use_rerank:
+            thresh_val = getattr(args, 'threshold', default_config.rerank_similarity_threshold)
+            mode_parts.append(f"[bold magenta]+ Rerank & Filter (thresh={thresh_val})[/bold magenta]")
 
     console.print(f"\n[bold cyan]=== CryptoTrack AI Agent Query ===[/bold cyan]")
-    console.print(f"[white]Режим:[/white] {mode_label}")
+    console.print(f"[white]Режим:[/white] {' '.join(mode_parts)}")
     console.print(f"[white]Вопрос:[/white] [bold white]{args.question}[/bold white]")
 
     try:
@@ -335,7 +358,11 @@ def run_ask(args):
             res = agent.query(
                 question=args.question,
                 use_rag=use_rag,
+                use_rewrite=use_rewrite,
+                use_rerank=use_rerank,
                 top_k=args.top_k,
+                initial_top_k=getattr(args, "initial_top_k", None),
+                similarity_threshold=getattr(args, "threshold", None),
                 model=args.model,
                 filter_source=args.filter,
             )
@@ -348,23 +375,42 @@ def run_ask(args):
             console.print(f"\n[bold red]Query failed:[/bold red] {exc}")
             sys.exit(1)
 
-    # 1. Display retrieved context if RAG
+    # 1. Display query rewrite info if applied
+    if res.rewritten_query:
+        console.print(Panel(
+            f"[dim]Исходный:[/dim] {args.question}\n[bold cyan]Оптимизированный:[/bold cyan] {res.rewritten_query}",
+            title=f"🔄 Query Rewrite ({res.rewrite_latency:.3f}s)",
+            border_style="cyan"
+        ))
+
+    # 2. Display filtering & rerank stats if applied
+    if use_rerank and res.pipeline_result:
+        p = res.pipeline_result
+        soft_warn = " [yellow](fall-soft активирован)[/yellow]" if p.fall_soft_triggered else ""
+        console.print(
+            f"[dim]Фильтрация кандидатов (порог {p.threshold}): "
+            f"{p.initial_count} найдено -> отсеяно {p.dropped_by_filter} шума -> {len(res.sources)} в контексте{soft_warn} "
+            f"(время 2-го этапа: {res.rerank_latency:.3f}s, движок: {p.rerank_engine})[/dim]"
+        )
+
+    # 3. Display retrieved context if RAG
     if use_rag and res.sources:
-        console.print(f"\n[bold magenta]📚 Найденные релевантные источники ({len(res.sources)} чанков):[/bold magenta]")
+        console.print(f"\n[bold magenta]📚 Отобранные релевантные источники ({len(res.sources)} чанков):[/bold magenta]")
         for s in res.sources:
-            header = f"Rank #{s.rank} | Cosine: {s.score:.4f} | {s.source} (L{s.start_line}-L{s.end_line})"
+            rerank_info = f" | Rerank: {s.rerank_score:.4f}" if s.rerank_score is not None else ""
+            header = f"Rank #{s.rank} | Cosine: {s.score:.4f}{rerank_info} | {s.source} (L{s.start_line}-L{s.end_line})"
             preview = s.content[:250].strip() + ("..." if len(s.content) > 250 else "")
             console.print(Panel(preview, title=header, title_align="left", border_style="blue"))
 
-    # 2. Display Model Answer
+    # 4. Display Model Answer
     border_style = "green" if use_rag else "yellow"
     title = f"🤖 Ответ модели ({res.model}) [{'RAG: ON' if use_rag else 'RAG: OFF'}]"
     console.print(Panel(res.answer, title=title, border_style=border_style))
 
-    # 3. Timing & token stats
+    # 5. Timing & token stats
     stats_text = (
         f"[dim]Время: общ {res.latency_seconds:.2f}s "
-        f"(поиск: {res.retrieval_latency:.2f}s, LLM: {res.llm_latency:.2f}s) | "
+        f"(rewrite: {res.rewrite_latency:.2f}s, поиск: {res.retrieval_latency:.2f}s, rerank: {res.rerank_latency:.2f}s, LLM: {res.llm_latency:.2f}s) | "
         f"Токены: {res.total_tokens} (prompt: {res.prompt_tokens}, completion: {res.completion_tokens})[/dim]"
     )
     console.print(stats_text + "\n")
@@ -372,8 +418,12 @@ def run_ask(args):
 
 def run_chat(args):
     use_rag = getattr(args, "rag", True)
+    use_rewrite = getattr(args, "rewrite", False)
+    use_rerank = getattr(args, "rerank", False)
+    threshold = getattr(args, "threshold", default_config.rerank_similarity_threshold)
+
     console.print(f"\n[bold green]=== Interactive CryptoTrack AI Chat ===[/bold green]")
-    console.print("Commands: `/rag on`, `/rag off`, `/model <name>`, `/topk <k>`, `/sources`, `/exit` or `q`\n")
+    console.print("Commands: `/rag on/off`, `/rewrite on/off`, `/rerank on/off`, `/thresh <val>`, `/model <name>`, `/topk <k>`, `/sources`, `/exit`\n")
 
     try:
         agent = get_rag_agent(args)
@@ -386,8 +436,15 @@ def run_chat(args):
 
     while True:
         try:
-            rag_badge = "[bold green]RAG:ON[/bold green]" if use_rag else "[bold yellow]RAG:OFF[/bold yellow]"
-            prompt_str = f"\nCryptoTrack [{rag_badge} | {current_model.split('/')[-1]}] > "
+            badges = []
+            badges.append("[bold green]RAG:ON[/bold green]" if use_rag else "[bold yellow]RAG:OFF[/bold yellow]")
+            if use_rag:
+                if use_rewrite:
+                    badges.append("[cyan]RW[/cyan]")
+                if use_rerank:
+                    badges.append(f"[magenta]RR({threshold})[/magenta]")
+
+            prompt_str = f"\nCryptoTrack [{'/'.join(badges)} | {current_model.split('/')[-1]}] > "
             user_input = input(prompt_str).strip()
 
             if not user_input:
@@ -399,11 +456,35 @@ def run_chat(args):
 
             if user_input.lower() in {"/rag on", "rag on"}:
                 use_rag = True
-                console.print("[green]✓ RAG mode ENABLED (Grounding in CryptoTrack codebase)[/green]")
+                console.print("[green]✓ RAG mode ENABLED[/green]")
                 continue
             elif user_input.lower() in {"/rag off", "rag off"}:
                 use_rag = False
                 console.print("[yellow]✓ RAG mode DISABLED (Pretrained baseline)[/yellow]")
+                continue
+            elif user_input.lower() in {"/rewrite on", "rewrite on"}:
+                use_rewrite = True
+                console.print("[cyan]✓ Query Rewrite ENABLED[/cyan]")
+                continue
+            elif user_input.lower() in {"/rewrite off", "rewrite off"}:
+                use_rewrite = False
+                console.print("[dim]✓ Query Rewrite DISABLED[/dim]")
+                continue
+            elif user_input.lower() in {"/rerank on", "rerank on"}:
+                use_rerank = True
+                console.print(f"[magenta]✓ Cross-Encoder Rerank & Filtering ENABLED (threshold={threshold})[/magenta]")
+                continue
+            elif user_input.lower() in {"/rerank off", "rerank off"}:
+                use_rerank = False
+                console.print("[dim]✓ Rerank & Filtering DISABLED[/dim]")
+                continue
+            elif user_input.startswith("/thresh "):
+                try:
+                    threshold = float(user_input.split()[1])
+                    agent.similarity_threshold = threshold
+                    console.print(f"[magenta]✓ Similarity threshold set to: {threshold}[/magenta]")
+                except ValueError:
+                    console.print("[red]Invalid float for threshold[/red]")
                 continue
             elif user_input.startswith("/model "):
                 current_model = user_input.split(maxsplit=1)[1].strip()
@@ -423,23 +504,27 @@ def run_chat(args):
                 else:
                     console.print(f"[bold magenta]Last query sources ({len(last_sources)}):[/bold magenta]")
                     for s in last_sources:
-                        console.print(f"  • #{s.rank} [{s.score:.4f}] [yellow]{s.source}[/yellow] (L{s.start_line}-L{s.end_line})")
+                        rr_info = f" | Rerank: {s.rerank_score:.4f}" if s.rerank_score is not None else ""
+                        console.print(f"  • #{s.rank} [{s.score:.4f}{rr_info}] [yellow]{s.source}[/yellow] (L{s.start_line}-L{s.end_line})")
                 continue
             elif user_input.lower() in {"/help", "help"}:
-                console.print("Available commands:\n  /rag on\n  /rag off\n  /model <name>\n  /topk <k>\n  /sources\n  /exit")
+                console.print("Available commands:\n  /rag on|off\n  /rewrite on|off\n  /rerank on|off\n  /thresh <val>\n  /model <name>\n  /topk <k>\n  /sources\n  /exit")
                 continue
 
             with console.status(f"[cyan]Querying...[/cyan]"):
                 res = agent.query(
                     question=user_input,
                     use_rag=use_rag,
+                    use_rewrite=use_rewrite,
+                    use_rerank=use_rerank,
                     top_k=args.top_k,
+                    similarity_threshold=threshold,
                     model=current_model,
                 )
             last_sources = res.sources
 
             border_style = "green" if use_rag else "yellow"
-            title = f"🤖 [{rag_badge}] ({res.total_tokens} tok | {res.latency_seconds:.2f}s)"
+            title = f"🤖 [{' / '.join(badges)}] ({res.total_tokens} tok | {res.latency_seconds:.2f}s)"
             console.print(Panel(res.answer, title=title, border_style=border_style))
 
         except KeyboardInterrupt:
@@ -481,16 +566,89 @@ def run_eval(args):
     console.print("\n")
     evaluator.print_summary_table(summary)
 
-    # Generate Markdown report
-    model_name = args.model or agent.llm_client.default_model
-    report_content = evaluator.generate_markdown_report(summary, model_name)
-    report_path = Path(args.output) if args.output else default_config.rag_benchmark_report_path
-
-    report_path.parent.mkdir(parents=True, exist_ok=True)
+    # Generate    report_path.parent.mkdir(parents=True, exist_ok=True)
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report_content)
 
     console.print(f"\n[bold green]✓ Full Benchmark Report saved to:[/bold green] [white]{report_path}[/white]\n")
+
+
+def run_compare_rerank(args):
+    console.print(f"\n[bold green]=== Multi-Mode RAG Comparison: Baseline vs Rewrite vs Enhanced RAG ===[/bold green]")
+    try:
+        agent = get_rag_agent(args)
+    except Exception as exc:
+        console.print(f"[red]Initialization error: {exc}[/red]")
+        sys.exit(1)
+
+    evaluator = RerankEvaluator(agent=agent, console=console)
+
+    if args.query:
+        # Run on single query
+        from src.evaluation.benchmark_dataset import BenchmarkQuestion
+        dummy_bq = BenchmarkQuestion(
+            id=1,
+            category="custom",
+            question=args.query,
+            expected_sources=[],
+            key_entities=[],
+            expectation="",
+        )
+        with console.status("[cyan]Evaluating query across 3 RAG modes...[/cyan]"):
+            res = evaluator.evaluate_question(
+                bq=dummy_bq,
+                top_k=args.top_k,
+                initial_top_k=args.initial_top_k,
+                threshold=args.threshold,
+                model=args.model,
+            )
+
+        console.print(f"\n[bold cyan]1. Baseline RAG (Raw retrieval, top_k={args.top_k}):[/bold cyan]")
+        console.print(f"[dim]Sources: {len(res.result_baseline.sources)} | Latency: {res.result_baseline.latency_seconds:.2f}s | Tokens: {res.result_baseline.total_tokens}[/dim]")
+        console.print(Panel(res.result_baseline.answer, title="Baseline Answer", border_style="yellow"))
+
+        console.print(f"\n[bold cyan]2. RAG + Query Rewrite (top_k={args.top_k}):[/bold cyan]")
+        console.print(f"[dim]Rewritten Query: {res.result_rewrite.rewritten_query}[/dim]")
+        console.print(f"[dim]Sources: {len(res.result_rewrite.sources)} | Latency: {res.result_rewrite.latency_seconds:.2f}s | Tokens: {res.result_rewrite.total_tokens}[/dim]")
+        console.print(Panel(res.result_rewrite.answer, title="Rewrite Answer", border_style="blue"))
+
+        console.print(f"\n[bold cyan]3. Enhanced RAG (Rewrite + Similarity Filter >= {args.threshold} + Cross-Encoder Rerank):[/bold cyan]")
+        console.print(f"[dim]Rewritten Query: {res.result_enhanced.rewritten_query}[/dim]")
+        console.print(f"[dim]Filter & Rerank: {res.initial_candidates} candidates -> {res.dropped_candidates} noise dropped ({res.noise_reduction_pct:.0f}%) -> {len(res.result_enhanced.sources)} final sources[/dim]")
+        console.print(f"[dim]Latency: {res.result_enhanced.latency_seconds:.2f}s | Tokens: {res.result_enhanced.total_tokens}[/dim]")
+        console.print(Panel(res.result_enhanced.answer, title="Enhanced RAG Answer", border_style="green"))
+
+        console.print(f"\n[bold magenta]Вердикт:[/bold magenta] {res.verdict}\n")
+    else:
+        # Run on benchmark suite
+        questions = BENCHMARK_QUESTIONS
+        if args.limit and args.limit > 0:
+            questions = questions[:args.limit]
+            console.print(f"[yellow]Note: Limiting benchmark to first {args.limit} questions[/yellow]")
+
+        console.print(f"[cyan]Target Model:[/cyan] {args.model or agent.llm_client.default_model}")
+        console.print(f"[cyan]Total Questions:[/cyan] {len(questions)}")
+        console.print(f"[cyan]Threshold:[/cyan] {args.threshold} | Initial Top-K: {args.initial_top_k} | Final Top-K: {args.top_k}\n")
+
+        def on_progress(current, total, bq):
+            console.print(f"[{current}/{total}] [bold white]Evaluating Q{bq.id}:[/bold white] [cyan]{bq.question[:60]}...[/cyan]")
+
+        summary = evaluator.run_benchmark(
+            questions=questions,
+            top_k=args.top_k,
+            initial_top_k=args.initial_top_k,
+            threshold=args.threshold,
+            model=args.model,
+            progress_callback=on_progress,
+        )
+
+        console.print("\n")
+        evaluator.render_table(summary)
+
+        # Markdown report
+        report_path = Path(args.output) if args.output else default_config.rerank_benchmark_report_path
+        evaluator.generate_markdown_report(summary, report_path)
+        console.print(f"\n[bold green]✓ Full Multi-Mode Benchmark Report saved to:[/bold green] [white]{report_path}[/white]\n")
 
 
 def main():
@@ -524,12 +682,16 @@ def main():
     p_compare.add_argument("--query", default=None, help="Single query to compare (if omitted, launches interactive mode)")
     p_compare.add_argument("--top-k", type=int, default=3, help="Top K results per strategy")
 
-    # 5. ask (NEW Day 22)
+    # 5. ask (NEW Day 22, updated Day 23)
     p_ask = subparsers.add_parser("ask", help="Query the AI Agent with RAG or without RAG")
     p_ask.add_argument("question", help="User question to ask the agent")
     p_rag_group = p_ask.add_mutually_exclusive_group()
     p_rag_group.add_argument("--rag", dest="rag", action="store_true", default=True, help="Enable RAG mode (default)")
     p_rag_group.add_argument("--no-rag", dest="rag", action="store_false", help="Disable RAG mode (pure LLM baseline)")
+    p_ask.add_argument("--rewrite", action="store_true", default=False, help="Enable Query Rewrite")
+    p_ask.add_argument("--rerank", action="store_true", default=False, help="Enable Stage 2 Filter & Rerank")
+    p_ask.add_argument("--initial-top-k", type=int, default=default_config.rerank_initial_top_k, help="Candidate chunks before filtering")
+    p_ask.add_argument("--threshold", type=float, default=default_config.rerank_similarity_threshold, help="Similarity cutoff threshold")
     p_ask.add_argument("--strategy", choices=["fixed", "structural"], default="structural", help="Vector index strategy")
     p_ask.add_argument("--top-k", type=int, default=default_config.default_top_k, help="Number of retrieved chunks")
     p_ask.add_argument("--model", default=None, help="OpenRouter model identifier")
@@ -537,10 +699,14 @@ def main():
     p_ask.add_argument("--filter", default=None, help="Filter sources by substring")
     p_ask.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
 
-    # 6. chat (NEW Day 22)
+    # 6. chat (NEW Day 22, updated Day 23)
     p_chat = subparsers.add_parser("chat", help="Interactive terminal chat with RAG toggle")
     p_chat.add_argument("--rag", dest="rag", action="store_true", default=True, help="Start in RAG mode (default)")
     p_chat.add_argument("--no-rag", dest="rag", action="store_false", help="Start in No-RAG mode")
+    p_chat.add_argument("--rewrite", action="store_true", default=False, help="Start with Query Rewrite enabled")
+    p_chat.add_argument("--rerank", action="store_true", default=False, help="Start with Filter & Rerank enabled")
+    p_chat.add_argument("--threshold", type=float, default=default_config.rerank_similarity_threshold)
+    p_chat.add_argument("--initial-top-k", type=int, default=default_config.rerank_initial_top_k)
     p_chat.add_argument("--strategy", choices=["fixed", "structural"], default="structural")
     p_chat.add_argument("--top-k", type=int, default=default_config.default_top_k)
     p_chat.add_argument("--model", default=None)
@@ -557,6 +723,19 @@ def main():
     p_eval.add_argument("--output", default=None, help="Custom output path for markdown report")
     p_eval.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
 
+    # 8. compare-rerank (NEW Day 23)
+    p_cr = subparsers.add_parser("compare-rerank", help="Compare Baseline RAG, Query Rewrite, and Enhanced RAG modes")
+    p_cr.add_argument("--query", default=None, help="Single query to compare across 3 modes")
+    p_cr.add_argument("--benchmark", action="store_true", default=False, help="Run on benchmark question suite")
+    p_cr.add_argument("--strategy", choices=["fixed", "structural"], default="structural")
+    p_cr.add_argument("--top-k", type=int, default=default_config.rerank_final_top_k, help="Final top-K chunks")
+    p_cr.add_argument("--initial-top-k", type=int, default=default_config.rerank_initial_top_k, help="Initial candidate chunks")
+    p_cr.add_argument("--threshold", type=float, default=default_config.rerank_similarity_threshold, help="Similarity cutoff threshold")
+    p_cr.add_argument("--model", default=None)
+    p_cr.add_argument("--api-key", default=None)
+    p_cr.add_argument("--limit", type=int, default=None, help="Limit number of benchmark questions")
+    p_cr.add_argument("--output", default=None, help="Custom output path for markdown report")
+    p_cr.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
 
     args = parser.parse_args()
 
@@ -574,7 +753,10 @@ def main():
         run_chat(args)
     elif args.command == "eval":
         run_eval(args)
+    elif args.command == "compare-rerank":
+        run_compare_rerank(args)
 
 
 if __name__ == "__main__":
     main()
+
