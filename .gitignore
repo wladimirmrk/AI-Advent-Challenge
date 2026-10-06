@@ -41,3 +41,4 @@ RAG/data/*
 !RAG/data/rag_benchmark_report.md
 !RAG/data/rerank_benchmark_report.md
 !RAG/data/grounded_benchmark_report.md
+!RAG/data/chat_scenario_report.md

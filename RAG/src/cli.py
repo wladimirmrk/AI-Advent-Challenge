@@ -36,6 +36,7 @@ from src.evaluation.benchmark_dataset import BENCHMARK_QUESTIONS
 from src.evaluation.rag_evaluator import RAGEvaluator
 from src.evaluation.rerank_evaluator import RerankEvaluator
 from src.evaluation.grounded_evaluator import GroundedEvaluator, GROUNDED_BENCHMARK_SUITE
+from src.chat import ChatSession, MemoryChatEngine, SessionStore, TaskState
 
 console = Console(soft_wrap=True)
 
@@ -583,6 +584,294 @@ def run_chat(args):
             console.print(f"[red]Error: {exc}[/red]")
 
 
+def run_chat_memory(args):
+    """Интерактивный чат с RAG, историей и памятью задачи (Task State) - Day 25."""
+    sessions_dir = default_config.data_dir / "sessions"
+    store = SessionStore(sessions_dir)
+
+    if getattr(args, "list_sessions", False):
+        sessions = store.list_sessions()
+        if not sessions:
+            console.print("[dim]Нет сохранённых сессий.[/dim]")
+            return
+        table = Table(title="Сохранённые сессии чата", header_style="bold cyan")
+        table.add_column("#", justify="right", style="bold yellow")
+        table.add_column("Session ID", style="green")
+        table.add_column("Цель / Тема диалога", style="white")
+        table.add_column("Сообщений", justify="right", style="cyan")
+        table.add_column("Дата создания", style="dim")
+        for idx, s in enumerate(sessions, 1):
+            table.add_row(
+                str(idx),
+                s["session_id"],
+                s.get("goal", "—")[:60],
+                str(s["message_count"]),
+                s["created_at"][:19],
+            )
+        console.print(table)
+        return
+
+    # Загрузка или создание сессии
+    session_id = getattr(args, "session", None)
+    if session_id:
+        try:
+            session = store.load(session_id)
+            console.print(f"[green]✓ Загружена существующая сессия:[/green] [bold]{session_id}[/bold] ({len(session.messages)} сообщений)")
+        except FileNotFoundError:
+            console.print(f"[red]Сессия '{session_id}' не найдена. Создаётся новая.[/red]")
+            session = ChatSession(session_id=session_id)
+    else:
+        session = ChatSession()
+        console.print(f"[green]✓ Создана новая сессия:[/green] [bold]{session.session_id}[/bold]")
+
+    use_rag = getattr(args, "rag", True)
+    use_rewrite = getattr(args, "rewrite", True)
+    use_rerank = getattr(args, "rerank", True)
+    threshold = getattr(args, "threshold", default_config.rerank_similarity_threshold)
+    window_size = getattr(args, "window", 10)
+
+    existing_sessions = store.list_sessions()
+    console.print(f"\n[bold green]=== Production-like RAG Chat with Task Memory ===[/bold green]")
+    if existing_sessions:
+        console.print(f"[dim]💡 Сохранённых сессий: {len(existing_sessions)} (введите [bold cyan]/switch[/bold cyan] для выбора)[/dim]")
+    console.print("Команды: `/switch [№]`, `/state`, `/sources`, `/history`, `/new`, `/save`, `/rag on/off`, `/topk <k>`, `/exit`\n")
+
+    try:
+        agent = get_rag_agent(args)
+    except Exception as exc:
+        console.print(f"[red]Ошибка инициализации: {exc}[/red]")
+        sys.exit(1)
+
+    engine = MemoryChatEngine(
+        rag_agent=agent,
+        session=session,
+        session_store=store,
+        window_size=window_size,
+    )
+
+    current_model = args.model or agent.llm_client.default_model
+
+    while True:
+        try:
+            badges = []
+            badges.append("[bold green]RAG:ON[/bold green]" if use_rag else "[bold yellow]RAG:OFF[/bold yellow]")
+            if use_rag:
+                if use_rewrite:
+                    badges.append("[cyan]RW[/cyan]")
+                if use_rerank:
+                    badges.append(f"[magenta]RR({threshold})[/magenta]")
+            badges.append(f"[blue]Turn:{session.task_state.turn_number}[/blue]")
+
+            prompt_str = f"\nCryptoTrack [{'/'.join(badges)} | {current_model.split('/')[-1]}] > "
+            user_input = input(prompt_str).strip()
+
+            if not user_input:
+                continue
+
+            if user_input.lower() in {"exit", "quit", "q", "/exit", "/quit"}:
+                store.save(session)
+                console.print(f"[dim]Сессия {session.session_id} сохранена. До свидания![/dim]")
+                break
+
+            if user_input.lower() in {"/state", "state"}:
+                console.print(Panel(
+                    session.task_state.to_summary(),
+                    title="🧠 Память задачи (Task State)",
+                    border_style="cyan",
+                ))
+                continue
+
+            if user_input.lower() in {"/sources", "sources"}:
+                last_asst = next((m for m in reversed(session.messages) if m.role == "assistant"), None)
+                if not last_asst or not last_asst.sources:
+                    console.print("[dim]Нет источников в последнем ответе.[/dim]")
+                else:
+                    console.print(f"[bold magenta]Источники последнего ответа ({len(last_asst.sources)}):[/bold magenta]")
+                    for s in last_asst.sources:
+                        score_part = f" [{s.get('score', 0):.4f}]" if "score" in s else ""
+                        console.print(f"  • {score_part} [yellow]{s.get('source')}[/yellow] ({s.get('section', '')})")
+                continue
+
+            if user_input.lower() in {"/history", "history"}:
+                console.print(f"[bold cyan]История диалога ({len(session.messages)} сообщений):[/bold cyan]")
+                for m in session.messages:
+                    icon = "👤" if m.role == "user" else "🤖"
+                    console.print(f"{icon} [bold]{m.role.upper()}:[/bold] {m.content[:100]}...")
+                continue
+
+            if user_input.lower().startswith("/switch") or user_input.lower() in {"/sessions", "sessions", "switch"}:
+                parts = user_input.split()
+                target_idx = None
+                if len(parts) > 1 and parts[1].isdigit():
+                    target_idx = int(parts[1])
+
+                sessions = store.list_sessions()
+                if not sessions:
+                    console.print("[dim]Нет сохранённых сессий.[/dim]")
+                    continue
+
+                if target_idx is None:
+                    table = Table(title="📋 Сохранённые сессии диалога", header_style="bold cyan")
+                    table.add_column("#", justify="right", style="bold yellow")
+                    table.add_column("Статус", justify="center")
+                    table.add_column("Цель / Тема диалога", style="white")
+                    table.add_column("Сообщений", justify="right", style="cyan")
+                    table.add_column("Дата", style="dim")
+
+                    for idx, s in enumerate(sessions, 1):
+                        is_active = s["session_id"] == session.session_id
+                        status_badge = "[bold green][ACTIVE][/bold green]" if is_active else ""
+                        row_style = "bold white on dark_green" if is_active else None
+                        table.add_row(
+                            str(idx),
+                            status_badge,
+                            s.get("goal", "—")[:65],
+                            str(s["message_count"]),
+                            s["created_at"][:19],
+                            style=row_style,
+                        )
+                    console.print(table)
+                    console.print(f"[dim]Введите номер сессии (1-{len(sessions)}), '0' для отмены, или 'n' для новой сессии[/dim]")
+
+                    try:
+                        choice = input("Сессия > ").strip()
+                    except (KeyboardInterrupt, EOFError):
+                        continue
+
+                    if not choice or choice == "0":
+                        console.print("[dim]Переключение отменено.[/dim]")
+                        continue
+                    if choice.lower() in {"n", "new", "/new"}:
+                        store.save(session)
+                        session = ChatSession()
+                        engine.session = session
+                        console.print(f"[green]✓ Начата новая сессия: [bold]{session.session_id}[/bold][/green]")
+                        continue
+                    if choice.isdigit():
+                        target_idx = int(choice)
+                    else:
+                        console.print(f"[red]Неверный ввод. Введите число от 1 до {len(sessions)}.[/red]")
+                        continue
+
+                if target_idx is not None:
+                    if 1 <= target_idx <= len(sessions):
+                        chosen = sessions[target_idx - 1]
+                        if chosen["session_id"] == session.session_id:
+                            console.print(f"[yellow]Сессия #{target_idx} уже активна.[/yellow]")
+                            continue
+
+                        store.save(session)
+                        try:
+                            new_session = store.load(chosen["session_id"])
+                            session = new_session
+                            engine.session = session
+
+                            last_q = next((m.content for m in reversed(session.messages) if m.role == "user"), "—")
+                            card = (
+                                f"[bold green]✓ Переключено на сессию #{target_idx}:[/bold green] [bold]{session.session_id}[/bold]\n"
+                                f"[cyan]Цель:[/cyan] {session.task_state.goal or 'Не определена'}\n"
+                                f"[cyan]Сообщений в диалоге:[/cyan] {len(session.messages)} (Ходов: {session.task_state.turn_number})\n"
+                                f"[cyan]Последний вопрос:[/cyan] {last_q[:85]}"
+                            )
+                            console.print(Panel(card, title="🔄 Активная сессия", border_style="green"))
+                        except Exception as e:
+                            console.print(f"[red]Ошибка загрузки сессии: {e}[/red]")
+                    else:
+                        console.print(f"[red]Номер сессии вне диапазона (1-{len(sessions)}).[/red]")
+                continue
+
+            if user_input.lower() in {"/save", "save"}:
+                p = store.save(session)
+                console.print(f"[green]✓ Сессия сохранена в {p}[/green]")
+                continue
+
+            if user_input.lower() in {"/new", "new"}:
+                store.save(session)
+                session = ChatSession()
+                engine.session = session
+                console.print(f"[green]✓ Начата новая сессия: [bold]{session.session_id}[/bold][/green]")
+                continue
+
+            if user_input.lower() in {"/rag on", "rag on"}:
+                use_rag = True
+                console.print("[green]✓ RAG включен[/green]")
+                continue
+            elif user_input.lower() in {"/rag off", "rag off"}:
+                use_rag = False
+                console.print("[yellow]✓ RAG отключен[/yellow]")
+                continue
+            elif user_input.lower() in {"/rewrite on", "rewrite on"}:
+                use_rewrite = True
+                console.print("[cyan]✓ Query Rewrite включен[/cyan]")
+                continue
+            elif user_input.lower() in {"/rewrite off", "rewrite off"}:
+                use_rewrite = False
+                console.print("[dim]✓ Query Rewrite отключен[/dim]")
+                continue
+            elif user_input.lower() in {"/rerank on", "rerank on"}:
+                use_rerank = True
+                console.print("[magenta]✓ Rerank & Filter включен[/magenta]")
+                continue
+            elif user_input.lower() in {"/rerank off", "rerank off"}:
+                use_rerank = False
+                console.print("[dim]✓ Rerank & Filter отключен[/dim]")
+                continue
+            elif user_input.startswith("/model "):
+                current_model = user_input.split(maxsplit=1)[1].strip()
+                console.print(f"[cyan]✓ Модель переключена на: {current_model}[/cyan]")
+                continue
+            elif user_input.startswith("/topk "):
+                try:
+                    args.top_k = int(user_input.split()[1])
+                    agent.default_top_k = args.top_k
+                    console.print(f"[cyan]✓ Top-K установлен: {args.top_k}[/cyan]")
+                except ValueError:
+                    console.print("[red]Неверное число для top_k[/red]")
+                continue
+            elif user_input.lower() in {"/help", "help"}:
+                console.print("Доступные команды:\n  /switch [№] - Выбрать и переключить активную сессию по номеру\n  /state      - Показать текущую память задачи\n  /sources    - Показать источники последнего ответа\n  /history    - Просмотреть историю диалога\n  /save       - Сохранить текущую сессию\n  /new        - Начать новую сессию\n  /rag on|off - Переключить RAG\n  /rewrite on|off - Переключить Query Rewrite\n  /rerank on|off  - Переключить Rerank\n  /model <name>   - Сменить модель LLM\n  /topk <k>       - Изменить количество чанков\n  /exit       - Выход")
+                continue
+
+            with console.status(f"[cyan]Поиск в кодовой базе и генерация ответа...[/cyan]"):
+                res = engine.process_turn(
+                    user_question=user_input,
+                    model=current_model,
+                    use_rag=use_rag,
+                    use_rewrite=use_rewrite,
+                    use_rerank=use_rerank,
+                    top_k=args.top_k,
+                )
+
+            border_style = "green" if use_rag else "yellow"
+            title = f"🤖 [Ход #{session.task_state.turn_number} | {res.total_tokens} токенов | {res.latency_seconds:.2f}с]"
+            console.print(Panel(res.answer, title=title, border_style=border_style))
+
+            if res.sources:
+                src_lines = []
+                for s in res.sources[:4]:
+                    loc = f":L{s['start_line']}-L{s['end_line']}" if s.get('start_line') else ""
+                    sec = f" (`{s['section']}`)" if s.get('section') else ""
+                    score = f" [score: {s['score']:.3f}]" if 'score' in s else ""
+                    src_lines.append(f"  📚 `{s['source']}{loc}`{sec}{score}")
+                console.print("\n".join(src_lines))
+
+            state_brief = (
+                f"[bold cyan]Цель:[/bold cyan] {session.task_state.goal or 'Не определена'}\n"
+                f"[bold cyan]Уточнений:[/bold cyan] {len(session.task_state.clarifications)} | "
+                f"[bold cyan]Ограничений:[/bold cyan] {len(session.task_state.constraints)} | "
+                f"[bold cyan]Находок:[/bold cyan] {len(session.task_state.key_findings)}"
+            )
+            console.print(Panel(state_brief, title="🧠 Память задачи (Task State)", border_style="blue"))
+
+        except KeyboardInterrupt:
+            store.save(session)
+            break
+        except OpenRouterError as err:
+            console.print(f"[red]OpenRouter API Error: {err}[/red]")
+        except Exception as exc:
+            console.print(f"[red]Error: {exc}[/red]")
+
+
 def run_eval(args):
     console.print(f"\n[bold green]=== Running RAG vs No-RAG 10 Questions Benchmark ===[/bold green]")
     try:
@@ -839,7 +1128,24 @@ def main():
     p_bg.add_argument("--limit", type=int, default=None, help="Limit number of benchmark questions")
     p_bg.add_argument("--delay", type=float, default=default_config.grounded_eval_delay, help="Delay in seconds between questions to prevent rate limits")
     p_bg.add_argument("--output", default=None, help="Custom output path for markdown report")
-    p_bg.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
+    # 10. chat-memory (NEW Day 25: RAG Chat with Task Memory)
+    p_cm = subparsers.add_parser("chat-memory", help="Production-like RAG chat with Task Memory and session persistence (Day 25)")
+    p_cm.add_argument("--session", default=None, help="Existing session ID to resume")
+    p_cm.add_argument("--list-sessions", action="store_true", help="List all saved sessions and exit")
+    p_cm.add_argument("--rag", dest="rag", action="store_true", default=True, help="Enable RAG retrieval (default)")
+    p_cm.add_argument("--no-rag", dest="rag", action="store_false", help="Disable RAG retrieval")
+    p_cm.add_argument("--rewrite", action="store_true", default=True, help="Enable query rewrite (default: True)")
+    p_cm.add_argument("--no-rewrite", dest="rewrite", action="store_false", help="Disable query rewrite")
+    p_cm.add_argument("--rerank", action="store_true", default=True, help="Enable cross-encoder rerank (default: True)")
+    p_cm.add_argument("--no-rerank", dest="rerank", action="store_false", help="Disable cross-encoder rerank")
+    p_cm.add_argument("--threshold", type=float, default=default_config.rerank_similarity_threshold, help="Cutoff similarity threshold")
+    p_cm.add_argument("--initial-top-k", type=int, default=default_config.rerank_initial_top_k, help="Initial candidate chunks")
+    p_cm.add_argument("--strategy", choices=["fixed", "structural"], default="structural")
+    p_cm.add_argument("--top-k", type=int, default=default_config.default_top_k)
+    p_cm.add_argument("--window", type=int, default=10, help="Sliding window size for chat history")
+    p_cm.add_argument("--model", default=None)
+    p_cm.add_argument("--api-key", default=None)
+    p_cm.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
 
     args = parser.parse_args()
 
@@ -855,6 +1161,8 @@ def main():
         run_ask(args)
     elif args.command == "chat":
         run_chat(args)
+    elif args.command == "chat-memory":
+        run_chat_memory(args)
     elif args.command == "eval":
         run_eval(args)
     elif args.command == "compare-rerank":

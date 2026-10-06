@@ -29,6 +29,7 @@ class OpenRouterResponse:
     latency_seconds: float = 0.0
     finish_reason: str = "stop"
     raw_response: Dict[str, Any] = field(default_factory=dict)
+    is_mock: bool = False
 
 
 class OpenRouterClient:
@@ -49,6 +50,8 @@ class OpenRouterClient:
         self.timeout = timeout or int(os.getenv("OPENROUTER_TIMEOUT", "60"))
         self.max_retries = max_retries
         self.mock_mode = mock_mode or os.getenv("OPENROUTER_MOCK", "").lower() in {"1", "true", "yes"}
+        # True, если реальный вызов деградировал в mock из-за исчерпания дневной квоты
+        self.degraded_to_mock = False
 
     def is_configured(self) -> bool:
         """Check if an API key is provided or mock mode is active."""
@@ -183,9 +186,10 @@ class OpenRouterClient:
             if citations and not any(c in body for c in citations):
                 body += f"\n\nИсточники: {', '.join(citations)}"
 
-            # Day 24: Check if caller requested structured Grounded JSON
+            # Day 24 & 25: Check if caller requested structured Grounded JSON or Chat Memory JSON
             sys_msg = next((m["content"] for m in messages if m.get("role") == "system"), "")
-            is_grounded_json = "JSON" in sys_msg and ("quotes" in sys_msg or "grounded" in sys_msg)
+            is_chat_memory = "task_state" in sys_msg or "ПАМЯТЬ ЗАДАЧИ" in sys_msg or "task_state_update" in sys_msg
+            is_grounded_json = ("JSON" in sys_msg and ("quotes" in sys_msg or "grounded" in sys_msg)) or is_chat_memory
 
             if is_grounded_json:
                 # Check for out-of-domain / adversarial queries based on the question part
@@ -206,6 +210,13 @@ class OpenRouterClient:
                         "needs_clarification": True,
                         "clarification_prompt": "Пожалуйста, уточните ваш запрос: интересуют ли вас существующие модули кодовой базы CryptoTrack (Room, Hilt, Jetpack Compose, доменная валидация)?"
                     }
+                    if is_chat_memory:
+                        grounded_payload["task_state_update"] = {
+                            "goal": "Исследование кодовой базы CryptoTrack",
+                            "new_clarifications": ["Запрос на модуль вне скоупа CryptoTrack"],
+                            "new_constraints": ["Только модули CryptoTrack"],
+                            "new_findings": []
+                        }
                     return OpenRouterResponse(
                         content=json.dumps(grounded_payload, ensure_ascii=False, indent=2),
                         model=target_model,
@@ -214,6 +225,7 @@ class OpenRouterClient:
                         total_tokens=490,
                         latency_seconds=0.35,
                         finish_reason="stop",
+                        is_mock=True,
                     )
 
                 # Extract chunk snippets for authentic quotes
@@ -257,15 +269,24 @@ class OpenRouterClient:
                     "clarification_prompt": None
                 }
 
+                if is_chat_memory:
+                    grounded_payload["task_state_update"] = {
+                        "goal": "Исследование архитектуры CryptoTrack",
+                        "new_clarifications": [q_target[:60] if q_target else "Уточнение архитектуры"],
+                        "new_constraints": ["Clean Architecture", "Kotlin", "Room"],
+                        "new_findings": [f"Изучен компонент {found_sources[0]['section']}" if found_sources and found_sources[0].get('section') else "Изучены компоненты CryptoTrack"]
+                    }
+
                 return OpenRouterResponse(
                     content=json.dumps(grounded_payload, ensure_ascii=False, indent=2),
                     model=target_model,
-                    prompt_tokens=520,
-                    completion_tokens=260,
-                    total_tokens=780,
-                    latency_seconds=0.45,
-                    finish_reason="stop",
-                )
+                        prompt_tokens=520,
+                        completion_tokens=260,
+                        total_tokens=780,
+                        latency_seconds=0.45,
+                        finish_reason="stop",
+                        is_mock=True,
+                    )
 
             return OpenRouterResponse(
                 content=body,
@@ -275,6 +296,7 @@ class OpenRouterClient:
                 total_tokens=670,
                 latency_seconds=0.42,
                 finish_reason="stop",
+                is_mock=True,
             )
         else:
             # Baseline No-RAG: generic answers without knowing CryptoTrack classes
@@ -320,6 +342,7 @@ class OpenRouterClient:
                 total_tokens=190,
                 latency_seconds=0.25,
                 finish_reason="stop",
+                is_mock=True,
             )
 
     def chat_completion(
@@ -376,6 +399,7 @@ class OpenRouterClient:
                         if "free-models-per-day" in err_msg:
                             logger.warning("Daily free tier quota exhausted on OpenRouter. Falling back to mock response.")
                             self.mock_mode = True
+                            self.degraded_to_mock = True
                             return self._generate_mock_response(messages, target_model)
                         if attempt < self.max_retries:
                             time.sleep(self.retry_delay * attempt)
@@ -433,6 +457,7 @@ class OpenRouterClient:
                     if "free-models-per-day" in error_msg:
                         logger.warning("Daily free tier quota exhausted on OpenRouter. Falling back to mock response.")
                         self.mock_mode = True
+                        self.degraded_to_mock = True
                         return self._generate_mock_response(messages, target_model)
                     if attempt < self.max_retries:
                         time.sleep(2 * attempt)
