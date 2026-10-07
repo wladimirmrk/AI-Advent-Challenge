@@ -4,6 +4,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 # Ensure RAG project root is on sys.path
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -22,6 +23,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.syntax import Syntax
 from rich.columns import Columns
+from rich.markdown import Markdown
 
 from src.config import default_config
 from src.loader.project_loader import ProjectLoader
@@ -38,7 +40,74 @@ from src.evaluation.rerank_evaluator import RerankEvaluator
 from src.evaluation.grounded_evaluator import GroundedEvaluator, GROUNDED_BENCHMARK_SUITE
 from src.chat import ChatSession, MemoryChatEngine, SessionStore, TaskState
 
-console = Console(soft_wrap=True)
+import shutil
+
+def get_terminal_width(preferred_width: Optional[int] = None) -> int:
+    """Detect actual visible window width, especially in Windows cmd.exe, with optional override."""
+    if preferred_width and preferred_width > 0:
+        return preferred_width
+
+    # 1. Respect explicit COLUMNS env var
+    env_cols = os.environ.get("COLUMNS")
+    if env_cols and env_cols.isdigit():
+        return int(env_cols)
+
+    # 2. Try Windows CONOUT$ visible window rectangle (srWindow), NOT the buffer width
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            from ctypes import wintypes
+            h = ctypes.windll.kernel32.CreateFileW(
+                "CONOUT$",
+                0x80000000 | 0x40000000,
+                0x00000001 | 0x00000002,
+                None,
+                3,
+                0,
+                None
+            )
+            if h and h != -1:
+                class SMALL_RECT(ctypes.Structure):
+                    _fields_ = [
+                        ('Left', ctypes.c_short),
+                        ('Top', ctypes.c_short),
+                        ('Right', ctypes.c_short),
+                        ('Bottom', ctypes.c_short),
+                    ]
+                class CSBI(ctypes.Structure):
+                    _fields_ = [
+                        ('dwSize', wintypes._COORD),
+                        ('dwCursorPosition', wintypes._COORD),
+                        ('wAttributes', wintypes.WORD),
+                        ('srWindow', SMALL_RECT),
+                        ('dwMaximumWindowSize', wintypes._COORD),
+                    ]
+                csbi = CSBI()
+                if ctypes.windll.kernel32.GetConsoleScreenBufferInfo(h, ctypes.byref(csbi)):
+                    win_w = csbi.srWindow.Right - csbi.srWindow.Left + 1
+                    ctypes.windll.kernel32.CloseHandle(h)
+                    if win_w >= 20:
+                        return win_w
+                ctypes.windll.kernel32.CloseHandle(h)
+        except Exception:
+            pass
+
+    # 3. Fallback to shutil
+    try:
+        return shutil.get_terminal_size((80, 24)).columns
+    except Exception:
+        return 80
+
+
+def setup_console(args: Optional[argparse.Namespace] = None) -> Console:
+    """Ensure console uses the true visible width of the window."""
+    preferred = getattr(args, "width", None) if args else None
+    detected = get_terminal_width(preferred)
+    console._width = detected
+    return console
+
+
+console = Console()
 
 def run_index(args):
     project_path = args.project_path or default_config.project_path
@@ -331,6 +400,7 @@ def get_rag_agent(args, default_strat: str = "structural") -> RAGAgent:
 
 
 def run_ask(args):
+    setup_console(args)
     use_rag = getattr(args, "rag", True)
     use_rewrite = getattr(args, "rewrite", False)
     use_rerank = getattr(args, "rerank", False)
@@ -414,14 +484,14 @@ def run_ask(args):
             ))
         else:
             # Model Answer
-            console.print(Panel(g.answer, title=f"🤖 Ответ модели ({res.model}) [Grounded RAG]", border_style="green"))
+            console.print(Panel(Markdown(g.answer), title=f"🤖 Ответ модели ({res.model}) [Grounded RAG]", border_style="green"))
 
             # Sources Table
             if g.sources:
                 st = Table(title="📚 Список подтвержденных источников", show_lines=False)
                 st.add_column("#", justify="center", style="cyan")
-                st.add_column("Файл / Источник", style="bold white")
-                st.add_column("Секция / Символ", style="green")
+                st.add_column("Файл / Источник", style="bold white", overflow="fold")
+                st.add_column("Секция / Символ", style="green", overflow="fold")
                 st.add_column("Строки", justify="center", style="yellow")
                 st.add_column("Chunk ID", justify="center", style="dim")
                 st.add_column("Релевантность", justify="right", style="magenta")
@@ -437,9 +507,13 @@ def run_ask(args):
                 console.print(f"\n[bold cyan]💬 Подтвержденные цитаты из контекста ({len(g.quotes)} фрагментов):[/bold cyan]")
                 for idx, q in enumerate(g.quotes, 1):
                     v_icon = "[bold green]✓ Verified[/bold green]" if q.is_exact_match else "[yellow]~ Partial[/yellow]"
-                    src_tag = f" ({q.source})" if q.source else ""
+                    src_short = q.source.split("/")[-1] if q.source else ""
+                    src_tag = f" ({src_short})" if src_short else ""
+                    quote_content = f"[white]{q.text}[/white]"
+                    if q.source:
+                        quote_content += f"\n[dim]Источник: {q.source}[/dim]"
                     console.print(Panel(
-                        f"[white]{q.text}[/white]",
+                        quote_content,
                         title=f"Цитата #{idx}{src_tag} [{v_icon}]",
                         border_style="cyan" if q.is_exact_match else "dim yellow"
                     ))
@@ -454,7 +528,7 @@ def run_ask(args):
         # Fallback raw answer
         border_style = "green" if use_rag else "yellow"
         title = f"🤖 Ответ модели ({res.model}) [{'RAG: ON' if use_rag else 'RAG: OFF'}]"
-        console.print(Panel(res.answer, title=title, border_style=border_style))
+        console.print(Panel(Markdown(res.answer), title=title, border_style=border_style))
 
     # 4. Timing & token stats
     stats_text = (
@@ -466,6 +540,7 @@ def run_ask(args):
 
 
 def run_chat(args):
+    setup_console(args)
     use_rag = getattr(args, "rag", True)
     use_rewrite = getattr(args, "rewrite", False)
     use_rerank = getattr(args, "rerank", False)
@@ -574,7 +649,7 @@ def run_chat(args):
 
             border_style = "green" if use_rag else "yellow"
             title = f"🤖 [{' / '.join(badges)}] ({res.total_tokens} tok | {res.latency_seconds:.2f}s)"
-            console.print(Panel(res.answer, title=title, border_style=border_style))
+            console.print(Panel(Markdown(res.answer), title=title, border_style=border_style))
 
         except KeyboardInterrupt:
             break
@@ -586,6 +661,7 @@ def run_chat(args):
 
 def run_chat_memory(args):
     """Интерактивный чат с RAG, историей и памятью задачи (Task State) - Day 25."""
+    setup_console(args)
     sessions_dir = default_config.data_dir / "sessions"
     store = SessionStore(sessions_dir)
 
@@ -844,7 +920,7 @@ def run_chat_memory(args):
 
             border_style = "green" if use_rag else "yellow"
             title = f"🤖 [Ход #{session.task_state.turn_number} | {res.total_tokens} токенов | {res.latency_seconds:.2f}с]"
-            console.print(Panel(res.answer, title=title, border_style=border_style))
+            console.print(Panel(Markdown(res.answer), title=title, border_style=border_style))
 
             if res.sources:
                 src_lines = []
@@ -911,6 +987,7 @@ def run_eval(args):
 
 
 def run_compare_rerank(args):
+    setup_console(args)
     console.print(f"\n[bold green]=== Multi-Mode RAG Comparison: Baseline vs Rewrite vs Enhanced RAG ===[/bold green]")
     try:
         agent = get_rag_agent(args)
@@ -942,18 +1019,18 @@ def run_compare_rerank(args):
 
         console.print(f"\n[bold cyan]1. Baseline RAG (Raw retrieval, top_k={args.top_k}):[/bold cyan]")
         console.print(f"[dim]Sources: {len(res.result_baseline.sources)} | Latency: {res.result_baseline.latency_seconds:.2f}s | Tokens: {res.result_baseline.total_tokens}[/dim]")
-        console.print(Panel(res.result_baseline.answer, title="Baseline Answer", border_style="yellow"))
+        console.print(Panel(Markdown(res.result_baseline.answer), title="Baseline Answer", border_style="yellow"))
 
         console.print(f"\n[bold cyan]2. RAG + Query Rewrite (top_k={args.top_k}):[/bold cyan]")
         console.print(f"[dim]Rewritten Query: {res.result_rewrite.rewritten_query}[/dim]")
         console.print(f"[dim]Sources: {len(res.result_rewrite.sources)} | Latency: {res.result_rewrite.latency_seconds:.2f}s | Tokens: {res.result_rewrite.total_tokens}[/dim]")
-        console.print(Panel(res.result_rewrite.answer, title="Rewrite Answer", border_style="blue"))
+        console.print(Panel(Markdown(res.result_rewrite.answer), title="Rewrite Answer", border_style="blue"))
 
         console.print(f"\n[bold cyan]3. Enhanced RAG (Rewrite + Similarity Filter >= {args.threshold} + Cross-Encoder Rerank):[/bold cyan]")
         console.print(f"[dim]Rewritten Query: {res.result_enhanced.rewritten_query}[/dim]")
         console.print(f"[dim]Filter & Rerank: {res.initial_candidates} candidates -> {res.dropped_candidates} noise dropped ({res.noise_reduction_pct:.0f}%) -> {len(res.result_enhanced.sources)} final sources[/dim]")
         console.print(f"[dim]Latency: {res.result_enhanced.latency_seconds:.2f}s | Tokens: {res.result_enhanced.total_tokens}[/dim]")
-        console.print(Panel(res.result_enhanced.answer, title="Enhanced RAG Answer", border_style="green"))
+        console.print(Panel(Markdown(res.result_enhanced.answer), title="Enhanced RAG Answer", border_style="green"))
 
         console.print(f"\n[bold magenta]Вердикт:[/bold magenta] {res.verdict}\n")
     else:
@@ -1079,6 +1156,7 @@ def main():
     p_ask.add_argument("--api-key", default=None, help="OpenRouter API Key")
     p_ask.add_argument("--filter", default=None, help="Filter sources by substring")
     p_ask.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
+    p_ask.add_argument("--width", type=int, default=None, help="Explicit console width (default: auto-detected visible window width)")
 
     # 6. chat (NEW Day 22, updated Day 23)
     p_chat = subparsers.add_parser("chat", help="Interactive terminal chat with RAG toggle")
@@ -1093,6 +1171,7 @@ def main():
     p_chat.add_argument("--model", default=None)
     p_chat.add_argument("--api-key", default=None)
     p_chat.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
+    p_chat.add_argument("--width", type=int, default=None, help="Explicit console width (default: auto-detected visible window width)")
 
     # 7. eval (NEW Day 22)
     p_eval = subparsers.add_parser("eval", help="Run 10 benchmark questions comparing No-RAG vs With-RAG")
@@ -1117,6 +1196,7 @@ def main():
     p_cr.add_argument("--limit", type=int, default=None, help="Limit number of benchmark questions")
     p_cr.add_argument("--output", default=None, help="Custom output path for markdown report")
     p_cr.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
+    p_cr.add_argument("--width", type=int, default=None, help="Explicit console width (default: auto-detected visible window width)")
 
     # 9. benchmark-grounded (NEW Day 24)
     p_bg = subparsers.add_parser("benchmark-grounded", help="Run 10-question citations, quotes, and anti-hallucination benchmark (Day 24)")
@@ -1128,6 +1208,7 @@ def main():
     p_bg.add_argument("--limit", type=int, default=None, help="Limit number of benchmark questions")
     p_bg.add_argument("--delay", type=float, default=default_config.grounded_eval_delay, help="Delay in seconds between questions to prevent rate limits")
     p_bg.add_argument("--output", default=None, help="Custom output path for markdown report")
+    p_bg.add_argument("--width", type=int, default=None, help="Explicit console width (default: auto-detected visible window width)")
     # 10. chat-memory (NEW Day 25: RAG Chat with Task Memory)
     p_cm = subparsers.add_parser("chat-memory", help="Production-like RAG chat with Task Memory and session persistence (Day 25)")
     p_cm.add_argument("--session", default=None, help="Existing session ID to resume")
@@ -1146,6 +1227,7 @@ def main():
     p_cm.add_argument("--model", default=None)
     p_cm.add_argument("--api-key", default=None)
     p_cm.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
+    p_cm.add_argument("--width", type=int, default=None, help="Explicit console width (default: auto-detected visible window width)")
 
     args = parser.parse_args()
 
