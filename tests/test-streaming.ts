@@ -207,6 +207,90 @@ async function runStreamingTests() {
   assert.equal(cleanedState.trim(), 'Начинаю планирование  продолжим.', 'State check tags must be filtered');
   console.log('✅ Test T4 Passed: Technical tags and in-progress stream fragments correctly filtered in real time!');
 
+  // -------------------------------------------------------------------------
+  // Test T5: OpenRouter Reasoning / Thinking Streaming (delta.reasoning)
+  // -------------------------------------------------------------------------
+  console.log('\n--- Test T5: OpenRouter Reasoning / Thinking Streaming ---');
+  const agent5 = new Agent('stream-test-thinking-openrouter', {
+    provider: 'openrouter',
+    apiKey: 'test-key-r1',
+    model: 'deepseek/deepseek-r1',
+  });
+
+  const thinkingSseChunks = [
+    'data: {"choices":[{"delta":{"reasoning":"Сначала подумаем о структуре."}}]}\n\n',
+    'data: {"choices":[{"delta":{"reasoning":" Теперь сформулируем ответ."}}]}\n\n',
+    'data: {"choices":[{"delta":{"content":"Вот "}}]}\n\n',
+    'data: {"choices":[{"delta":{"content":"готовый ответ."}}]}\n\n',
+    'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}\n\n',
+    'data: [DONE]\n\n',
+  ];
+
+  (globalThis as any).fetch = async (url: string, init?: any) => {
+    if (url.includes('openrouter.ai')) {
+      // Check that include_reasoning is sent in body
+      const body = JSON.parse(init.body);
+      assert.equal(body.include_reasoning, true, 'OpenRouter request should have include_reasoning: true');
+      const stream = createMockStream(thinkingSseChunks, 5);
+      return new Response(stream, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      });
+    }
+    return originalFetch(url, init);
+  };
+
+  const response5 = await agent5.sendMessage('Запрос к DeepSeek R1');
+  const state5 = agent5.getState();
+  const lastMsg5 = state5.messages[state5.messages.length - 1];
+
+  assert.equal(response5, 'Вот готовый ответ.');
+  assert.equal(lastMsg5.content, 'Вот готовый ответ.');
+  assert.equal(lastMsg5.thinking, 'Сначала подумаем о структуре. Теперь сформулируем ответ.');
+  assert.equal(lastMsg5.isThinking, false);
+  assert.ok(typeof lastMsg5.thinkingDurationMs === 'number', 'thinkingDurationMs should be recorded');
+  console.log('✅ Test T5 Passed: OpenRouter delta.reasoning streamed and separated from final response content!');
+
+  // -------------------------------------------------------------------------
+  // Test T6: Ollama <think> Tag Streaming
+  // -------------------------------------------------------------------------
+  console.log('\n--- Test T6: Ollama <think> Tag Streaming ---');
+  const agent6 = new Agent('stream-test-thinking-ollama', {
+    provider: 'ollama',
+    ollamaUrl: 'http://localhost:11434',
+    model: 'deepseek-r1:latest',
+  });
+
+  const ollamaThinkChunks = [
+    JSON.stringify({ message: { role: 'assistant', content: '<think>\nАнализирую' }, done: false }) + '\n',
+    JSON.stringify({ message: { role: 'assistant', content: ' проблему глубоко...\n</think>' }, done: false }) + '\n',
+    JSON.stringify({ message: { role: 'assistant', content: 'Финальный ' }, done: false }) + '\n',
+    JSON.stringify({ message: { role: 'assistant', content: 'результат.' }, done: true, prompt_eval_count: 5, eval_count: 10 }) + '\n',
+  ];
+
+  (globalThis as any).fetch = async (url: string, init?: any) => {
+    if (url.includes('/api/chat')) {
+      const stream = createMockStream(ollamaThinkChunks, 5);
+      return new Response(stream, {
+        status: 200,
+        headers: { 'Content-Type': 'application/x-ndjson' },
+      });
+    }
+    return originalFetch(url, init);
+  };
+
+  const response6 = await agent6.sendMessage('Вопрос с think-тегами');
+  const state6 = agent6.getState();
+  const lastMsg6 = state6.messages[state6.messages.length - 1];
+
+  assert.equal(response6, 'Финальный результат.');
+  assert.equal(lastMsg6.content, 'Финальный результат.');
+  assert.ok(lastMsg6.thinking?.includes('Анализирую проблему глубоко'), 'Thinking text must contain think tag body');
+  assert.equal(lastMsg6.content.includes('<think>'), false, 'Content must NOT contain think tags');
+  assert.equal(lastMsg6.isThinking, false);
+  assert.ok(typeof lastMsg6.thinkingDurationMs === 'number');
+  console.log('✅ Test T6 Passed: Ollama <think> tags streamed into thinking field and cleanly omitted from content!');
+
   // Clean up global mock
   (globalThis as any).fetch = originalFetch;
 

@@ -6469,3 +6469,120 @@ input:checked + .slider:before {
   color: #0369a1;
 }
 
+/* ==========================================================================
+   Thinking / Reasoning Card Component
+   ========================================================================== */
+
+.thinking-card {
+  border-radius: 8px;
+  margin-bottom: 12px;
+  background: rgba(99, 102, 241, 0.05);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  border-left: 3px solid var(--accent-primary, #6366f1);
+  overflow: hidden;
+  transition: all 0.2s ease;
+}
+
+.thinking-card.thinking-active {
+  background: rgba(99, 102, 241, 0.08);
+  border-color: rgba(99, 102, 241, 0.35);
+  box-shadow: 0 0 12px rgba(99, 102, 241, 0.15);
+}
+
+.thinking-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease;
+}
+
+.thinking-header:hover {
+  background: rgba(99, 102, 241, 0.1);
+}
+
+.thinking-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.thinking-icon {
+  color: var(--accent-primary, #6366f1);
+  flex-shrink: 0;
+}
+
+.thinking-icon.pulsing {
+  animation: pulse-brain 1.5s infinite ease-in-out;
+}
+
+@keyframes pulse-brain {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 1;
+    color: #818cf8;
+  }
+}
+
+.thinking-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary, #94a3b8);
+  letter-spacing: 0.3px;
+}
+
+.thinking-timer-badge {
+  font-size: 11px;
+  font-family: monospace;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: rgba(99, 102, 241, 0.15);
+  color: var(--accent-primary, #818cf8);
+  font-weight: 500;
+}
+
+.thinking-toggle-btn {
+  color: var(--text-muted, #64748b);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.thinking-body {
+  padding: 10px 14px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary, #cbd5e1);
+  border-top: 1px solid rgba(99, 102, 241, 0.15);
+  background: rgba(0, 0, 0, 0.15);
+  font-style: italic;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.thinking-body p {
+  margin: 0 0 8px 0;
+}
+
+.thinking-body p:last-child {
+  margin-bottom: 0;
+}
+
+[data-theme='light'] .thinking-card {
+  background: rgba(99, 102, 241, 0.04);
+  border-color: rgba(99, 102, 241, 0.25);
+}
+
+[data-theme='light'] .thinking-body {
+  background: rgba(0, 0, 0, 0.03);
+  color: #475569;
+}
+
+

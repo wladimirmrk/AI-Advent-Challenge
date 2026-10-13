@@ -15,6 +15,7 @@ import {
   ChevronDown,
   ChevronRight,
   Wrench,
+  Brain,
 } from 'lucide-react';
 
 interface InvariantCheckResult {
@@ -31,6 +32,80 @@ interface StateCheckData {
   reason?: string;
   raw: string;
 }
+
+const ThinkingCard: React.FC<{
+  thinking: string;
+  isThinking?: boolean;
+  durationMs?: number;
+}> = ({ thinking, isThinking, durationMs }) => {
+  // Auto-expanded while thinking is active, auto-collapsed once finished; user can freely toggle anytime.
+  const [isOpen, setIsOpen] = useState(Boolean(isThinking));
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  // Live timer while isThinking is active
+  useEffect(() => {
+    if (!isThinking) return;
+    setIsOpen(true);
+    const startTime = Date.now();
+    const interval = setInterval(() => {
+      setElapsedSeconds(Math.max(0, (Date.now() - startTime) / 1000));
+    }, 100);
+    return () => clearInterval(interval);
+  }, [isThinking]);
+
+  // When thinking finishes, automatically collapse the card
+  const prevThinkingRef = useRef(isThinking);
+  useEffect(() => {
+    if (prevThinkingRef.current && !isThinking) {
+      setIsOpen(false);
+    }
+    prevThinkingRef.current = isThinking;
+  }, [isThinking]);
+
+  const displayTime = isThinking
+    ? `${elapsedSeconds.toFixed(1)} с`
+    : durationMs
+    ? `${(durationMs / 1000).toFixed(1)} с`
+    : null;
+
+  return (
+    <div className={`thinking-card ${isThinking ? 'thinking-active' : 'thinking-done'}`}>
+      <div
+        className="thinking-header"
+        onClick={() => setIsOpen(!isOpen)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            setIsOpen(!isOpen);
+          }
+        }}
+      >
+        <div className="thinking-title-row">
+          <Brain size={16} className={`thinking-icon ${isThinking ? 'pulsing' : ''}`} />
+          <span className="thinking-title">
+            {isThinking ? 'Размышления...' : 'Ход мыслей'}
+          </span>
+          {displayTime && (
+            <span className="thinking-timer-badge">
+              {displayTime}
+            </span>
+          )}
+        </div>
+        <div className="thinking-toggle-btn">
+          {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </div>
+      </div>
+
+      {isOpen && (
+        <div className="thinking-body">
+          <Markdown content={thinking} />
+          {isThinking && <span className="streaming-cursor" aria-hidden="true" />}
+        </div>
+      )}
+    </div>
+  );
+};
 
 function parseStateCheck(content: string): {
   stateCheck: StateCheckData | null;
@@ -421,7 +496,7 @@ export const MessageList: React.FC<MessageListProps> = ({
 
     const lastChanged = last !== undefined && last.id !== prevLastId;
     const lastIsUser = last?.role === 'user';
-    const lastIsStreaming = last?.isStreaming;
+    const lastIsStreaming = last?.isStreaming || last?.isThinking;
     if (
       (lastChanged && (isNearBottomRef.current || lastIsUser)) ||
       (lastIsStreaming && isNearBottomRef.current) ||
@@ -576,24 +651,33 @@ export const MessageList: React.FC<MessageListProps> = ({
 
                           return (
                             <>
+                              {msg.thinking && (
+                                <ThinkingCard
+                                  thinking={msg.thinking}
+                                  isThinking={msg.isThinking}
+                                  durationMs={msg.thinkingDurationMs}
+                                />
+                              )}
                               {msg.mcpCalls && msg.mcpCalls.length > 0 && (
                                 <McpToolCallCard calls={msg.mcpCalls} />
                               )}
                               {stateCheck && <StateCheckCard check={stateCheck} />}
                               {check && <InvariantCheckCard check={check} />}
-                              <div className="message-content">
-                                <Markdown
-                                  content={
-                                    displayContent ||
-                                    (msg.mcpCalls && msg.mcpCalls.length > 0
-                                      ? '✅ Все операции успешно выполнены через внешние MCP-серверы.'
-                                      : msg.content)
-                                  }
-                                />
-                                {msg.isStreaming && (
-                                  <span className="streaming-cursor" aria-hidden="true" />
-                                )}
-                              </div>
+                              {(displayContent || (!msg.thinking && !msg.mcpCalls)) && (
+                                <div className="message-content">
+                                  <Markdown
+                                    content={
+                                      displayContent ||
+                                      (msg.mcpCalls && msg.mcpCalls.length > 0
+                                        ? '✅ Все операции успешно выполнены через внешние MCP-серверы.'
+                                        : msg.content)
+                                    }
+                                  />
+                                  {msg.isStreaming && !msg.isThinking && (
+                                    <span className="streaming-cursor" aria-hidden="true" />
+                                  )}
+                                </div>
+                              )}
                             </>
                           );
                         }
@@ -625,7 +709,7 @@ export const MessageList: React.FC<MessageListProps> = ({
           )}
 
           {/* Loading indicator */}
-          {isLoading && !messages.some((m) => m.isStreaming && m.content) && (
+          {isLoading && !messages.some((m) => (m.isStreaming || m.isThinking) && (m.content || m.thinking)) && (
             <div className="message-row assistant-row loading-row">
               <div className="avatar-col">
                 <div className="avatar assistant thinking">

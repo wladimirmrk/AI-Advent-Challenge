@@ -310,8 +310,9 @@ export class Agent {
 
     // Mark active streaming message as finished
     const lastMsg = this.messages[this.messages.length - 1];
-    if (lastMsg && lastMsg.role === 'assistant' && lastMsg.isStreaming) {
-      lastMsg.isStreaming = false;
+    if (lastMsg && lastMsg.role === 'assistant') {
+      if (lastMsg.isStreaming) lastMsg.isStreaming = false;
+      if (lastMsg.isThinking) lastMsg.isThinking = false;
       saveMessages(this.messages, this.chatId);
     }
     this.notify();
@@ -1404,6 +1405,7 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
   public cleanModelRawToolTokens(content: string): string {
     if (!content) return '';
     return content
+      .replace(/<think>[\s\S]*?<\/think>/gi, '')
       .replace(/<\|tool_call_start\|>[\s\S]*?<\|tool_call_end\|>/gi, '')
       .replace(/<mcp_call\s+name=["'][^"']+["']\s*>[\s\S]*?<\/mcp_call>/gi, '')
       .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
@@ -1411,11 +1413,12 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
   }
 
   /**
-   * Filters technical tool calling tokens, state checks and unclosed tags on the fly during streaming.
+   * Filters technical tool calling tokens, state checks, think blocks and unclosed tags on the fly during streaming.
    */
   public cleanLiveStreamingText(content: string): string {
     if (!content) return '';
     let cleaned = content
+      .replace(/<think>[\s\S]*?<\/think>/gi, '')
       .replace(/<\|tool_call_start\|>[\s\S]*?<\|tool_call_end\|>/gi, '')
       .replace(/<mcp_call\s+name=["'][^"']+["']\s*>[\s\S]*?<\/mcp_call>/gi, '')
       .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
@@ -1424,6 +1427,7 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
 
     // Strip in-progress unclosed technical tags at the stream tail
     cleaned = cleaned
+      .replace(/<think[\s\S]*$/gi, '')
       .replace(/<\|tool_call_start\|>[\s\S]*$/gi, '')
       .replace(/<mcp_call[\s\S]*$/gi, '')
       .replace(/<tool_call[\s\S]*$/gi, '')
@@ -2633,6 +2637,7 @@ Do NOT use markdown code fences. Pure JSON only.`,
             messages,
             stream: true,
             stream_options: { include_usage: true },
+            include_reasoning: true,
           }),
           signal,
         });
@@ -2662,10 +2667,26 @@ Do NOT use markdown code fences. Pure JSON only.`,
         if (!response.body) {
           if (typeof response.json === 'function') {
             const data = await response.json();
-            const assistantContent =
-              data.choices?.[0]?.message?.content ||
+            const message = data.choices?.[0]?.message;
+            let reasoning =
+              message?.reasoning ||
+              message?.reasoning_content ||
+              message?.thought ||
+              '';
+            let assistantContent =
+              message?.content ||
               data.choices?.[0]?.delta?.content ||
               '';
+            if (!reasoning && assistantContent.includes('<think>')) {
+              const match = assistantContent.match(/<think>([\s\S]*?)<\/think>/);
+              if (match) {
+                reasoning = match[1];
+                assistantContent = assistantContent.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+              }
+            }
+            if (reasoning && onChunk) {
+              onChunk('', reasoning);
+            }
             if (assistantContent && onChunk) {
               onChunk(assistantContent);
             }
@@ -2687,8 +2708,44 @@ Do NOT use markdown code fences. Pure JSON only.`,
         const reader = response.body.getReader();
         const decoder = new TextDecoder('utf-8');
         let assistantContent = '';
+        let insideThink = false;
         let usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null = null;
         let buffer = '';
+
+        const processContentChunk = (contentChunk: string) => {
+          let remaining = contentChunk;
+          while (remaining.length > 0) {
+            if (!insideThink) {
+              const thinkStartIdx = remaining.indexOf('<think>');
+              if (thinkStartIdx >= 0) {
+                const before = remaining.slice(0, thinkStartIdx);
+                if (before) {
+                  assistantContent += before;
+                  onChunk(before);
+                }
+                insideThink = true;
+                remaining = remaining.slice(thinkStartIdx + 7);
+              } else {
+                assistantContent += remaining;
+                onChunk(remaining);
+                remaining = '';
+              }
+            } else {
+              const thinkEndIdx = remaining.indexOf('</think>');
+              if (thinkEndIdx >= 0) {
+                const thinkText = remaining.slice(0, thinkEndIdx);
+                if (thinkText) {
+                  onChunk('', thinkText);
+                }
+                insideThink = false;
+                remaining = remaining.slice(thinkEndIdx + 8);
+              } else {
+                onChunk('', remaining);
+                remaining = '';
+              }
+            }
+          }
+        };
 
         try {
           while (true) {
@@ -2706,10 +2763,16 @@ Do NOT use markdown code fences. Pure JSON only.`,
               if (dataStr === '[DONE]') continue;
               try {
                 const parsed = JSON.parse(dataStr);
-                if (parsed.choices && parsed.choices[0]?.delta?.content) {
-                  const chunk = parsed.choices[0].delta.content;
-                  assistantContent += chunk;
-                  onChunk(chunk);
+                const delta = parsed.choices?.[0]?.delta;
+                const reasoning =
+                  delta?.reasoning ||
+                  delta?.reasoning_content ||
+                  delta?.thought;
+                if (reasoning) {
+                  onChunk('', reasoning);
+                }
+                if (delta?.content) {
+                  processContentChunk(delta.content);
                 }
                 if (parsed.usage) {
                   usage = parsed.usage;
@@ -2727,10 +2790,16 @@ Do NOT use markdown code fences. Pure JSON only.`,
               if (dataStr !== '[DONE]') {
                 try {
                   const parsed = JSON.parse(dataStr);
-                  if (parsed.choices && parsed.choices[0]?.delta?.content) {
-                    const chunk = parsed.choices[0].delta.content;
-                    assistantContent += chunk;
-                    onChunk(chunk);
+                  const delta = parsed.choices?.[0]?.delta;
+                  const reasoning =
+                    delta?.reasoning ||
+                    delta?.reasoning_content ||
+                    delta?.thought;
+                  if (reasoning) {
+                    onChunk('', reasoning);
+                  }
+                  if (delta?.content) {
+                    processContentChunk(delta.content);
                   }
                   if (parsed.usage) {
                     usage = parsed.usage;
@@ -3056,19 +3125,45 @@ Do NOT use markdown code fences. Pure JSON only.`,
       isStreaming: true,
     };
     let assistantMessageAdded = false;
+    let thinkingStartTime: number | null = null;
 
     try {
       // 6. Call LLM with streaming chunk callback
       let initialAccumulated = '';
-      const onInitialChunk = (chunk: string) => {
-        initialAccumulated += chunk;
-        const display = this.cleanLiveStreamingText(initialAccumulated);
-        assistantMessage.content = display;
-        if (!assistantMessageAdded && display.trim().length > 0) {
-          this.messages.push(assistantMessage);
-          assistantMessageAdded = true;
+      let thinkingAccumulated = '';
+
+      const onInitialChunk = (chunk: string, thinkingChunk?: string) => {
+        if (thinkingChunk) {
+          if (!thinkingStartTime) {
+            thinkingStartTime = Date.now();
+            assistantMessage.isThinking = true;
+          }
+          thinkingAccumulated += thinkingChunk;
+          assistantMessage.thinking = thinkingAccumulated;
+          if (!assistantMessageAdded) {
+            this.messages.push(assistantMessage);
+            assistantMessageAdded = true;
+          }
+          this.notify();
+          return;
         }
-        this.notify();
+
+        if (chunk) {
+          if (assistantMessage.isThinking) {
+            assistantMessage.isThinking = false;
+            if (thinkingStartTime && !assistantMessage.thinkingDurationMs) {
+              assistantMessage.thinkingDurationMs = Date.now() - thinkingStartTime;
+            }
+          }
+          initialAccumulated += chunk;
+          const display = this.cleanLiveStreamingText(initialAccumulated);
+          assistantMessage.content = display;
+          if (!assistantMessageAdded && display.trim().length > 0) {
+            this.messages.push(assistantMessage);
+            assistantMessageAdded = true;
+          }
+          this.notify();
+        }
       };
 
       const res = await this.callLLM(
@@ -3140,15 +3235,29 @@ Do NOT use markdown code fences. Pure JSON only.`,
 
         try {
           let synthAccumulated = '';
-          const onSynthesisChunk = (chunk: string) => {
-            synthAccumulated += chunk;
-            const display = this.cleanLiveStreamingText(synthAccumulated);
-            assistantMessage.content = display;
-            if (!assistantMessageAdded && display.trim().length > 0) {
-              this.messages.push(assistantMessage);
-              assistantMessageAdded = true;
+          const onSynthesisChunk = (chunk: string, thinkingChunk?: string) => {
+            if (thinkingChunk) {
+              thinkingAccumulated += thinkingChunk;
+              assistantMessage.thinking = thinkingAccumulated;
+              this.notify();
+              return;
             }
-            this.notify();
+            if (chunk) {
+              if (assistantMessage.isThinking) {
+                assistantMessage.isThinking = false;
+                if (thinkingStartTime && !assistantMessage.thinkingDurationMs) {
+                  assistantMessage.thinkingDurationMs = Date.now() - thinkingStartTime;
+                }
+              }
+              synthAccumulated += chunk;
+              const display = this.cleanLiveStreamingText(synthAccumulated);
+              assistantMessage.content = display;
+              if (!assistantMessageAdded && display.trim().length > 0) {
+                this.messages.push(assistantMessage);
+                assistantMessageAdded = true;
+              }
+              this.notify();
+            }
           };
 
           const synthesisRes = await this.callLLM(
@@ -3221,6 +3330,10 @@ Do NOT use markdown code fences. Pure JSON only.`,
       assistantMessage.content = finalContent;
       assistantMessage.tokens = totalCompletionTokens;
       assistantMessage.isStreaming = false;
+      assistantMessage.isThinking = false;
+      if (thinkingStartTime && !assistantMessage.thinkingDurationMs) {
+        assistantMessage.thinkingDurationMs = Date.now() - thinkingStartTime;
+      }
       if (executedCalls.length > 0) {
         assistantMessage.mcpCalls = executedCalls;
       }
@@ -3289,7 +3402,11 @@ Do NOT use markdown code fences. Pure JSON only.`,
 
       if (isAbort) {
         assistantMessage.isStreaming = false;
-        if (!assistantMessageAdded && assistantMessage.content.trim()) {
+        assistantMessage.isThinking = false;
+        if (thinkingStartTime && !assistantMessage.thinkingDurationMs) {
+          assistantMessage.thinkingDurationMs = Date.now() - thinkingStartTime;
+        }
+        if (!assistantMessageAdded && (assistantMessage.content.trim() || assistantMessage.thinking?.trim())) {
           this.messages.push(assistantMessage);
           assistantMessageAdded = true;
         }
@@ -3326,6 +3443,7 @@ Do NOT use markdown code fences. Pure JSON only.`,
       this.isStreaming = false;
       this.isLoading = false;
       assistantMessage.isStreaming = false;
+      assistantMessage.isThinking = false;
     }
   }
 }

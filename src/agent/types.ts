@@ -14,7 +14,7 @@ export interface McpCallMeta {
   latencyMs?: number;
 }
 
-export type StreamChunkCallback = (chunk: string) => void;
+export type StreamChunkCallback = (chunk: string, thinkingChunk?: string) => void;
 
 export interface Message {
   id: string;
@@ -24,6 +24,9 @@ export interface Message {
   tokens?: number;
   mcpCalls?: McpCallMeta[];
   isStreaming?: boolean;
+  thinking?: string;
+  isThinking?: boolean;
+  thinkingDurationMs?: number;
 }
 
 export type AgentMode = 'production' | 'demo';

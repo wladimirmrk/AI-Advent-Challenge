@@ -260,14 +260,21 @@ export async function sendOllamaChatStream(
   if (!res.body) {
     if (typeof res.json === 'function') {
       const data = await res.json();
-      const content = data.message?.content ?? '';
-      if (content && onChunk) {
-        onChunk(content);
+      let rawContent = data.message?.content ?? '';
+      let thinking = data.message?.thinking ?? '';
+      if (!thinking && rawContent.includes('<think>')) {
+        const match = rawContent.match(/<think>([\s\S]*?)<\/think>/);
+        if (match) {
+          thinking = match[1];
+          rawContent = rawContent.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+        }
       }
+      if (thinking && onChunk) onChunk('', thinking);
+      if (rawContent && onChunk) onChunk(rawContent);
       const promptTokens = typeof data.prompt_eval_count === 'number' ? data.prompt_eval_count : 0;
       const responseTokens = typeof data.eval_count === 'number' ? data.eval_count : 0;
       return {
-        content,
+        content: rawContent,
         promptTokens,
         responseTokens,
         totalTokens: promptTokens + responseTokens,
@@ -279,9 +286,48 @@ export async function sendOllamaChatStream(
   const reader = res.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let accumulatedContent = '';
+  let accumulatedThinking = '';
+  let insideThink = false;
   let promptTokens = 0;
   let responseTokens = 0;
   let buffer = '';
+
+  const processChunkText = (text: string) => {
+    let remaining = text;
+    while (remaining.length > 0) {
+      if (!insideThink) {
+        const thinkStartIdx = remaining.indexOf('<think>');
+        if (thinkStartIdx >= 0) {
+          const before = remaining.slice(0, thinkStartIdx);
+          if (before) {
+            accumulatedContent += before;
+            onChunk?.(before);
+          }
+          insideThink = true;
+          remaining = remaining.slice(thinkStartIdx + 7);
+        } else {
+          accumulatedContent += remaining;
+          onChunk?.(remaining);
+          remaining = '';
+        }
+      } else {
+        const thinkEndIdx = remaining.indexOf('</think>');
+        if (thinkEndIdx >= 0) {
+          const thinkText = remaining.slice(0, thinkEndIdx);
+          if (thinkText) {
+            accumulatedThinking += thinkText;
+            onChunk?.('', thinkText);
+          }
+          insideThink = false;
+          remaining = remaining.slice(thinkEndIdx + 8);
+        } else {
+          accumulatedThinking += remaining;
+          onChunk?.('', remaining);
+          remaining = '';
+        }
+      }
+    }
+  };
 
   try {
     while (true) {
@@ -297,10 +343,13 @@ export async function sendOllamaChatStream(
         if (!trimmed) continue;
         try {
           const parsed = JSON.parse(trimmed);
+          if (parsed.message?.thinking) {
+            const thinkChunk = parsed.message.thinking;
+            accumulatedThinking += thinkChunk;
+            onChunk?.('', thinkChunk);
+          }
           if (parsed.message?.content) {
-            const chunk = parsed.message.content;
-            accumulatedContent += chunk;
-            onChunk?.(chunk);
+            processChunkText(parsed.message.content);
           }
           if (typeof parsed.prompt_eval_count === 'number') {
             promptTokens = parsed.prompt_eval_count;
@@ -317,10 +366,13 @@ export async function sendOllamaChatStream(
     if (buffer.trim()) {
       try {
         const parsed = JSON.parse(buffer.trim());
+        if (parsed.message?.thinking) {
+          const thinkChunk = parsed.message.thinking;
+          accumulatedThinking += thinkChunk;
+          onChunk?.('', thinkChunk);
+        }
         if (parsed.message?.content) {
-          const chunk = parsed.message.content;
-          accumulatedContent += chunk;
-          onChunk?.(chunk);
+          processChunkText(parsed.message.content);
         }
         if (typeof parsed.prompt_eval_count === 'number') {
           promptTokens = parsed.prompt_eval_count;
