@@ -16,6 +16,7 @@ import {
   ChevronRight,
   Wrench,
   Brain,
+  RotateCcw,
 } from 'lucide-react';
 
 interface InvariantCheckResult {
@@ -434,6 +435,7 @@ const NEAR_BOTTOM_THRESHOLD = 120; // px from the bottom that counts as "viewing
 interface MessageListProps {
   messages: Message[];
   isLoading: boolean;
+  isStreaming?: boolean;
   error: string | null;
   lastTrimInfo: TrimInfo | null;
   strategy?: ContextStrategy;
@@ -441,11 +443,13 @@ interface MessageListProps {
   onClearError: () => void;
   onSuggestionClick?: (prompt: string) => void;
   onBranchFromMessage?: (messageId: string) => void;
+  onUndoLastTurn?: () => void;
 }
 
 export const MessageList: React.FC<MessageListProps> = ({
   messages,
   isLoading,
+  isStreaming = false,
   error,
   lastTrimInfo,
   strategy = 'sliding_window',
@@ -453,6 +457,7 @@ export const MessageList: React.FC<MessageListProps> = ({
   onClearError,
   onSuggestionClick,
   onBranchFromMessage,
+  onUndoLastTurn,
 }) => {
   const listRef = useRef<HTMLDivElement>(null);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -582,6 +587,7 @@ export const MessageList: React.FC<MessageListProps> = ({
             return visibleMessages.map((msg, i) => {
               const idx = firstVisibleIndex + i;
               const isOutsideContext = cutoffIndex > 0 && idx < cutoffIndex;
+              const isLastMessage = idx === messages.length - 1;
 
               return (
                 <React.Fragment key={msg.id}>
@@ -687,6 +693,21 @@ export const MessageList: React.FC<MessageListProps> = ({
                           </div>
                         );
                       })()}
+
+                      {isLastMessage && onUndoLastTurn && (
+                        <div className="message-action-bar">
+                          <button
+                            type="button"
+                            className="msg-undo-btn"
+                            onClick={onUndoLastTurn}
+                            disabled={isLoading || isStreaming}
+                            title="Отменить последний шаг диалога и вернуть текст запроса в поле ввода"
+                          >
+                            <RotateCcw size={13} />
+                            <span>Отменить и вернуть текст</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </React.Fragment>

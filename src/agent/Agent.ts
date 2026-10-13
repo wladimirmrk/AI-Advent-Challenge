@@ -2144,6 +2144,62 @@ Do NOT use markdown code fences. Pure JSON only.`,
     this.notify();
   }
 
+  /**
+   * Undoes the last conversational turn.
+   * If the last message is an assistant response: removes both the assistant response
+   * and the user message that prompted it, returning the user's prompt text.
+   * If the last message is a lone user message: removes it and returns its prompt text.
+   * Returns null if there are no messages to undo.
+   */
+  public undoLastTurn(): string | null {
+    if (this.messages.length === 0) {
+      return null;
+    }
+
+    const lastMsg = this.messages[this.messages.length - 1];
+    let userPromptText: string | null = null;
+
+    if (lastMsg.role === 'assistant') {
+      // Find preceding user message
+      let userIdx = -1;
+      for (let i = this.messages.length - 2; i >= 0; i--) {
+        if (this.messages[i].role === 'user') {
+          userIdx = i;
+          break;
+        }
+      }
+
+      if (userIdx !== -1) {
+        userPromptText = this.messages[userIdx].content;
+        const userMsgId = this.messages[userIdx].id;
+        const assistantMsgId = lastMsg.id;
+        this.messages = this.messages.filter((m) => m.id !== userMsgId && m.id !== assistantMsgId);
+      } else {
+        this.messages.pop();
+      }
+    } else if (lastMsg.role === 'user') {
+      userPromptText = lastMsg.content;
+      this.messages.pop();
+    } else {
+      this.messages.pop();
+    }
+
+    // Persist messages
+    saveMessages(this.messages, this.chatId);
+
+    // Sync active branch
+    const branchIdx = this.branches.findIndex((b) => b.id === this.activeBranchId);
+    if (branchIdx >= 0) {
+      this.branches[branchIdx].messages = [...this.messages];
+      saveBranches(this.branches, this.chatId);
+    }
+
+    this.recalculateCurrentStats();
+    this.notify();
+
+    return userPromptText;
+  }
+
   // ==========================================
   // Token Calculation Helpers & Memory Formatting
   // ==========================================

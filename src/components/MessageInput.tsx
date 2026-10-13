@@ -9,6 +9,7 @@ interface MessageInputProps {
   onOpenSettings: () => void;
   onStop?: () => void;
   isStreaming?: boolean;
+  restoredText?: { text: string; timestamp: number } | null;
 }
 
 export const MessageInput: React.FC<MessageInputProps> = ({
@@ -18,6 +19,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   onOpenSettings,
   onStop,
   isStreaming,
+  restoredText,
 }) => {
   const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -29,6 +31,18 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
   }, [input]);
+
+  // Handle restored text (e.g. from undoing the last turn)
+  useEffect(() => {
+    if (restoredText) {
+      setInput(restoredText.text);
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+        const len = restoredText.text.length;
+        textareaRef.current.setSelectionRange(len, len);
+      }
+    }
+  }, [restoredText]);
 
   const liveTokenEstimate = input.trim() ? estimateTokens(input.trim()) : 0;
 

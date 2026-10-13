@@ -30,6 +30,7 @@ export const Chat: React.FC<ChatProps> = ({
   const [isFactsDrawerOpen, setIsFactsDrawerOpen] = useState(false);
   const [isMemoryHubOpen, setIsMemoryHubOpen] = useState(false);
   const [memoryHubTab, setMemoryHubTab] = useState<'working' | 'short_term' | 'long_term' | 'invariants'>('invariants');
+  const [restoredText, setRestoredText] = useState<{ text: string; timestamp: number } | null>(null);
 
   // Subscribe to Agent state changes (Agent -> React state -> UI)
   useEffect(() => {
@@ -59,6 +60,13 @@ export const Chat: React.FC<ChatProps> = ({
 
   const handleSendMessage = async (text: string) => {
     await agent.sendMessage(text);
+  };
+
+  const handleUndoLastTurn = () => {
+    const text = agent.undoLastTurn();
+    if (text !== null) {
+      setRestoredText({ text, timestamp: Date.now() });
+    }
   };
 
   const handleClearHistory = () => {
@@ -302,6 +310,7 @@ export const Chat: React.FC<ChatProps> = ({
             key={agentState.activeBranchId}
             messages={agentState.messages}
             isLoading={agentState.isLoading}
+            isStreaming={agentState.isStreaming}
             error={agentState.error}
             lastTrimInfo={agentState.lastTrimInfo}
             strategy={agentState.config.strategy}
@@ -309,6 +318,7 @@ export const Chat: React.FC<ChatProps> = ({
             onClearError={() => agent.clearError()}
             onSuggestionClick={(prompt) => handleSendMessage(prompt)}
             onBranchFromMessage={handleBranchFromMessage}
+            onUndoLastTurn={handleUndoLastTurn}
           />
 
           <StickyFactsPanel
@@ -356,6 +366,7 @@ export const Chat: React.FC<ChatProps> = ({
           onOpenSettings={() => setIsSettingsOpen(true)}
           onStop={() => agent.stopGeneration()}
           isStreaming={agentState.isStreaming || agentState.isLoading}
+          restoredText={restoredText}
         />
       </footer>
 
