@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Key, CornerDownLeft } from 'lucide-react';
+import { Send, Key, CornerDownLeft, Square } from 'lucide-react';
 import { estimateTokens } from '../agent/tokenizer';
 
 interface MessageInputProps {
@@ -7,6 +7,8 @@ interface MessageInputProps {
   disabled: boolean;
   hasApiKey: boolean;
   onOpenSettings: () => void;
+  onStop?: () => void;
+  isStreaming?: boolean;
 }
 
 export const MessageInput: React.FC<MessageInputProps> = ({
@@ -14,6 +16,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   disabled,
   hasApiKey,
   onOpenSettings,
+  onStop,
+  isStreaming,
 }) => {
   const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -95,14 +99,25 @@ export const MessageInput: React.FC<MessageInputProps> = ({
               )}
             </div>
 
-            <button
-              type="submit"
-              disabled={disabled || !input.trim() || !hasApiKey}
-              className="send-button"
-              title={hasApiKey ? 'Send message' : 'Configure API key first'}
-            >
-              <Send size={16} />
-            </button>
+            {isStreaming && onStop ? (
+              <button
+                type="button"
+                onClick={onStop}
+                className="stop-button"
+                title="Остановить генерацию"
+              >
+                <Square size={14} className="stop-icon" />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={disabled || !input.trim() || !hasApiKey}
+                className="send-button"
+                title={hasApiKey ? 'Send message' : 'Configure API key first'}
+              >
+                <Send size={16} />
+              </button>
+            )}
           </div>
         </div>
       </form>

@@ -378,7 +378,7 @@ async function runTests() {
     }
     if (url === 'http://localhost:11434/api/chat') {
       const body = JSON.parse(options.body);
-      assert.equal(body.stream, false, 'Ollama chat request must specify stream: false');
+      assert.ok(body.stream === true || body.stream === false, 'Ollama chat request stream property should be boolean');
       assert(body.messages.length >= 2, 'Must include system prompt and user message');
       // Assert num_ctx is NOT sent in options per design agreement
       assert(!body.options?.num_ctx, 'num_ctx must NOT be passed in chat options per agreed design');

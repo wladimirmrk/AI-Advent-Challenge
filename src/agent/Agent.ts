@@ -43,6 +43,7 @@ import {
   TransitionResult,
   StateCheckResult,
   McpCallMeta,
+  StreamChunkCallback,
 } from './types';
 import { loadMcpServers } from './mcp/storage';
 import { McpRouter } from './mcp/McpRouter';
@@ -95,7 +96,7 @@ import {
   calculateEstimatedCost,
   resolveContextLimit,
 } from './tokenizer';
-import { sendOllamaChat, fetchOllamaModelInfo } from './ollama';
+import { sendOllamaChat, sendOllamaChatStream, fetchOllamaModelInfo } from './ollama';
 
 export class Agent {
   private chatId: string;
@@ -113,6 +114,8 @@ export class Agent {
   private tokenStats: TokenStats;
   private customModels: CustomModel[] = [];
   private isLoading = false;
+  private isStreaming = false;
+  private activeAbortController: AbortController | null = null;
   private isSummarizing = false;
   private isExtractingFacts = false;
   private error: string | null = null;
@@ -254,6 +257,7 @@ export class Agent {
       config: { ...this.config },
       customModels: [...this.customModels],
       isLoading: this.isLoading,
+      isStreaming: this.isStreaming,
       isSummarizing: this.isSummarizing,
       isExtractingFacts: this.isExtractingFacts,
       error: this.error,
@@ -287,6 +291,30 @@ export class Agent {
       memoryTokensBreakdown: this.getMemoryTokensBreakdown(),
       isAutoRunning: this.isAutoRunning,
     };
+  }
+
+  /**
+   * Aborts active LLM generation (streaming or batch) and finalizes current state.
+   */
+  public stopGeneration(): void {
+    if (this.activeAbortController) {
+      try {
+        this.activeAbortController.abort();
+      } catch (e) {
+        console.warn('[Agent] Error aborting request:', e);
+      }
+      this.activeAbortController = null;
+    }
+    this.isStreaming = false;
+    this.isLoading = false;
+
+    // Mark active streaming message as finished
+    const lastMsg = this.messages[this.messages.length - 1];
+    if (lastMsg && lastMsg.role === 'assistant' && lastMsg.isStreaming) {
+      lastMsg.isStreaming = false;
+      saveMessages(this.messages, this.chatId);
+    }
+    this.notify();
   }
 
   // ==========================================
@@ -1380,6 +1408,29 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
       .replace(/<mcp_call\s+name=["'][^"']+["']\s*>[\s\S]*?<\/mcp_call>/gi, '')
       .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
       .trim();
+  }
+
+  /**
+   * Filters technical tool calling tokens, state checks and unclosed tags on the fly during streaming.
+   */
+  public cleanLiveStreamingText(content: string): string {
+    if (!content) return '';
+    let cleaned = content
+      .replace(/<\|tool_call_start\|>[\s\S]*?<\|tool_call_end\|>/gi, '')
+      .replace(/<mcp_call\s+name=["'][^"']+["']\s*>[\s\S]*?<\/mcp_call>/gi, '')
+      .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
+      .replace(/<state_check>[\s\S]*?<\/state_check>/gi, '')
+      .replace(/<task_update[\s\S]*?<\/task_update>/gi, '');
+
+    // Strip in-progress unclosed technical tags at the stream tail
+    cleaned = cleaned
+      .replace(/<\|tool_call_start\|>[\s\S]*$/gi, '')
+      .replace(/<mcp_call[\s\S]*$/gi, '')
+      .replace(/<tool_call[\s\S]*$/gi, '')
+      .replace(/<state_check[\s\S]*$/gi, '')
+      .replace(/<task_update[\s\S]*$/gi, '');
+
+    return cleaned;
   }
 
   /**
@@ -2516,9 +2567,11 @@ Do NOT use markdown code fences. Pure JSON only.`,
   // LLM Communication Layer
   // ==========================================
 
-  private async callLLM(
+  public async callLLM(
     messages: Array<{ role: string; content: string }>,
-    modelToUse?: string
+    modelToUse?: string,
+    onChunk?: StreamChunkCallback,
+    signal?: AbortSignal
   ): Promise<{
     content: string;
     promptTokens: number;
@@ -2529,75 +2582,247 @@ Do NOT use markdown code fences. Pure JSON only.`,
     const model = modelToUse || this.config.model;
 
     if (this.config.provider === 'ollama') {
-      const ollamaRes = await sendOllamaChat(this.config.ollamaUrl, {
-        model,
-        messages,
-      });
+      if (onChunk) {
+        const ollamaRes = await sendOllamaChatStream(
+          this.config.ollamaUrl,
+          {
+            model,
+            messages,
+          },
+          onChunk,
+          signal
+        );
 
-      const promptTokens = ollamaRes.promptTokens || estimateConversationTokens(messages);
-      const completionTokens = ollamaRes.responseTokens || estimateTokens(ollamaRes.content);
-      return {
-        content: ollamaRes.content,
-        promptTokens,
-        completionTokens,
-        totalTokens: ollamaRes.totalTokens || (promptTokens + completionTokens),
-        isEstimated: ollamaRes.promptTokens === 0 && ollamaRes.responseTokens === 0,
-      };
-    } else {
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.config.apiKey}`,
-          'Content-Type': 'application/json',
-          'HTTP-Referer': typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173',
-          'X-Title': 'Educational AI Agent Chat',
-        },
-        body: JSON.stringify({
+        const promptTokens = ollamaRes.promptTokens || estimateConversationTokens(messages);
+        const completionTokens = ollamaRes.responseTokens || estimateTokens(ollamaRes.content);
+        return {
+          content: ollamaRes.content,
+          promptTokens,
+          completionTokens,
+          totalTokens: ollamaRes.totalTokens || (promptTokens + completionTokens),
+          isEstimated: ollamaRes.promptTokens === 0 && ollamaRes.responseTokens === 0,
+        };
+      } else {
+        const ollamaRes = await sendOllamaChat(this.config.ollamaUrl, {
           model,
           messages,
-        }),
-      });
+        });
 
-      if (!response.ok) {
-        let errorMessage = `HTTP Error ${response.status}: ${response.statusText}`;
-        try {
-          const errorData = await response.json();
-          if (errorData.error?.message) {
-            errorMessage = errorData.error.message;
+        const promptTokens = ollamaRes.promptTokens || estimateConversationTokens(messages);
+        const completionTokens = ollamaRes.responseTokens || estimateTokens(ollamaRes.content);
+        return {
+          content: ollamaRes.content,
+          promptTokens,
+          completionTokens,
+          totalTokens: ollamaRes.totalTokens || (promptTokens + completionTokens),
+          isEstimated: ollamaRes.promptTokens === 0 && ollamaRes.responseTokens === 0,
+        };
+      }
+    } else {
+      if (onChunk) {
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${this.config.apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173',
+            'X-Title': 'Educational AI Agent Chat',
+          },
+          body: JSON.stringify({
+            model,
+            messages,
+            stream: true,
+            stream_options: { include_usage: true },
+          }),
+          signal,
+        });
+
+        if (!response.ok) {
+          let errorMessage = `HTTP Error ${response.status}: ${response.statusText}`;
+          try {
+            const errorData = await response.json();
+            if (errorData.error?.message) {
+              errorMessage = errorData.error.message;
+            }
+          } catch {}
+
+          if (response.status === 401) {
+            errorMessage = 'Invalid API key. Please verify your OpenRouter API key in Settings.';
+          } else if (response.status === 402) {
+            errorMessage = 'Insufficient credits. Please check your OpenRouter account balance or switch to a free model.';
+          } else if (response.status === 429) {
+            errorMessage = 'Rate limit exceeded. Please wait a moment before sending another message.';
+          } else if (response.status === 400 && errorMessage.toLowerCase().includes('context')) {
+            errorMessage = `Context limit exceeded by API.\n\n${errorMessage}`;
           }
-        } catch {}
 
-        if (response.status === 401) {
-          errorMessage = 'Invalid API key. Please verify your OpenRouter API key in Settings.';
-        } else if (response.status === 402) {
-          errorMessage = 'Insufficient credits. Please check your OpenRouter account balance or switch to a free model.';
-        } else if (response.status === 429) {
-          errorMessage = 'Rate limit exceeded. Please wait a moment before sending another message.';
-        } else if (response.status === 400 && errorMessage.toLowerCase().includes('context')) {
-          errorMessage = `Context limit exceeded by API.\n\n${errorMessage}`;
+          throw new Error(errorMessage);
         }
 
-        throw new Error(errorMessage);
+        if (!response.body) {
+          if (typeof response.json === 'function') {
+            const data = await response.json();
+            const assistantContent =
+              data.choices?.[0]?.message?.content ||
+              data.choices?.[0]?.delta?.content ||
+              '';
+            if (assistantContent && onChunk) {
+              onChunk(assistantContent);
+            }
+            const usage = data.usage;
+            const promptTokens = usage?.prompt_tokens ?? estimateConversationTokens(messages);
+            const completionTokens = usage?.completion_tokens ?? estimateTokens(assistantContent);
+            const totalTokens = usage?.total_tokens ?? (promptTokens + completionTokens);
+            return {
+              content: assistantContent,
+              promptTokens,
+              completionTokens,
+              totalTokens,
+              isEstimated: !usage,
+            };
+          }
+          throw new Error('Received empty response body from OpenRouter API.');
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let assistantContent = '';
+        let usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null = null;
+        let buffer = '';
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() ?? '';
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || !trimmed.startsWith('data:')) continue;
+              const dataStr = trimmed.slice(5).trim();
+              if (dataStr === '[DONE]') continue;
+              try {
+                const parsed = JSON.parse(dataStr);
+                if (parsed.choices && parsed.choices[0]?.delta?.content) {
+                  const chunk = parsed.choices[0].delta.content;
+                  assistantContent += chunk;
+                  onChunk(chunk);
+                }
+                if (parsed.usage) {
+                  usage = parsed.usage;
+                }
+              } catch {
+                // Ignore incomplete SSE chunk line
+              }
+            }
+          }
+
+          if (buffer.trim()) {
+            const trimmed = buffer.trim();
+            if (trimmed.startsWith('data:')) {
+              const dataStr = trimmed.slice(5).trim();
+              if (dataStr !== '[DONE]') {
+                try {
+                  const parsed = JSON.parse(dataStr);
+                  if (parsed.choices && parsed.choices[0]?.delta?.content) {
+                    const chunk = parsed.choices[0].delta.content;
+                    assistantContent += chunk;
+                    onChunk(chunk);
+                  }
+                  if (parsed.usage) {
+                    usage = parsed.usage;
+                  }
+                } catch {}
+              }
+            }
+          }
+        } catch (err: unknown) {
+          const isAbort = signal?.aborted || (err instanceof Error && err.name === 'AbortError');
+          if (isAbort) {
+            const promptTokens = usage?.prompt_tokens ?? estimateConversationTokens(messages);
+            const completionTokens = usage?.completion_tokens ?? estimateTokens(assistantContent);
+            return {
+              content: assistantContent,
+              promptTokens,
+              completionTokens,
+              totalTokens: usage?.total_tokens ?? (promptTokens + completionTokens),
+              isEstimated: !usage,
+            };
+          }
+          throw err;
+        }
+
+        const promptTokens = usage?.prompt_tokens ?? estimateConversationTokens(messages);
+        const completionTokens = usage?.completion_tokens ?? estimateTokens(assistantContent);
+        const totalTokens = usage?.total_tokens ?? (promptTokens + completionTokens);
+
+        return {
+          content: assistantContent,
+          promptTokens,
+          completionTokens,
+          totalTokens,
+          isEstimated: !usage,
+        };
+      } else {
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${this.config.apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173',
+            'X-Title': 'Educational AI Agent Chat',
+          },
+          body: JSON.stringify({
+            model,
+            messages,
+          }),
+          signal,
+        });
+
+        if (!response.ok) {
+          let errorMessage = `HTTP Error ${response.status}: ${response.statusText}`;
+          try {
+            const errorData = await response.json();
+            if (errorData.error?.message) {
+              errorMessage = errorData.error.message;
+            }
+          } catch {}
+
+          if (response.status === 401) {
+            errorMessage = 'Invalid API key. Please verify your OpenRouter API key in Settings.';
+          } else if (response.status === 402) {
+            errorMessage = 'Insufficient credits. Please check your OpenRouter account balance or switch to a free model.';
+          } else if (response.status === 429) {
+            errorMessage = 'Rate limit exceeded. Please wait a moment before sending another message.';
+          } else if (response.status === 400 && errorMessage.toLowerCase().includes('context')) {
+            errorMessage = `Context limit exceeded by API.\n\n${errorMessage}`;
+          }
+
+          throw new Error(errorMessage);
+        }
+
+        const data = await response.json();
+        if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+          throw new Error('Received malformed response from OpenRouter API.');
+        }
+
+        const assistantContent = data.choices[0].message.content || '';
+        const usage = data.usage;
+        const promptTokens = usage?.prompt_tokens ?? estimateConversationTokens(messages);
+        const completionTokens = usage?.completion_tokens ?? estimateTokens(assistantContent);
+        const totalTokens = usage?.total_tokens ?? (promptTokens + completionTokens);
+
+        return {
+          content: assistantContent,
+          promptTokens,
+          completionTokens,
+          totalTokens,
+          isEstimated: !usage,
+        };
       }
-
-      const data = await response.json();
-      if (!data.choices || !data.choices[0] || !data.choices[0].message) {
-        throw new Error('Received malformed response from OpenRouter API.');
-      }
-
-      const assistantContent = data.choices[0].message.content || '';
-      const usage = data.usage;
-      const promptTokens = usage?.prompt_tokens ?? estimateConversationTokens(messages);
-      const completionTokens = usage?.completion_tokens ?? estimateTokens(assistantContent);
-      const totalTokens = usage?.total_tokens ?? (promptTokens + completionTokens);
-
-      return {
-        content: assistantContent,
-        promptTokens,
-        completionTokens,
-        totalTokens,
-        isEstimated: !usage,
-      };
     }
   }
 
@@ -2818,11 +3043,40 @@ Do NOT use markdown code fences. Pure JSON only.`,
     };
 
     this.isLoading = true;
+    this.isStreaming = true;
+    this.activeAbortController = new AbortController();
     this.notify();
 
+    const assistantMessage: Message = {
+      id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      role: 'assistant',
+      content: '',
+      timestamp: Date.now(),
+      tokens: 0,
+      isStreaming: true,
+    };
+    let assistantMessageAdded = false;
+
     try {
-      // 6. Call LLM
-      const res = await this.callLLM(messagesToSend);
+      // 6. Call LLM with streaming chunk callback
+      let initialAccumulated = '';
+      const onInitialChunk = (chunk: string) => {
+        initialAccumulated += chunk;
+        const display = this.cleanLiveStreamingText(initialAccumulated);
+        assistantMessage.content = display;
+        if (!assistantMessageAdded && display.trim().length > 0) {
+          this.messages.push(assistantMessage);
+          assistantMessageAdded = true;
+        }
+        this.notify();
+      };
+
+      const res = await this.callLLM(
+        messagesToSend,
+        undefined,
+        onInitialChunk,
+        this.activeAbortController.signal
+      );
       let executedCalls: McpCallMeta[] = [];
       let finalContent = res.content;
       let totalCompletionTokens = res.completionTokens;
@@ -2862,6 +3116,7 @@ Do NOT use markdown code fences. Pure JSON only.`,
 
           const callMeta = await this.executeMcpTool(call.name, call.args);
           executedCalls.push(callMeta);
+          assistantMessage.mcpCalls = [...executedCalls];
           toolResultsText += `<mcp_result name="${call.name}" is_error="${callMeta.isError}">\n${callMeta.result}\n</mcp_result>\n`;
 
           if (call.name === 'saveToFile' && !callMeta.isError) {
@@ -2884,7 +3139,24 @@ Do NOT use markdown code fences. Pure JSON only.`,
         ];
 
         try {
-          const synthesisRes = await this.callLLM(synthesisPrompt);
+          let synthAccumulated = '';
+          const onSynthesisChunk = (chunk: string) => {
+            synthAccumulated += chunk;
+            const display = this.cleanLiveStreamingText(synthAccumulated);
+            assistantMessage.content = display;
+            if (!assistantMessageAdded && display.trim().length > 0) {
+              this.messages.push(assistantMessage);
+              assistantMessageAdded = true;
+            }
+            this.notify();
+          };
+
+          const synthesisRes = await this.callLLM(
+            synthesisPrompt,
+            undefined,
+            onSynthesisChunk,
+            this.activeAbortController.signal
+          );
           totalCompletionTokens += synthesisRes.completionTokens;
           totalTokens += synthesisRes.completionTokens;
           currentContent = synthesisRes.content;
@@ -2925,7 +3197,12 @@ Do NOT use markdown code fences. Pure JSON only.`,
                 `Напиши развернутый и понятный итоговый ответ для пользователя на русском языке: расскажи о подобранном товаре, его характеристиках, наличии, рассчитанной доставке и подтверди сохранение отчета в файл.`,
             },
           ];
-          const forceRes = await this.callLLM(forceSynthesisPrompt);
+          const forceRes = await this.callLLM(
+            forceSynthesisPrompt,
+            undefined,
+            undefined,
+            this.activeAbortController.signal
+          );
           totalCompletionTokens += forceRes.completionTokens;
           totalTokens += forceRes.completionTokens;
           const cleanedForce = this.cleanModelRawToolTokens(forceRes.content).trim();
@@ -2940,17 +3217,18 @@ Do NOT use markdown code fences. Pure JSON only.`,
         finalContent = this.generateFallbackMcpSummary(executedCalls);
       }
 
-      // 7. Create and append assistant message
-      const assistantMessage: Message = {
-        id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-        role: 'assistant',
-        content: finalContent,
-        timestamp: Date.now(),
-        tokens: totalCompletionTokens,
-        ...(executedCalls.length > 0 ? { mcpCalls: executedCalls } : {}),
-      };
+      // 7. Finalize assistant message
+      assistantMessage.content = finalContent;
+      assistantMessage.tokens = totalCompletionTokens;
+      assistantMessage.isStreaming = false;
+      if (executedCalls.length > 0) {
+        assistantMessage.mcpCalls = executedCalls;
+      }
 
-      this.messages.push(assistantMessage);
+      if (!assistantMessageAdded) {
+        this.messages.push(assistantMessage);
+        assistantMessageAdded = true;
+      }
 
       // 7.1 If assistant emitted <task_update ... />, apply state transition; otherwise advance automatically
       const taskUpdate = this.parseTaskUpdateTags(finalContent);
@@ -2981,6 +3259,7 @@ Do NOT use markdown code fences. Pure JSON only.`,
       }
 
       this.isLoading = false;
+      this.isStreaming = false;
       this.notify();
 
       // 10. If in Sticky Facts strategy, trigger background fact extraction
@@ -3003,11 +3282,36 @@ Do NOT use markdown code fences. Pure JSON only.`,
       return finalContent;
     } catch (err: unknown) {
       this.isLoading = false;
+      this.isStreaming = false;
+      const isAbort =
+        this.activeAbortController?.signal.aborted ||
+        (err instanceof Error && (err.name === 'AbortError' || err.message.toLowerCase().includes('abort')));
+
+      if (isAbort) {
+        assistantMessage.isStreaming = false;
+        if (!assistantMessageAdded && assistantMessage.content.trim()) {
+          this.messages.push(assistantMessage);
+          assistantMessageAdded = true;
+        }
+        if (assistantMessageAdded) {
+          assistantMessage.tokens = estimateTokens(assistantMessage.content);
+          saveMessages(this.messages, this.chatId);
+          const branchIdx = this.branches.findIndex((b) => b.id === this.activeBranchId);
+          if (branchIdx >= 0) {
+            this.branches[branchIdx].messages = [...this.messages];
+            saveBranches(this.branches, this.chatId);
+          }
+        }
+        this.recalculateCurrentStats();
+        this.notify();
+        return assistantMessage.content;
+      }
+
       const errorText = err instanceof Error ? err.message : 'An unexpected error occurred.';
       this.error = errorText;
 
-      // Roll back user message from history on LLM call error
-      this.messages = this.messages.filter((m) => m.id !== userMessage.id);
+      // Roll back user message from history on LLM call error (and remove assistant if added)
+      this.messages = this.messages.filter((m) => m.id !== userMessage.id && m.id !== assistantMessage.id);
       saveMessages(this.messages, this.chatId);
       const branchErrIdx = this.branches.findIndex((b) => b.id === this.activeBranchId);
       if (branchErrIdx >= 0) {
@@ -3017,6 +3321,11 @@ Do NOT use markdown code fences. Pure JSON only.`,
       this.recalculateCurrentStats();
       this.notify();
       throw err;
+    } finally {
+      this.activeAbortController = null;
+      this.isStreaming = false;
+      this.isLoading = false;
+      assistantMessage.isStreaming = false;
     }
   }
 }

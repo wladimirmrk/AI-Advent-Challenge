@@ -421,8 +421,10 @@ export const MessageList: React.FC<MessageListProps> = ({
 
     const lastChanged = last !== undefined && last.id !== prevLastId;
     const lastIsUser = last?.role === 'user';
+    const lastIsStreaming = last?.isStreaming;
     if (
       (lastChanged && (isNearBottomRef.current || lastIsUser)) ||
+      (lastIsStreaming && isNearBottomRef.current) ||
       (isLoadingTurnedOn && isNearBottomRef.current)
     ) {
       wrapper.scrollTop = wrapper.scrollHeight;
@@ -588,6 +590,9 @@ export const MessageList: React.FC<MessageListProps> = ({
                                       : msg.content)
                                   }
                                 />
+                                {msg.isStreaming && (
+                                  <span className="streaming-cursor" aria-hidden="true" />
+                                )}
                               </div>
                             </>
                           );
@@ -620,7 +625,7 @@ export const MessageList: React.FC<MessageListProps> = ({
           )}
 
           {/* Loading indicator */}
-          {isLoading && (
+          {isLoading && !messages.some((m) => m.isStreaming && m.content) && (
             <div className="message-row assistant-row loading-row">
               <div className="avatar-col">
                 <div className="avatar assistant thinking">

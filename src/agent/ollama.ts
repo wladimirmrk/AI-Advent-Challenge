@@ -8,7 +8,7 @@
  * - Chat completion (POST /api/chat)
  */
 
-import { CustomModel } from './types';
+import { CustomModel, StreamChunkCallback } from './types';
 
 export interface OllamaConnectionResult {
   ok: boolean;
@@ -215,3 +215,140 @@ export async function sendOllamaChat(
     totalTokens,
   };
 }
+
+/**
+ * Sends streaming chat completion request to native Ollama API POST /api/chat.
+ * Reads response body chunk by chunk as NDJSON.
+ */
+export async function sendOllamaChatStream(
+  ollamaUrl: string,
+  payload: {
+    model: string;
+    messages: Array<{ role: string; content: string }>;
+  },
+  onChunk?: StreamChunkCallback,
+  signal?: AbortSignal
+): Promise<OllamaChatResult> {
+  const baseUrl = normalizeOllamaUrl(ollamaUrl);
+
+  const res = await fetch(`${baseUrl}/api/chat`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: payload.model,
+      messages: payload.messages,
+      stream: true,
+    }),
+    signal,
+  });
+
+  if (!res.ok) {
+    let errorText = `HTTP Error ${res.status}: ${res.statusText}`;
+    try {
+      const errData = await res.json();
+      if (errData.error) {
+        errorText = errData.error;
+      }
+    } catch {
+      // Use status text if not JSON
+    }
+    throw new Error(`Ollama API Error (${res.status}): ${errorText}`);
+  }
+
+  if (!res.body) {
+    if (typeof res.json === 'function') {
+      const data = await res.json();
+      const content = data.message?.content ?? '';
+      if (content && onChunk) {
+        onChunk(content);
+      }
+      const promptTokens = typeof data.prompt_eval_count === 'number' ? data.prompt_eval_count : 0;
+      const responseTokens = typeof data.eval_count === 'number' ? data.eval_count : 0;
+      return {
+        content,
+        promptTokens,
+        responseTokens,
+        totalTokens: promptTokens + responseTokens,
+      };
+    }
+    throw new Error('Ollama response body is empty.');
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let accumulatedContent = '';
+  let promptTokens = 0;
+  let responseTokens = 0;
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (parsed.message?.content) {
+            const chunk = parsed.message.content;
+            accumulatedContent += chunk;
+            onChunk?.(chunk);
+          }
+          if (typeof parsed.prompt_eval_count === 'number') {
+            promptTokens = parsed.prompt_eval_count;
+          }
+          if (typeof parsed.eval_count === 'number') {
+            responseTokens = parsed.eval_count;
+          }
+        } catch {
+          // ignore incomplete JSON fragment
+        }
+      }
+    }
+
+    if (buffer.trim()) {
+      try {
+        const parsed = JSON.parse(buffer.trim());
+        if (parsed.message?.content) {
+          const chunk = parsed.message.content;
+          accumulatedContent += chunk;
+          onChunk?.(chunk);
+        }
+        if (typeof parsed.prompt_eval_count === 'number') {
+          promptTokens = parsed.prompt_eval_count;
+        }
+        if (typeof parsed.eval_count === 'number') {
+          responseTokens = parsed.eval_count;
+        }
+      } catch {}
+    }
+  } catch (err: unknown) {
+    const isAbort =
+      signal?.aborted || (err instanceof Error && err.name === 'AbortError');
+    if (isAbort) {
+      return {
+        content: accumulatedContent,
+        promptTokens,
+        responseTokens,
+        totalTokens: promptTokens + responseTokens,
+      };
+    }
+    throw err;
+  }
+
+  return {
+    content: accumulatedContent,
+    promptTokens,
+    responseTokens,
+    totalTokens: promptTokens + responseTokens,
+  };
+}
+

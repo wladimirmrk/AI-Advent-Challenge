@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "tsx tests/test-agent.ts && tsx tests/test-memory.ts && tsx tests/test-multichat.ts && tsx tests/test-personalization.ts && tsx tests/test-fsm.ts && tsx tests/test-invariants.ts && tsx tests/test-day15-transitions.ts && tsx tests/test-mcp.ts && tsx tests/test-day17-mcp-tool.ts && tsx tests/test-day18-scheduler.ts && tsx tests/test-day19-pipeline.ts && tsx tests/test-day20-orchestration.ts",
+    "test": "tsx tests/test-agent.ts && tsx tests/test-memory.ts && tsx tests/test-multichat.ts && tsx tests/test-personalization.ts && tsx tests/test-fsm.ts && tsx tests/test-invariants.ts && tsx tests/test-day15-transitions.ts && tsx tests/test-mcp.ts && tsx tests/test-day17-mcp-tool.ts && tsx tests/test-day18-scheduler.ts && tsx tests/test-day19-pipeline.ts && tsx tests/test-day20-orchestration.ts && tsx tests/test-streaming.ts",
     "test:agent": "tsx tests/test-agent.ts",
     "test:memory": "tsx tests/test-memory.ts",
     "test:multichat": "tsx tests/test-multichat.ts",
@@ -20,6 +20,7 @@
     "test:day18": "tsx tests/test-day18-scheduler.ts",
     "test:day19": "tsx tests/test-day19-pipeline.ts",
     "test:day20": "tsx tests/test-day20-orchestration.ts",
+    "test:streaming": "tsx tests/test-streaming.ts",
     "mcp:server": "tsx scripts/mcp-server.ts",
     "mcp:servers": "tsx scripts/mcp-multi-server.ts"
   },

@@ -351,9 +351,11 @@ export const Chat: React.FC<ChatProps> = ({
       <footer className="chat-footer">
         <MessageInput
           onSendMessage={handleSendMessage}
-          disabled={agentState.isLoading}
+          disabled={agentState.isLoading && !agentState.isStreaming}
           hasApiKey={isReady}
           onOpenSettings={() => setIsSettingsOpen(true)}
+          onStop={() => agent.stopGeneration()}
+          isStreaming={agentState.isStreaming || agentState.isLoading}
         />
       </footer>
 

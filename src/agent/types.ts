@@ -14,6 +14,8 @@ export interface McpCallMeta {
   latencyMs?: number;
 }
 
+export type StreamChunkCallback = (chunk: string) => void;
+
 export interface Message {
   id: string;
   role: Role;
@@ -21,6 +23,7 @@ export interface Message {
   timestamp: number;
   tokens?: number;
   mcpCalls?: McpCallMeta[];
+  isStreaming?: boolean;
 }
 
 export type AgentMode = 'production' | 'demo';
@@ -208,6 +211,7 @@ export interface AgentState {
   config: AgentConfig;
   customModels: CustomModel[];
   isLoading: boolean;
+  isStreaming: boolean;
   isSummarizing: boolean;
   isExtractingFacts: boolean;
   error: string | null;
