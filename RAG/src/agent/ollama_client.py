@@ -33,13 +33,18 @@ class OllamaClient(BaseLLMClient):
         self,
         base_url: str = "http://127.0.0.1:11434",
         default_model: str = "qwen3:8b",
-        timeout: int = 300,
+        timeout: Optional[int] = None,
         max_retries: int = 1,
         mock_mode: bool = False,
     ):
         self.base_url = base_url.rstrip("/")
         self.default_model = default_model or os.getenv("OLLAMA_CHAT_MODEL", "qwen3:8b")
-        self.timeout = timeout or int(os.getenv("OLLAMA_TIMEOUT", "300"))
+        if timeout is not None:
+            self.timeout = timeout
+        elif os.getenv("OLLAMA_TIMEOUT", "").strip().isdigit():
+            self.timeout = int(os.getenv("OLLAMA_TIMEOUT"))
+        else:
+            self.timeout = None
         self.max_retries = max_retries
         self.mock_mode = mock_mode or os.getenv("OLLAMA_MOCK", "").lower() in {"1", "true", "yes"}
 
@@ -242,12 +247,13 @@ class OllamaClient(BaseLLMClient):
                 )
             except requests.exceptions.Timeout as exc:
                 last_error = exc
-                logger.warning("Ollama request timed out on attempt %d/%d (timeout=%ds)", attempt, self.max_retries, self.timeout)
+                t_str = f" ({self.timeout}с)" if self.timeout else ""
+                logger.warning("Ollama request timed out on attempt %d/%d%s", attempt, self.max_retries, t_str)
                 if attempt < self.max_retries:
                     time.sleep(1.0)
                     continue
                 raise OllamaError(
-                    f"Превышено время ожидания ответа от Ollama ({self.timeout}с). "
+                    f"Превышено время ожидания ответа от Ollama{t_str}. "
                     "Локальная модель загружается или требует больше времени на генерацию.",
                     details={"timeout": self.timeout},
                 )

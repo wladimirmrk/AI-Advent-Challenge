@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 import os
 from pathlib import Path
+from typing import Optional
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -38,7 +39,11 @@ class AppConfig:
     # LLM Provider & Settings (Day 28)
     llm_provider: str = os.getenv("LLM_PROVIDER", "ollama")
     ollama_chat_model: str = os.getenv("OLLAMA_CHAT_MODEL", "qwen3:8b")
-    ollama_timeout: int = int(os.getenv("OLLAMA_TIMEOUT", "300"))
+    ollama_timeout: Optional[int] = (
+        int(os.getenv("OLLAMA_TIMEOUT"))
+        if os.getenv("OLLAMA_TIMEOUT", "").strip().isdigit()
+        else None
+    )
 
     # LLM & OpenRouter Settings
     openrouter_base_url: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")

@@ -25,6 +25,11 @@ class TestOllamaClient:
         assert client.default_model == "qwen3:8b"
         assert client.is_configured() is True
         assert "qwen3:8b" in client.list_models()
+        assert client.timeout is None
+
+    def test_custom_timeout(self):
+        client = OllamaClient(timeout=120, mock_mode=True)
+        assert client.timeout == 120
 
     def test_extract_thinking(self):
         client = OllamaClient(mock_mode=True)
@@ -65,6 +70,11 @@ class TestLLMFactory:
         assert isinstance(client, OllamaClient)
         assert client.provider == "ollama"
         assert client.default_model == "qwen3:8b"
+        assert client.timeout is None
+
+    def test_create_ollama_client_custom_timeout(self):
+        client = create_llm_client(provider="ollama", model="qwen3:8b", timeout=90, mock_mode=True)
+        assert client.timeout == 90
 
     def test_create_openrouter_client(self):
         client = create_llm_client(provider="openrouter", model="nvidia/nemotron-3.5-lightning:free", mock_mode=True)

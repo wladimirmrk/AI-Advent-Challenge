@@ -28,7 +28,7 @@ def create_llm_client(
     if normalized_provider in {"ollama", "local"}:
         target_model = model or default_config.ollama_chat_model
         target_base_url = base_url or default_config.ollama_base_url
-        target_timeout = timeout or default_config.ollama_timeout
+        target_timeout = timeout if timeout is not None else default_config.ollama_timeout
 
         return OllamaClient(
             base_url=target_base_url,
