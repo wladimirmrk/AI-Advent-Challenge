@@ -2,6 +2,7 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from src.agent.base_llm import BaseLLMClient, LLMResponse
 from src.agent.openrouter_client import OpenRouterClient, OpenRouterResponse
 from src.agent.query_rewriter import QueryRewriter, QueryRewriteResult
 from src.embeddings.ollama_embedder import OllamaEmbedder
@@ -64,7 +65,7 @@ class RAGAgent:
         self,
         vector_store: VectorStore,
         embedder: OllamaEmbedder,
-        llm_client: OpenRouterClient,
+        llm_client: BaseLLMClient,
         default_top_k: int = 5,
         query_rewriter: Optional[QueryRewriter] = None,
         rerank_pipeline: Optional[TwoStageRetrievalPipeline] = None,

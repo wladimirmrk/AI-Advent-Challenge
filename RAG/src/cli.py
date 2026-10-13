@@ -32,12 +32,16 @@ from src.chunking.structural_chunker import StructuralChunker
 from src.embeddings.ollama_embedder import OllamaEmbedder
 from src.storage.vector_store import VectorStore
 from src.evaluation.comparator import ChunkComparator
+from src.agent.base_llm import BaseLLMClient, LLMResponse
+from src.agent.ollama_client import OllamaClient, OllamaError
 from src.agent.openrouter_client import OpenRouterClient, OpenRouterError
+from src.agent.llm_factory import create_llm_client, detect_provider_from_model
 from src.agent.rag_agent import RAGAgent
 from src.evaluation.benchmark_dataset import BENCHMARK_QUESTIONS
 from src.evaluation.rag_evaluator import RAGEvaluator
 from src.evaluation.rerank_evaluator import RerankEvaluator
 from src.evaluation.grounded_evaluator import GroundedEvaluator, GROUNDED_BENCHMARK_SUITE
+from src.evaluation.model_comparator import ModelComparator
 from src.chat import ChatSession, MemoryChatEngine, SessionStore, TaskState
 
 import shutil
@@ -374,16 +378,21 @@ def get_rag_agent(args, default_strat: str = "structural") -> RAGAgent:
         model=default_config.ollama_model,
     )
 
+    provider = getattr(args, "provider", None) or default_config.llm_provider
     api_key = getattr(args, "api_key", None) or default_config.openrouter_api_key
-    model = getattr(args, "model", None) or default_config.openrouter_model
+    model = getattr(args, "model", None)
     mock_mode = getattr(args, "mock", False)
 
-    llm_client = OpenRouterClient(
+    # Auto-detect provider if model name contains provider signature and provider wasn't explicitly given
+    if model and not getattr(args, "provider", None):
+        provider = detect_provider_from_model(model)
+
+    llm_client = create_llm_client(
+        provider=provider,
+        model=model,
         api_key=api_key,
-        base_url=default_config.openrouter_base_url,
-        default_model=model,
-        timeout=default_config.openrouter_timeout,
         mock_mode=mock_mode,
+        timeout=default_config.ollama_timeout if provider == "ollama" else default_config.openrouter_timeout,
     )
     initial_top_k = getattr(args, "initial_top_k", default_config.rerank_initial_top_k) or default_config.rerank_initial_top_k
     threshold = getattr(args, "threshold", default_config.rerank_similarity_threshold) or default_config.rerank_similarity_threshold
@@ -546,8 +555,8 @@ def run_chat(args):
     use_rerank = getattr(args, "rerank", False)
     threshold = getattr(args, "threshold", default_config.rerank_similarity_threshold)
 
-    console.print(f"\n[bold green]=== Interactive CryptoTrack AI Chat ===[/bold green]")
-    console.print("Commands: `/rag on/off`, `/rewrite on/off`, `/rerank on/off`, `/thresh <val>`, `/model <name>`, `/topk <k>`, `/sources`, `/exit`\n")
+    console.print(f"\n[bold green]=== Interactive CryptoTrack AI Chat (Day 28) ===[/bold green]")
+    console.print("Commands: `/provider <ollama|openrouter>`, `/models`, `/model <name>`, `/rag on/off`, `/rewrite on/off`, `/rerank on/off`, `/thresh <val>`, `/topk <k>`, `/sources`, `/exit`\n")
 
     try:
         agent = get_rag_agent(args)
@@ -568,7 +577,8 @@ def run_chat(args):
                 if use_rerank:
                     badges.append(f"[magenta]RR({threshold})[/magenta]")
 
-            prompt_str = f"\nCryptoTrack [{'/'.join(badges)} | {current_model.split('/')[-1]}] > "
+            provider_badge = f"{agent.llm_client.provider}:{current_model.split('/')[-1]}"
+            prompt_str = f"\nCryptoTrack [{'/'.join(badges)} | {provider_badge}] > "
             user_input = input(prompt_str).strip()
 
             if not user_input:
@@ -610,8 +620,35 @@ def run_chat(args):
                 except ValueError:
                     console.print("[red]Invalid float for threshold[/red]")
                 continue
+            elif user_input.startswith("/provider"):
+                parts = user_input.split()
+                if len(parts) > 1:
+                    new_prov = parts[1].strip().lower()
+                    if new_prov in {"ollama", "openrouter", "local", "cloud"}:
+                        prov_name = "ollama" if new_prov in {"ollama", "local"} else "openrouter"
+                        mock_mode = getattr(args, "mock", False)
+                        agent.llm_client = create_llm_client(
+                            provider=prov_name,
+                            api_key=getattr(args, "api_key", None),
+                            mock_mode=mock_mode,
+                        )
+                        current_model = agent.llm_client.default_model
+                        console.print(f"[bold green]✓ Provider switched to: [cyan]{prov_name}[/cyan] (model: [yellow]{current_model}[/yellow])[/bold green]")
+                    else:
+                        console.print("[red]Supported providers: `ollama`, `openrouter`[/red]")
+                else:
+                    console.print(f"Current provider: [cyan]{agent.llm_client.provider}[/cyan], model: [yellow]{current_model}[/yellow]")
+                continue
+            elif user_input.lower() in {"/models", "models"}:
+                models = agent.llm_client.list_models()
+                console.print(f"[bold cyan]Available models for {agent.llm_client.provider}:[/bold cyan]")
+                for m in models:
+                    mark = " [bold green]✓ active[/bold green]" if m == current_model else ""
+                    console.print(f"  • [yellow]{m}[/yellow]{mark}")
+                continue
             elif user_input.startswith("/model "):
                 current_model = user_input.split(maxsplit=1)[1].strip()
+                agent.llm_client.default_model = current_model
                 console.print(f"[cyan]✓ Model switched to: {current_model}[/cyan]")
                 continue
             elif user_input.startswith("/topk "):
@@ -632,10 +669,10 @@ def run_chat(args):
                         console.print(f"  • #{s.rank} [{s.score:.4f}{rr_info}] [yellow]{s.source}[/yellow] (L{s.start_line}-L{s.end_line})")
                 continue
             elif user_input.lower() in {"/help", "help"}:
-                console.print("Available commands:\n  /rag on|off\n  /rewrite on|off\n  /rerank on|off\n  /thresh <val>\n  /model <name>\n  /topk <k>\n  /sources\n  /exit")
+                console.print("Available commands:\n  /provider <ollama|openrouter>\n  /models\n  /model <name>\n  /rag on|off\n  /rewrite on|off\n  /rerank on|off\n  /thresh <val>\n  /topk <k>\n  /sources\n  /exit")
                 continue
 
-            with console.status(f"[cyan]Querying...[/cyan]"):
+            with console.status(f"[cyan]Querying {agent.llm_client.provider}...[/cyan]"):
                 res = agent.query(
                     question=user_input,
                     use_rag=use_rag,
@@ -648,13 +685,13 @@ def run_chat(args):
             last_sources = res.sources
 
             border_style = "green" if use_rag else "yellow"
-            title = f"🤖 [{' / '.join(badges)}] ({res.total_tokens} tok | {res.latency_seconds:.2f}s)"
+            title = f"🤖 [{agent.llm_client.provider} | {' / '.join(badges)}] ({res.total_tokens} tok | {res.latency_seconds:.2f}s)"
             console.print(Panel(Markdown(res.answer), title=title, border_style=border_style))
 
         except KeyboardInterrupt:
             break
-        except OpenRouterError as err:
-            console.print(f"[red]OpenRouter API Error: {err}[/red]")
+        except (OpenRouterError, OllamaError) as err:
+            console.print(f"[red]{type(err).__name__}: {err}[/red]")
         except Exception as exc:
             console.print(f"[red]Error: {exc}[/red]")
 
@@ -707,10 +744,10 @@ def run_chat_memory(args):
     window_size = getattr(args, "window", 10)
 
     existing_sessions = store.list_sessions()
-    console.print(f"\n[bold green]=== Production-like RAG Chat with Task Memory ===[/bold green]")
+    console.print(f"\n[bold green]=== Production-like RAG Chat with Task Memory (Day 28) ===[/bold green]")
     if existing_sessions:
         console.print(f"[dim]💡 Сохранённых сессий: {len(existing_sessions)} (введите [bold cyan]/switch[/bold cyan] для выбора)[/dim]")
-    console.print("Команды: `/switch [№]`, `/state`, `/sources`, `/history`, `/new`, `/save`, `/rag on/off`, `/topk <k>`, `/exit`\n")
+    console.print("Команды: `/provider <ollama|openrouter>`, `/models`, `/model <name>`, `/switch [№]`, `/state`, `/sources`, `/history`, `/new`, `/save`, `/rag on/off`, `/topk <k>`, `/exit`\n")
 
     try:
         agent = get_rag_agent(args)
@@ -738,7 +775,8 @@ def run_chat_memory(args):
                     badges.append(f"[magenta]RR({threshold})[/magenta]")
             badges.append(f"[blue]Turn:{session.task_state.turn_number}[/blue]")
 
-            prompt_str = f"\nCryptoTrack [{'/'.join(badges)} | {current_model.split('/')[-1]}] > "
+            provider_badge = f"{agent.llm_client.provider}:{current_model.split('/')[-1]}"
+            prompt_str = f"\nCryptoTrack [{'/'.join(badges)} | {provider_badge}] > "
             user_input = input(prompt_str).strip()
 
             if not user_input:
@@ -892,8 +930,35 @@ def run_chat_memory(args):
                 use_rerank = False
                 console.print("[dim]✓ Rerank & Filter отключен[/dim]")
                 continue
+            elif user_input.startswith("/provider"):
+                parts = user_input.split()
+                if len(parts) > 1:
+                    new_prov = parts[1].strip().lower()
+                    if new_prov in {"ollama", "openrouter", "local", "cloud"}:
+                        prov_name = "ollama" if new_prov in {"ollama", "local"} else "openrouter"
+                        mock_mode = getattr(args, "mock", False)
+                        agent.llm_client = create_llm_client(
+                            provider=prov_name,
+                            api_key=getattr(args, "api_key", None),
+                            mock_mode=mock_mode,
+                        )
+                        current_model = agent.llm_client.default_model
+                        console.print(f"[bold green]✓ Провайдер переключен на: [cyan]{prov_name}[/cyan] (модель: [yellow]{current_model}[/yellow])[/bold green]")
+                    else:
+                        console.print("[red]Доступные провайдеры: `ollama`, `openrouter`[/red]")
+                else:
+                    console.print(f"Текущий провайдер: [cyan]{agent.llm_client.provider}[/cyan], модель: [yellow]{current_model}[/yellow]")
+                continue
+            elif user_input.lower() in {"/models", "models"}:
+                models = agent.llm_client.list_models()
+                console.print(f"[bold cyan]Доступные модели ({agent.llm_client.provider}):[/bold cyan]")
+                for m in models:
+                    mark = " [bold green]✓ активна[/bold green]" if m == current_model else ""
+                    console.print(f"  • [yellow]{m}[/yellow]{mark}")
+                continue
             elif user_input.startswith("/model "):
                 current_model = user_input.split(maxsplit=1)[1].strip()
+                agent.llm_client.default_model = current_model
                 console.print(f"[cyan]✓ Модель переключена на: {current_model}[/cyan]")
                 continue
             elif user_input.startswith("/topk "):
@@ -905,7 +970,7 @@ def run_chat_memory(args):
                     console.print("[red]Неверное число для top_k[/red]")
                 continue
             elif user_input.lower() in {"/help", "help"}:
-                console.print("Доступные команды:\n  /switch [№] - Выбрать и переключить активную сессию по номеру\n  /state      - Показать текущую память задачи\n  /sources    - Показать источники последнего ответа\n  /history    - Просмотреть историю диалога\n  /save       - Сохранить текущую сессию\n  /new        - Начать новую сессию\n  /rag on|off - Переключить RAG\n  /rewrite on|off - Переключить Query Rewrite\n  /rerank on|off  - Переключить Rerank\n  /model <name>   - Сменить модель LLM\n  /topk <k>       - Изменить количество чанков\n  /exit       - Выход")
+                console.print("Доступные команды:\n  /provider <ollama|openrouter> - Сменить провайдера LLM\n  /models     - Список доступных моделей провайдера\n  /model <name>   - Сменить модель LLM\n  /switch [№] - Выбрать и переключить активную сессию по номеру\n  /state      - Показать текущую память задачи\n  /sources    - Показать источники последнего ответа\n  /history    - Просмотреть историю диалога\n  /save       - Сохранить текущую сессию\n  /new        - Начать новую сессию\n  /rag on|off - Переключить RAG\n  /rewrite on|off - Переключить Query Rewrite\n  /rerank on|off  - Переключить Rerank\n  /topk <k>       - Изменить количество чанков\n  /exit       - Выход")
                 continue
 
             with console.status(f"[cyan]Поиск в кодовой базе и генерация ответа...[/cyan]"):
@@ -942,8 +1007,8 @@ def run_chat_memory(args):
         except KeyboardInterrupt:
             store.save(session)
             break
-        except OpenRouterError as err:
-            console.print(f"[red]OpenRouter API Error: {err}[/red]")
+        except (OpenRouterError, OllamaError) as err:
+            console.print(f"[red]{type(err).__name__}: {err}[/red]")
         except Exception as exc:
             console.print(f"[red]Error: {exc}[/red]")
 
@@ -1105,6 +1170,83 @@ def run_benchmark_grounded(args):
     console.print(f"\n[bold green]✓ Full Grounded Benchmark Report saved to:[/bold green] [white]{report_path}[/white]\n")
 
 
+def run_compare_models(args):
+    """Сравнение локальной LLM (Ollama) и облачной LLM (OpenRouter) - День 28."""
+    setup_console(args)
+    console.print(f"\n[bold green]=== Day 28: Comparison Benchmark - Local LLM vs Cloud LLM ===[/bold green]")
+
+    strat = getattr(args, "strategy", "structural")
+    index_dir = default_config.fixed_index_dir if strat == "fixed" else default_config.structural_index_dir
+
+    if not (index_dir / "index.faiss").exists():
+        console.print(f"[red]Error: Index for strategy '{strat}' not found in {index_dir}. Run `index` first.[/red]")
+        sys.exit(1)
+
+    store = VectorStore.load(index_dir)
+    embedder = OllamaEmbedder(
+        base_url=default_config.ollama_base_url,
+        model=default_config.ollama_model,
+    )
+
+    local_model = getattr(args, "local_model", None) or default_config.ollama_chat_model
+    cloud_model = getattr(args, "cloud_model", None) or default_config.openrouter_model
+    api_key = getattr(args, "api_key", None) or default_config.openrouter_api_key
+    mock_cloud = getattr(args, "mock", False)
+
+    console.print("[cyan]Инициализация клиентов LLM...[/cyan]")
+    local_client = create_llm_client(
+        provider="ollama",
+        model=local_model,
+        timeout=default_config.ollama_timeout,
+    )
+    cloud_client = create_llm_client(
+        provider="openrouter",
+        model=cloud_model,
+        api_key=api_key,
+        mock_mode=mock_cloud,
+        timeout=default_config.openrouter_timeout,
+    )
+
+    initial_top_k = getattr(args, "initial_top_k", default_config.rerank_initial_top_k) or default_config.rerank_initial_top_k
+    threshold = getattr(args, "threshold", default_config.rerank_similarity_threshold) or default_config.rerank_similarity_threshold
+    top_k = getattr(args, "top_k", default_config.rerank_final_top_k) or default_config.rerank_final_top_k
+
+    local_agent = RAGAgent(
+        vector_store=store,
+        embedder=embedder,
+        llm_client=local_client,
+        default_top_k=top_k,
+        initial_top_k=initial_top_k,
+        similarity_threshold=threshold,
+    )
+    cloud_agent = RAGAgent(
+        vector_store=store,
+        embedder=embedder,
+        llm_client=cloud_client,
+        default_top_k=top_k,
+        initial_top_k=initial_top_k,
+        similarity_threshold=threshold,
+    )
+
+    comparator = ModelComparator(console=console)
+    summary, comparisons = comparator.compare(
+        local_agent=local_agent,
+        cloud_agent=cloud_agent,
+        limit=args.limit,
+    )
+
+    console.print("\n")
+    summary_table = comparator.render_summary_table(summary)
+    console.print(summary_table)
+
+    report_path = Path(args.output) if args.output else default_config.local_comparison_report_path
+    report_content = comparator.generate_markdown_report(summary, comparisons)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(report_content)
+    console.print(f"\n[bold green]✓ Отчёт сравнения моделей сохранён в:[/bold green] [white]{report_path}[/white]\n")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="RAG-Indexer",
@@ -1152,13 +1294,14 @@ def main():
     p_ask.add_argument("--threshold", type=float, default=default_config.rerank_similarity_threshold, help="Similarity cutoff threshold")
     p_ask.add_argument("--strategy", choices=["fixed", "structural"], default="structural", help="Vector index strategy")
     p_ask.add_argument("--top-k", type=int, default=default_config.default_top_k, help="Number of retrieved chunks")
-    p_ask.add_argument("--model", default=None, help="OpenRouter model identifier")
+    p_ask.add_argument("--provider", choices=["ollama", "openrouter"], default=default_config.llm_provider, help="LLM provider: 'ollama' (local) or 'openrouter' (cloud)")
+    p_ask.add_argument("--model", default=None, help="LLM model identifier")
     p_ask.add_argument("--api-key", default=None, help="OpenRouter API Key")
     p_ask.add_argument("--filter", default=None, help="Filter sources by substring")
     p_ask.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
     p_ask.add_argument("--width", type=int, default=None, help="Explicit console width (default: auto-detected visible window width)")
 
-    # 6. chat (NEW Day 22, updated Day 23)
+    # 6. chat (NEW Day 22, updated Day 23 & 28)
     p_chat = subparsers.add_parser("chat", help="Interactive terminal chat with RAG toggle")
     p_chat.add_argument("--rag", dest="rag", action="store_true", default=True, help="Start in RAG mode (default)")
     p_chat.add_argument("--no-rag", dest="rag", action="store_false", help="Start in No-RAG mode")
@@ -1168,6 +1311,7 @@ def main():
     p_chat.add_argument("--initial-top-k", type=int, default=default_config.rerank_initial_top_k)
     p_chat.add_argument("--strategy", choices=["fixed", "structural"], default="structural")
     p_chat.add_argument("--top-k", type=int, default=default_config.default_top_k)
+    p_chat.add_argument("--provider", choices=["ollama", "openrouter"], default=default_config.llm_provider, help="LLM provider")
     p_chat.add_argument("--model", default=None)
     p_chat.add_argument("--api-key", default=None)
     p_chat.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
@@ -1177,6 +1321,7 @@ def main():
     p_eval = subparsers.add_parser("eval", help="Run 10 benchmark questions comparing No-RAG vs With-RAG")
     p_eval.add_argument("--strategy", choices=["fixed", "structural"], default="structural")
     p_eval.add_argument("--top-k", type=int, default=default_config.default_top_k)
+    p_eval.add_argument("--provider", choices=["ollama", "openrouter"], default=default_config.llm_provider)
     p_eval.add_argument("--model", default=None)
     p_eval.add_argument("--api-key", default=None)
     p_eval.add_argument("--limit", type=int, default=None, help="Limit number of questions to evaluate")
@@ -1191,6 +1336,7 @@ def main():
     p_cr.add_argument("--top-k", type=int, default=default_config.rerank_final_top_k, help="Final top-K chunks")
     p_cr.add_argument("--initial-top-k", type=int, default=default_config.rerank_initial_top_k, help="Initial candidate chunks")
     p_cr.add_argument("--threshold", type=float, default=default_config.rerank_similarity_threshold, help="Similarity cutoff threshold")
+    p_cr.add_argument("--provider", choices=["ollama", "openrouter"], default=default_config.llm_provider)
     p_cr.add_argument("--model", default=None)
     p_cr.add_argument("--api-key", default=None)
     p_cr.add_argument("--limit", type=int, default=None, help="Limit number of benchmark questions")
@@ -1203,12 +1349,14 @@ def main():
     p_bg.add_argument("--strategy", choices=["fixed", "structural"], default="structural")
     p_bg.add_argument("--top-k", type=int, default=default_config.rerank_final_top_k, help="Number of retrieved chunks")
     p_bg.add_argument("--threshold", type=float, default=default_config.grounded_relevance_threshold, help="Cutoff threshold for 'I don't know' refusal")
+    p_bg.add_argument("--provider", choices=["ollama", "openrouter"], default=default_config.llm_provider)
     p_bg.add_argument("--model", default=None)
     p_bg.add_argument("--api-key", default=None)
     p_bg.add_argument("--limit", type=int, default=None, help="Limit number of benchmark questions")
     p_bg.add_argument("--delay", type=float, default=default_config.grounded_eval_delay, help="Delay in seconds between questions to prevent rate limits")
     p_bg.add_argument("--output", default=None, help="Custom output path for markdown report")
     p_bg.add_argument("--width", type=int, default=None, help="Explicit console width (default: auto-detected visible window width)")
+
     # 10. chat-memory (NEW Day 25: RAG Chat with Task Memory)
     p_cm = subparsers.add_parser("chat-memory", help="Production-like RAG chat with Task Memory and session persistence (Day 25)")
     p_cm.add_argument("--session", default=None, help="Existing session ID to resume")
@@ -1224,10 +1372,25 @@ def main():
     p_cm.add_argument("--strategy", choices=["fixed", "structural"], default="structural")
     p_cm.add_argument("--top-k", type=int, default=default_config.default_top_k)
     p_cm.add_argument("--window", type=int, default=10, help="Sliding window size for chat history")
+    p_cm.add_argument("--provider", choices=["ollama", "openrouter"], default=default_config.llm_provider, help="LLM provider: 'ollama' (local) or 'openrouter' (cloud)")
     p_cm.add_argument("--model", default=None)
     p_cm.add_argument("--api-key", default=None)
     p_cm.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
     p_cm.add_argument("--width", type=int, default=None, help="Explicit console width (default: auto-detected visible window width)")
+
+    # 11. compare-models (NEW Day 28: Local LLM + RAG vs Cloud LLM)
+    p_cmod = subparsers.add_parser("compare-models", help="Compare Local LLM (Ollama) vs Cloud LLM (OpenRouter) on Day 28 benchmark")
+    p_cmod.add_argument("--strategy", choices=["fixed", "structural"], default="structural")
+    p_cmod.add_argument("--local-model", default=default_config.ollama_chat_model, help="Local Ollama model name (default: qwen3:8b)")
+    p_cmod.add_argument("--cloud-model", default=default_config.openrouter_model, help="Cloud OpenRouter model name")
+    p_cmod.add_argument("--top-k", type=int, default=default_config.rerank_final_top_k, help="Number of retrieved chunks")
+    p_cmod.add_argument("--initial-top-k", type=int, default=default_config.rerank_initial_top_k, help="Initial candidate chunks before reranking")
+    p_cmod.add_argument("--threshold", type=float, default=default_config.rerank_similarity_threshold, help="Similarity cutoff threshold")
+    p_cmod.add_argument("--api-key", default=None, help="OpenRouter API Key for cloud model")
+    p_cmod.add_argument("--limit", type=int, default=None, help="Limit number of benchmark questions (default: all 10)")
+    p_cmod.add_argument("--output", default=None, help="Custom output path for markdown comparison report")
+    p_cmod.add_argument("--mock", action="store_true", help="Run cloud model in mock mode")
+    p_cmod.add_argument("--width", type=int, default=None, help="Explicit console width")
 
     args = parser.parse_args()
 
@@ -1251,6 +1414,8 @@ def main():
         run_compare_rerank(args)
     elif args.command == "benchmark-grounded":
         run_benchmark_grounded(args)
+    elif args.command == "compare-models":
+        run_compare_models(args)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from src.agent.base_llm import BaseLLMClient
 from src.agent.openrouter_client import OpenRouterClient, OpenRouterError
 
 
@@ -35,7 +36,7 @@ class QueryRewriter:
 
     def __init__(
         self,
-        llm_client: Optional[OpenRouterClient] = None,
+        llm_client: Optional[BaseLLMClient] = None,
         model: Optional[str] = None,
         enabled: bool = True,
     ):
@@ -58,6 +59,17 @@ class QueryRewriter:
             )
 
         t0 = time.time()
+
+        # For local Ollama models on CPU, avoid extra 90-second LLM prefill by using fast heuristic rewrite
+        if self.llm_client and getattr(self.llm_client, "provider", "") == "ollama":
+            heuristic_res = self._heuristic_rewrite(q_clean)
+            return QueryRewriteResult(
+                original_query=question,
+                rewritten_query=heuristic_res,
+                latency_seconds=time.time() - t0,
+                is_rewritten=True,
+                method="heuristic",
+            )
 
         # Try LLM query rewrite if client is present and not explicitly in mock mode
         is_mock = getattr(self.llm_client, "mock_mode", None) is True

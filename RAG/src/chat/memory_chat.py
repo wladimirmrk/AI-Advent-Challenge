@@ -8,6 +8,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
+from src.agent.base_llm import BaseLLMClient, LLMResponse
 from src.agent.openrouter_client import OpenRouterClient, OpenRouterResponse
 from src.agent.rag_agent import RAGAgent, RAGResult, RetrievedSource
 from src.chat.models import ChatMessage, ChatSession, ChatTurnResult, TaskState
@@ -353,7 +354,7 @@ class MemoryChatEngine:
         target_model = model or self.rag_agent.llm_client.default_model
 
         try:
-            llm_resp: OpenRouterResponse = self.rag_agent.llm_client.chat_completion(
+            llm_resp: LLMResponse = self.rag_agent.llm_client.chat_completion(
                 messages=messages,
                 model=target_model,
                 temperature=temperature,

@@ -435,4 +435,61 @@ python -m pytest tests/test_memory_chat.py::test_two_long_scenarios_with_report 
 OPENROUTER_MODEL="google/gemma-4-31b-it:free" python -m pytest tests/test_memory_chat.py::test_two_long_scenarios_with_report -m live -s
 ```
 
+---
+
+# 🚀 День 28. Локальная LLM + RAG (Неделя 6)
+
+Полностью автономный локальный контур RAG-системы для кодовой базы CryptoTrack:
+- **Локальный индекс Недели 6**: векторное хранилище FAISS + метаданные SQLite + структурный чанкинг.
+- **Локальный Retrieval**: семантический поиск через локальную модель эмбеддингов `nomic-embed-text` в Ollama + локальный ONNX кросс-энкодер `ms-marco-TinyBERT-L-2-v2`.
+- **Локальная генерация ответов**: инференс через локальную LLM (`qwen3:8b`, `tinyllama:latest`) в Ollama.
+- **Выбор провайдера**: переключение между `ollama` (локально) и `openrouter` (облако) как при запуске CLI, так и на лету прямо в чате.
+- **Сравнение моделей**: автоматический бенчмарк по 10 вопросам (7 In-Domain + 3 Out-of-Domain), замер скорости, качества и стабильности.
+
+## 1. Команды запуска и выбор провайдера
+
+```bash
+# 1. Интерактивный CLI-чат с локальной моделью Ollama (дефолт: qwen3:8b):
+python -m src.cli chat --provider ollama
+
+# 2. Интерактивный CLI-чат с облачной моделью OpenRouter:
+python -m src.cli chat --provider openrouter --model nvidia/nemotron-3.5-lightning:free
+
+# 3. Production-like RAG-чат с памятью задачи (Task State) на локальной LLM:
+python -m src.cli chat-memory --provider ollama
+
+# 4. Разовый запрос с локальной генерацией:
+python -m src.cli ask "Как в объекте AssetAmountValidator реализована валидация?" --provider ollama
+
+# 5. Запуск сравнительного бенчмарка моделей (День 28):
+python -m src.cli compare-models
+```
+
+### Команды переключения внутри чата
+| Команда | Описание |
+|:---|:---|
+| `/provider <ollama\|openrouter>` | Мгновенно переключить активного провайдера модели |
+| `/models` | Получить список установленных/доступных моделей провайдера |
+| `/model <name>` | Сменить модель активного провайдера (например, `qwen3:8b` или `tinyllama:latest`) |
+| `/rag on\|off` | Включить/выключить RAG-поиск контекста |
+| `/rewrite on\|off` | Включить/выключить обогащение запроса (Query Rewrite) |
+| `/rerank on\|off` | Включить/выключить кросс-энкодер реранкинга и фильтрацию шума |
+
+## 2. Результаты сравнения: Локальная LLM vs Облачная LLM
+
+📄 **Полный сравнительный отчёт бенчмарка:** [`RAG/data/local_llm_comparison_report.md`](file:///c:/Users/W/Projects/AI%20Advent%20Challenge/RAG/data/local_llm_comparison_report.md)
+
+### Оценка ключевых критериев:
+1. **Качество (Quality)**:
+   - При подключении к локальному RAG-индексу модель `qwen3:8b` генерирует точные технические ответы по классам Android-приложения (`AssetAmountValidator`, `CryptoTrackDatabase`, `RoomConventionPlugin`, `CryptoTrackApplication`), опираясь строго на извлеченные сниппеты кода.
+   - Честно констатирует отсутствие данных при попытке запросить неподдерживаемый функционал.
+2. **Скорость (Speed)**:
+   - Локальный поиск (FAISS + Reranker): **< 0.15с** (высокая производительность).
+   - Генерация на локальном CPU: **~2.3–2.7 tok/s** (достаточно для интерактивного чтения).
+   - Облачные GPU (OpenRouter): **~50–100 tok/s**.
+3. **Стабильность и автономность (Stability)**:
+   - **100% автономность локального контура**: система не зависит от наличия интернета, внешних API, кредитов и дневных лимитов квот (в отличие от бесплатных лимитов OpenRouter 429/402).
+   - **Конфиденциальность**: исходный код и архитектурные решения закрытого проекта не передаются третьим сторонам.
+
+
 

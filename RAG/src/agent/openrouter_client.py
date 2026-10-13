@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 import requests
 
+from src.agent.base_llm import BaseLLMClient, LLMResponse
+
 logger = logging.getLogger(__name__)
 
 
@@ -20,20 +22,15 @@ class OpenRouterError(Exception):
 
 
 @dataclass
-class OpenRouterResponse:
-    content: str
-    model: str
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-    latency_seconds: float = 0.0
-    finish_reason: str = "stop"
-    raw_response: Dict[str, Any] = field(default_factory=dict)
-    is_mock: bool = False
+class OpenRouterResponse(LLMResponse):
+    """Backwards-compatible OpenRouterResponse inheriting from unified LLMResponse."""
+    provider: str = "openrouter"
 
 
-class OpenRouterClient:
+class OpenRouterClient(BaseLLMClient):
     """Client for making chat completion requests to OpenRouter API."""
+
+    provider: str = "openrouter"
 
     def __init__(
         self,
@@ -494,3 +491,44 @@ class OpenRouterClient:
         raise OpenRouterError(
             f"Failed to communicate with OpenRouter after {self.max_retries} attempts: {last_err}"
         )
+
+    def generate(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: float = 0.2,
+        max_tokens: Optional[int] = 2500,
+    ) -> LLMResponse:
+        """Normalized generation method implementing BaseLLMClient interface."""
+        return self.chat_completion(
+            messages=messages,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens or 2500,
+        )
+
+    def list_models(self) -> List[str]:
+        """Return list of recommended / available OpenRouter models."""
+        # Try fetching models from API if configured
+        if self.api_key and not self.mock_mode:
+            try:
+                res = requests.get(
+                    f"{self.base_url}/models",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    timeout=5,
+                )
+                if res.status_code == 200:
+                    data = res.json()
+                    models = [m.get("id") for m in data.get("data", []) if m.get("id")]
+                    if models:
+                        return models
+            except Exception:
+                pass
+
+        return [
+            "nvidia/nemotron-3.5-lightning:free",
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "google/gemini-2.0-flash-exp:free",
+            "deepseek/deepseek-r1:free",
+            "mistralai/mistral-7b-instruct:free",
+        ]

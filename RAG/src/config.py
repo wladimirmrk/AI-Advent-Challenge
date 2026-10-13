@@ -35,6 +35,11 @@ class AppConfig:
     structural_max_chunk_size: int = 2500
     structural_chunk_overlap: int = 150
 
+    # LLM Provider & Settings (Day 28)
+    llm_provider: str = os.getenv("LLM_PROVIDER", "ollama")
+    ollama_chat_model: str = os.getenv("OLLAMA_CHAT_MODEL", "qwen3:8b")
+    ollama_timeout: int = int(os.getenv("OLLAMA_TIMEOUT", "300"))
+
     # LLM & OpenRouter Settings
     openrouter_base_url: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     openrouter_model: str = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free")
@@ -89,6 +94,10 @@ class AppConfig:
     @property
     def grounded_benchmark_report_path(self) -> Path:
         return self.data_dir / "grounded_benchmark_report.md"
+
+    @property
+    def local_comparison_report_path(self) -> Path:
+        return self.data_dir / "local_llm_comparison_report.md"
 
 
 def load_env_file():
