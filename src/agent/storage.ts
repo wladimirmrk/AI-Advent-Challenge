@@ -134,6 +134,9 @@ export const DEFAULT_CONFIG: AgentConfig = {
   systemPrompt: 'You are a helpful, concise AI assistant.',
   recentMessagesCount: 10,
   summaryThreshold: 10,
+  customParamsEnabled: false,
+  temperature: 0.7,
+  maxTokens: 2048,
 };
 
 export const DEFAULT_TASK_STATE: TaskState = {
@@ -772,6 +775,18 @@ export function loadConfig(chatId: string = 'default'): AgentConfig {
             typeof parsed.summaryThreshold === 'number' && parsed.summaryThreshold > 0
               ? parsed.summaryThreshold
               : DEFAULT_CONFIG.summaryThreshold,
+          customParamsEnabled:
+            typeof parsed.customParamsEnabled === 'boolean'
+              ? parsed.customParamsEnabled
+              : false,
+          temperature:
+            typeof parsed.temperature === 'number' && !isNaN(parsed.temperature)
+              ? parsed.temperature
+              : DEFAULT_CONFIG.temperature ?? 0.7,
+          maxTokens:
+            typeof parsed.maxTokens === 'number' || parsed.maxTokens === null
+              ? parsed.maxTokens
+              : DEFAULT_CONFIG.maxTokens ?? 2048,
         };
       }
     }

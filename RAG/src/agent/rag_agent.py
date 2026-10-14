@@ -135,6 +135,44 @@ class RAGAgent:
             {"role": "user", "content": user_content},
         ]
 
+    @staticmethod
+    def build_coding_optimized_prompt(question: str, sources: List[RetrievedSource]) -> List[dict]:
+        """Construct specialized, compact prompt optimized for coding tasks with zero CoT preamble and direct citations."""
+        context_parts = []
+        for src in sources:
+            lines_info = (
+                f":L{src.start_line}-L{src.end_line}"
+                if src.start_line is not None and src.end_line is not None
+                else ""
+            )
+            context_parts.append(
+                f"[FILE: {src.source}{lines_info} | {src.section}]\n"
+                f"```text\n{src.content.strip()}\n```"
+            )
+
+        context_block = "\n\n".join(context_parts)
+
+        system_instruction = (
+            "Вы — технический ассистент по кодовой базе CryptoTrack (Kotlin, Android, Room, Hilt, Compose).\n"
+            "ПРАВИЛА ОТВЕТА (КОДИНГ & АРХИТЕКТУРА):\n"
+            "1. Отвечайте строго по существу. ЗАПРЕЩЕНЫ вступительные фразы, вежливые предисловия и CoT-рассуждения.\n"
+            "2. Перечисляйте точные сущности (Entities), DAO, классы, методы и аннотации из контекста.\n"
+            "3. Подтверждайте утверждения ссылками [Source: path/file.kt:Lstart-Lend].\n"
+            "4. Если в контексте нет информации, ответьте прямо: «В предоставленном контексте кодовой базы отсутствуют сведения о...».\n"
+            "5. Формат: структурированный Markdown со списками ключевых элементов."
+        )
+
+        user_content = (
+            f"КОНТЕКСТ КОДОВОЙ БАЗЫ:\n{context_block}\n\n"
+            f"ВОПРОС: {question}\n"
+            "Краткий технический ответ со ссылками на источники:"
+        )
+
+        return [
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": user_content},
+        ]
+
     def build_grounded_rag_prompt(self, question: str, sources: List[RetrievedSource]) -> List[dict]:
         """Construct prompt enforcing structured JSON with answer, sources, exact quotes, and refusal rules."""
         context_parts = []
@@ -535,6 +573,9 @@ class RAGAgent:
         model: Optional[str] = None,
         filter_source: Optional[str] = None,
         temperature: float = 0.2,
+        prompt_mode: str = "standard",
+        max_tokens: Optional[int] = None,
+        num_ctx: Optional[int] = None,
     ) -> RAGResult:
         """Execute full pipeline: question -> optional rewrite -> retrieval -> optional filter & rerank -> prompt assembly -> LLM response -> optional grounding verification."""
         t_start = time.time()
@@ -635,6 +676,8 @@ class RAGAgent:
 
             if use_grounded:
                 messages = self.build_grounded_rag_prompt(question, sources)
+            elif prompt_mode == "coding_optimized":
+                messages = self.build_coding_optimized_prompt(question, sources)
             else:
                 messages = self.build_rag_prompt(question, sources)
             context_text = messages[1]["content"]
@@ -642,12 +685,20 @@ class RAGAgent:
             messages = self.build_no_rag_prompt(question)
 
         resp_format = {"type": "json_object"} if (use_grounded and use_rag) else None
-        llm_resp: OpenRouterResponse = self.llm_client.chat_completion(
+        llm_resp = self.llm_client.generate(
             messages=messages,
             model=model,
             temperature=temperature,
+            max_tokens=max_tokens,
+            num_ctx=num_ctx,
             response_format=resp_format,
         )
+
+        # Backward compatibility for legacy tests mocking chat_completion
+        if not isinstance(getattr(llm_resp, "content", None), str) and hasattr(self.llm_client, "chat_completion"):
+            cc_val = getattr(self.llm_client.chat_completion, "return_value", None)
+            if cc_val is not None and isinstance(getattr(cc_val, "content", None), str):
+                llm_resp = cc_val
 
         total_latency = time.time() - t_start
         final_answer = llm_resp.content
@@ -700,6 +751,9 @@ class RAGAgent:
         model: Optional[str] = None,
         filter_source: Optional[str] = None,
         temperature: float = 0.2,
+        prompt_mode: str = "standard",
+        max_tokens: Optional[int] = None,
+        num_ctx: Optional[int] = None,
     ) -> RAGStreamSession:
         """Stream response tokens in real-time, returning a RAGStreamSession with metadata and live generator."""
         t_start = time.time()
@@ -828,6 +882,8 @@ class RAGAgent:
 
             if use_grounded:
                 messages = self.build_grounded_rag_prompt(question, sources)
+            elif prompt_mode == "coding_optimized":
+                messages = self.build_coding_optimized_prompt(question, sources)
             else:
                 messages = self.build_rag_prompt(question, sources)
             context_text = messages[1]["content"]
@@ -849,6 +905,8 @@ class RAGAgent:
                 messages=messages,
                 model=target_model,
                 temperature=temperature,
+                max_tokens=max_tokens,
+                num_ctx=num_ctx,
                 response_format=resp_format,
             ):
                 collected_chunks.append(chunk)

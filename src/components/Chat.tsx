@@ -12,9 +12,10 @@ import { MemoryHub } from './MemoryHub';
 import { TaskStatusBar } from './TaskStatusBar';
 import { HeaderActionsMenu } from './HeaderActionsMenu';
 import { McpModal } from './McpModal';
+import { ModelParamsModal } from './ModelParamsModal';
 import { loadMcpServers } from '../agent/mcp/storage';
 import { McpServerConfig } from '../agent/mcp/types';
-import { Bot, Settings as SettingsIcon, Cpu, User } from 'lucide-react';
+import { Bot, Settings as SettingsIcon, Cpu, User, SlidersHorizontal } from 'lucide-react';
 
 interface ChatProps {
   agent?: Agent;
@@ -25,6 +26,7 @@ export const Chat: React.FC<ChatProps> = ({
 }) => {
   const [agentState, setAgentState] = useState<AgentState>(() => agent.getState());
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isModelParamsOpen, setIsModelParamsOpen] = useState(false);
   const [isMcpModalOpen, setIsMcpModalOpen] = useState(false);
   const [mcpServers, setMcpServers] = useState<McpServerConfig[]>(() => loadMcpServers());
   const [isFactsDrawerOpen, setIsFactsDrawerOpen] = useState(false);
@@ -184,6 +186,28 @@ export const Chat: React.FC<ChatProps> = ({
                 )}
             </select>
           </div>
+
+          {/* Per-chat Model Parameters Button */}
+          <button
+            type="button"
+            className={`model-params-toggle-btn ${agentState.config.customParamsEnabled ? 'params-active' : ''}`}
+            onClick={() => setIsModelParamsOpen(true)}
+            title={
+              agentState.config.customParamsEnabled
+                ? `Индивидуальные параметры активны (T: ${agentState.config.temperature?.toFixed(2) ?? '0.7'}, Max: ${agentState.config.maxTokens ?? 'def'}, Ctx: ${agentState.config.contextWindow ? `${Math.round(agentState.config.contextWindow / 1024)}k` : 'def'})`
+                : 'Настроить параметры модели для этого чата (по умолчанию выключено)'
+            }
+          >
+            <SlidersHorizontal size={14} className="model-params-icon" />
+            <span className="model-params-label">
+              {agentState.config.customParamsEnabled
+                ? `T: ${agentState.config.temperature?.toFixed(2) ?? '0.7'}`
+                : 'Параметры'}
+            </span>
+            {agentState.config.customParamsEnabled && (
+              <span className="custom-params-badge" title="Индивидуальные параметры включены">ON</span>
+            )}
+          </button>
 
           {/* Quick Profile Switcher / Badge */}
           <div className="profile-selector-wrapper" title="Активный профиль пользователя">
@@ -379,6 +403,13 @@ export const Chat: React.FC<ChatProps> = ({
         onSave={handleSaveSettings}
         onAddCustomModel={(model) => agent.addCustomModel(model)}
         onRemoveCustomModel={(modelId) => agent.removeCustomModel(modelId)}
+      />
+
+      {/* Per-Chat Model Parameters Modal */}
+      <ModelParamsModal
+        isOpen={isModelParamsOpen}
+        onClose={() => setIsModelParamsOpen(false)}
+        agent={agent}
       />
 
       {/* MCP Modal */}

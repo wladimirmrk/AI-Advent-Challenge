@@ -90,6 +90,12 @@ export interface AgentConfig {
   recentMessagesCount: number;
   /** Number of unsummarized messages older than the N window needed to trigger incremental summary. Defaults to 10. */
   summaryThreshold: number;
+  /** Whether custom per-chat model inference parameters are enabled (default: false) */
+  customParamsEnabled?: boolean;
+  /** Generation temperature (0.0 to 2.0). Typically 0.1-0.3 for coding, 0.7 for general */
+  temperature?: number;
+  /** Max completion tokens (num_predict in Ollama, max_tokens in OpenRouter) */
+  maxTokens?: number | null;
 }
 
 export interface TrimInfo {

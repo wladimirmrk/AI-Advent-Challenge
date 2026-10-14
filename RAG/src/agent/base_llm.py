@@ -17,6 +17,10 @@ class LLMResponse:
     raw_response: Dict[str, Any] = field(default_factory=dict)
     is_mock: bool = False
     thinking_content: Optional[str] = None
+    prompt_eval_duration_seconds: float = 0.0
+    eval_duration_seconds: float = 0.0
+    tokens_per_second: float = 0.0
+    num_ctx: Optional[int] = None
 
 
 @dataclass
@@ -47,6 +51,8 @@ class BaseLLMClient(ABC):
         model: Optional[str] = None,
         temperature: float = 0.2,
         max_tokens: Optional[int] = None,
+        num_ctx: Optional[int] = None,
+        **kwargs: Any,
     ) -> LLMResponse:
         """Send chat messages and return a normalized LLMResponse."""
         pass
@@ -59,6 +65,8 @@ class BaseLLMClient(ABC):
         temperature: float = 0.2,
         max_tokens: Optional[int] = None,
         response_format: Optional[Dict[str, Any]] = None,
+        num_ctx: Optional[int] = None,
+        **kwargs: Any,
     ):
         """Stream chat messages and yield StreamChunk increments."""
         pass

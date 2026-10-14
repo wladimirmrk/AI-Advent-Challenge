@@ -164,6 +164,13 @@ export async function fetchOllamaModelInfo(
   }
 }
 
+export interface OllamaOptions {
+  temperature?: number;
+  num_predict?: number;
+  num_ctx?: number;
+  top_p?: number;
+}
+
 /**
  * Sends chat completion request to native Ollama API POST /api/chat.
  */
@@ -172,20 +179,26 @@ export async function sendOllamaChat(
   payload: {
     model: string;
     messages: Array<{ role: string; content: string }>;
+    options?: OllamaOptions;
   }
 ): Promise<OllamaChatResult> {
   const baseUrl = normalizeOllamaUrl(ollamaUrl);
+
+  const requestBody: Record<string, unknown> = {
+    model: payload.model,
+    messages: payload.messages,
+    stream: false,
+  };
+  if (payload.options && Object.keys(payload.options).length > 0) {
+    requestBody.options = payload.options;
+  }
 
   const res = await fetch(`${baseUrl}/api/chat`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model: payload.model,
-      messages: payload.messages,
-      stream: false,
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   if (!res.ok) {
@@ -225,22 +238,28 @@ export async function sendOllamaChatStream(
   payload: {
     model: string;
     messages: Array<{ role: string; content: string }>;
+    options?: OllamaOptions;
   },
   onChunk?: StreamChunkCallback,
   signal?: AbortSignal
 ): Promise<OllamaChatResult> {
   const baseUrl = normalizeOllamaUrl(ollamaUrl);
 
+  const requestBody: Record<string, unknown> = {
+    model: payload.model,
+    messages: payload.messages,
+    stream: true,
+  };
+  if (payload.options && Object.keys(payload.options).length > 0) {
+    requestBody.options = payload.options;
+  }
+
   const res = await fetch(`${baseUrl}/api/chat`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model: payload.model,
-      messages: payload.messages,
-      stream: true,
-    }),
+    body: JSON.stringify(requestBody),
     signal,
   });
 

@@ -458,6 +458,10 @@ def run_ask(args):
                     grounded_threshold=grounded_thresh,
                     model=args.model,
                     filter_source=args.filter,
+                    temperature=getattr(args, "temperature", None) if getattr(args, "temperature", None) is not None else 0.2,
+                    prompt_mode=getattr(args, "prompt_mode", "standard"),
+                    max_tokens=getattr(args, "max_tokens", None),
+                    num_ctx=getattr(args, "num_ctx", None),
                 )
             except OpenRouterError as err:
                 console.print(f"\n[bold red]OpenRouter API Error:[/bold red] {err}")
@@ -562,6 +566,10 @@ def run_ask(args):
                 grounded_threshold=grounded_thresh,
                 model=args.model,
                 filter_source=args.filter,
+                temperature=getattr(args, "temperature", None) if getattr(args, "temperature", None) is not None else 0.2,
+                prompt_mode=getattr(args, "prompt_mode", "standard"),
+                max_tokens=getattr(args, "max_tokens", None),
+                num_ctx=getattr(args, "num_ctx", None),
             )
         except OpenRouterError as err:
             console.print(f"\n[bold red]OpenRouter API Error:[/bold red] {err}")
@@ -1477,6 +1485,65 @@ def run_compare_models(args):
     console.print(f"\n[bold green]✓ Отчёт сравнения моделей сохранён в:[/bold green] [white]{report_path}[/white]\n")
 
 
+def run_optimize_local(args):
+    """Benchmark and compare Local LLM before and after Day 29 optimization."""
+    setup_console(args)
+    console.print(f"\n[bold magenta]=== Day 29: Local LLM Optimization & Coding Benchmark ===[/bold magenta]")
+
+    strat = getattr(args, "strategy", "structural")
+    index_dir = default_config.fixed_index_dir if strat == "fixed" else default_config.structural_index_dir
+
+    if not (index_dir / "index.faiss").exists():
+        console.print(f"[red]Error: Index for strategy '{strat}' not found in {index_dir}. Run `index` first.[/red]")
+        sys.exit(1)
+
+    store = VectorStore.load(index_dir)
+    embedder = OllamaEmbedder(
+        base_url=default_config.ollama_base_url,
+        model=default_config.ollama_model,
+    )
+
+    baseline_model = getattr(args, "baseline_model", None) or default_config.ollama_chat_model
+    optimized_model = getattr(args, "optimized_model", None) or default_config.ollama_chat_model
+    skip_quant = getattr(args, "no_quantized", False)
+    quantized_model = None if skip_quant else (getattr(args, "quantized_model", None) or default_config.ollama_quantization_model)
+    is_mock = getattr(args, "mock", False)
+
+    client = create_llm_client(
+        provider="ollama",
+        model=optimized_model,
+        timeout=default_config.ollama_timeout,
+        mock_mode=is_mock,
+    )
+
+    top_k = getattr(args, "top_k", default_config.rerank_final_top_k) or default_config.rerank_final_top_k
+    rag_agent = RAGAgent(
+        vector_store=store,
+        embedder=embedder,
+        llm_client=client,
+        default_top_k=top_k,
+    )
+
+    from src.evaluation.optimizer_comparator import OptimizerComparator
+    from src.evaluation.grounded_evaluator import GROUNDED_BENCHMARK_SUITE
+
+    limit = getattr(args, "limit", None)
+    suite = GROUNDED_BENCHMARK_SUITE[:limit] if limit else GROUNDED_BENCHMARK_SUITE[:5]
+
+    comparator = OptimizerComparator(console=console)
+    comparisons, summary = comparator.run_benchmark(
+        rag_agent=rag_agent,
+        questions=suite,
+        baseline_model=baseline_model,
+        optimized_model=optimized_model,
+        quantized_model=quantized_model,
+    )
+
+    default_report_path = BASE_DIR / "data" / "day29_optimization_report.md"
+    report_path = Path(args.output) if args.output else default_report_path
+    comparator.generate_markdown_report(comparisons, summary, output_file=report_path)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="RAG-Indexer",
@@ -1528,6 +1595,10 @@ def main():
     p_ask.add_argument("--model", default=None, help="LLM model identifier")
     p_ask.add_argument("--api-key", default=None, help="OpenRouter API Key")
     p_ask.add_argument("--filter", default=None, help="Filter sources by substring")
+    p_ask.add_argument("--temperature", type=float, default=None, help="Generation temperature (e.g. 0.15 for coding)")
+    p_ask.add_argument("--max-tokens", type=int, default=None, help="Max completion tokens (num_predict in Ollama)")
+    p_ask.add_argument("--num-ctx", type=int, default=None, help="Context window size in tokens for local model")
+    p_ask.add_argument("--prompt-mode", choices=["standard", "coding_optimized"], default="standard", help="Prompt template mode")
     p_stream_ask = p_ask.add_mutually_exclusive_group()
     p_stream_ask.add_argument("--stream", dest="stream", action="store_true", default=True, help="Enable streaming response tokens (default: True)")
     p_stream_ask.add_argument("--no-stream", dest="stream", action="store_false", help="Disable streaming response")
@@ -1547,6 +1618,10 @@ def main():
     p_chat.add_argument("--provider", choices=["ollama", "openrouter"], default=default_config.llm_provider, help="LLM provider")
     p_chat.add_argument("--model", default=None)
     p_chat.add_argument("--api-key", default=None)
+    p_chat.add_argument("--temperature", type=float, default=None, help="Generation temperature")
+    p_chat.add_argument("--max-tokens", type=int, default=None, help="Max completion tokens")
+    p_chat.add_argument("--num-ctx", type=int, default=None, help="Context window size")
+    p_chat.add_argument("--prompt-mode", choices=["standard", "coding_optimized"], default="standard", help="Prompt template mode")
     p_stream_chat = p_chat.add_mutually_exclusive_group()
     p_stream_chat.add_argument("--stream", dest="stream", action="store_true", default=True, help="Enable streaming response tokens (default: True)")
     p_stream_chat.add_argument("--no-stream", dest="stream", action="store_false", help="Disable streaming response")
@@ -1631,6 +1706,18 @@ def main():
     p_cmod.add_argument("--mock", action="store_true", help="Run cloud model in mock mode")
     p_cmod.add_argument("--width", type=int, default=None, help="Explicit console width")
 
+    # 12. optimize-local (NEW Day 29: Local LLM Optimization Benchmark)
+    p_opt = subparsers.add_parser("optimize-local", help="Benchmark and compare Local LLM before and after optimization (Day 29)")
+    p_opt.add_argument("--strategy", choices=["fixed", "structural"], default="structural")
+    p_opt.add_argument("--baseline-model", default=default_config.ollama_chat_model, help="Baseline model name (default: qwen3:8b)")
+    p_opt.add_argument("--optimized-model", default=default_config.ollama_chat_model, help="Optimized model name (default: qwen3:8b)")
+    p_opt.add_argument("--quantized-model", default=default_config.ollama_quantization_model, help="Quantized / lightweight model to compare (default: tinyllama:latest)")
+    p_opt.add_argument("--no-quantized", action="store_true", help="Skip quantized model comparison")
+    p_opt.add_argument("--limit", type=int, default=None, help="Limit number of benchmark questions")
+    p_opt.add_argument("--output", default=None, help="Custom output path for markdown report (default: data/day29_optimization_report.md)")
+    p_opt.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
+    p_opt.add_argument("--width", type=int, default=None, help="Explicit console width")
+
     args = parser.parse_args()
 
     if args.command == "index":
@@ -1655,6 +1742,8 @@ def main():
         run_benchmark_grounded(args)
     elif args.command == "compare-models":
         run_compare_models(args)
+    elif args.command == "optimize-local":
+        run_optimize_local(args)
 
 
 if __name__ == "__main__":

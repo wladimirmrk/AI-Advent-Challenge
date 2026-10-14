@@ -45,6 +45,13 @@ class AppConfig:
         else None
     )
 
+    # Local LLM Optimization Settings (Day 29)
+    ollama_temperature: float = float(os.getenv("OLLAMA_TEMPERATURE", "0.15"))
+    ollama_num_predict: int = int(os.getenv("OLLAMA_NUM_PREDICT", "512"))
+    ollama_num_ctx: int = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
+    ollama_prompt_mode: str = os.getenv("OLLAMA_PROMPT_MODE", "coding_optimized")
+    ollama_quantization_model: str = os.getenv("OLLAMA_QUANTIZATION_MODEL", "tinyllama:latest")
+
     # LLM & OpenRouter Settings
     openrouter_base_url: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     openrouter_model: str = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free")

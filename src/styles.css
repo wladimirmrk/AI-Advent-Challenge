@@ -6660,3 +6660,402 @@ input:checked + .slider:before {
 }
 
 
+
+/* ==========================================================================
+   Day 29: Per-Chat Model Parameter Settings Modal & Toggle Button
+   ========================================================================== */
+
+.model-params-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+  height: 34px;
+}
+
+.model-params-toggle-btn:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
+  border-color: var(--border-focus);
+}
+
+.model-params-toggle-btn.params-active {
+  background: rgba(99, 102, 241, 0.15);
+  border-color: rgba(99, 102, 241, 0.5);
+  color: var(--accent-primary);
+  box-shadow: 0 0 10px rgba(99, 102, 241, 0.2);
+}
+
+[data-theme='light'] .model-params-toggle-btn.params-active {
+  background: rgba(99, 102, 241, 0.1);
+  border-color: rgba(99, 102, 241, 0.4);
+  color: #4f46e5;
+  box-shadow: 0 0 8px rgba(99, 102, 241, 0.15);
+}
+
+.model-params-icon {
+  color: var(--accent-primary);
+}
+
+.custom-params-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  font-size: 10px;
+  font-weight: 700;
+  background: var(--accent-primary);
+  color: #ffffff;
+  border-radius: 4px;
+  line-height: 1.2;
+}
+
+/* Modal styling */
+.model-params-modal {
+  max-width: 580px;
+  width: 92%;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  color: var(--text-primary);
+}
+
+.modal-subtitle {
+  display: block;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.modal-subtitle strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.model-params-modal .primary-icon {
+  color: var(--accent-primary);
+  flex-shrink: 0;
+}
+
+.model-params-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 20px 20px 20px;
+}
+
+.params-toggle-banner {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  transition: all 0.2s ease;
+}
+
+.params-toggle-banner.active {
+  background: rgba(99, 102, 241, 0.12);
+  border-color: rgba(99, 102, 241, 0.45);
+}
+
+[data-theme='light'] .params-toggle-banner.active {
+  background: rgba(99, 102, 241, 0.08);
+  border-color: rgba(99, 102, 241, 0.35);
+}
+
+.checkbox-control-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.custom-checkbox-input {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  accent-color: var(--accent-primary);
+  cursor: pointer;
+}
+
+.checkbox-text-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.checkbox-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.checkbox-description {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.params-disabled-notice {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  background: var(--bg-inset);
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.notice-icon {
+  color: var(--status-info);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.notice-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.params-active-container {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.quick-presets-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--bg-inset-soft);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+}
+
+.presets-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.preset-buttons-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.preset-chip-btn {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.preset-chip-btn:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+.preset-chip-btn.coding-preset {
+  border-color: rgba(16, 185, 129, 0.5);
+  color: var(--status-success);
+}
+
+.preset-chip-btn.coding-preset:hover {
+  background: rgba(16, 185, 129, 0.12);
+}
+
+.preset-chip-btn.balance-preset {
+  border-color: rgba(99, 102, 241, 0.5);
+  color: var(--status-info);
+}
+
+.preset-chip-btn.balance-preset:hover {
+  background: rgba(99, 102, 241, 0.12);
+}
+
+.preset-chip-btn.creative-preset {
+  border-color: rgba(245, 158, 11, 0.5);
+  color: var(--status-warning);
+}
+
+.preset-chip-btn.creative-preset:hover {
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.param-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.param-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.param-value-tag {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(99, 102, 241, 0.18);
+  color: #c7d2fe;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+}
+
+[data-theme='light'] .param-value-tag {
+  background: rgba(99, 102, 241, 0.1);
+  color: #4338ca;
+  border-color: rgba(99, 102, 241, 0.25);
+}
+
+.slider-control-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.param-slider {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border-color);
+  accent-color: var(--accent-primary);
+  cursor: pointer;
+}
+
+.param-number-input {
+  width: 72px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: center;
+  transition: border-color 0.15s ease;
+}
+
+.param-number-input:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
+.param-text-input {
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  color: var(--text-primary);
+  font-size: 13px;
+  box-sizing: border-box;
+  transition: border-color 0.15s ease;
+}
+
+.param-text-input:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
+.param-chips {
+  display: flex;
+  gap: 6px;
+}
+
+.chip-selector {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.chip-selector:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
+  border-color: var(--border-focus);
+}
+
+.chip-selector.active {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.field-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+  margin: 0;
+}
+
+.field-hint code,
+.param-label-row code {
+  background: var(--bg-inset-soft);
+  color: var(--inline-code-text);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.modal-footer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-color);
+}
+
+.reset-defaults-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  transition: color 0.15s ease;
+}
+
+.reset-defaults-btn:hover {
+  color: var(--status-error);
+}
+
+.modal-right-actions {
+  display: flex;
+  gap: 8px;
+}

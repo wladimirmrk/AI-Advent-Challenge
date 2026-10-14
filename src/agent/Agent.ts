@@ -431,6 +431,35 @@ export class Agent {
     this.notify();
   }
 
+  public setCustomParamsEnabled(enabled: boolean): void {
+    this.config.customParamsEnabled = enabled;
+    saveConfig(this.config, this.chatId);
+    this.notify();
+  }
+
+  public setCustomModelParams(params: {
+    enabled?: boolean;
+    temperature?: number;
+    maxTokens?: number | null;
+    contextWindow?: number | null;
+  }): void {
+    if (params.enabled !== undefined) {
+      this.config.customParamsEnabled = params.enabled;
+    }
+    if (params.temperature !== undefined) {
+      this.config.temperature = params.temperature;
+    }
+    if (params.maxTokens !== undefined) {
+      this.config.maxTokens = params.maxTokens;
+    }
+    if (params.contextWindow !== undefined) {
+      this.config.contextWindow = params.contextWindow;
+      this.tokenStats.contextWindow = params.contextWindow;
+    }
+    saveConfig(this.config, this.chatId);
+    this.notify();
+  }
+
   public setStrategy(strategy: ContextStrategy): void {
     this.config.strategy = strategy;
     if (strategy === 'demo') {
@@ -2640,6 +2669,12 @@ Do NOT use markdown code fences. Pure JSON only.`,
     isEstimated: boolean;
   }> {
     const model = modelToUse || this.config.model;
+    const isCustom = Boolean(this.config.customParamsEnabled);
+    const customOptions = isCustom ? {
+      temperature: typeof this.config.temperature === 'number' ? this.config.temperature : undefined,
+      num_predict: typeof this.config.maxTokens === 'number' && this.config.maxTokens > 0 ? this.config.maxTokens : undefined,
+      num_ctx: typeof this.config.contextWindow === 'number' && this.config.contextWindow > 0 ? this.config.contextWindow : undefined,
+    } : undefined;
 
     if (this.config.provider === 'ollama') {
       if (onChunk) {
@@ -2648,6 +2683,7 @@ Do NOT use markdown code fences. Pure JSON only.`,
           {
             model,
             messages,
+            options: customOptions,
           },
           onChunk,
           signal
@@ -2666,6 +2702,7 @@ Do NOT use markdown code fences. Pure JSON only.`,
         const ollamaRes = await sendOllamaChat(this.config.ollamaUrl, {
           model,
           messages,
+          options: customOptions,
         });
 
         const promptTokens = ollamaRes.promptTokens || estimateConversationTokens(messages);
@@ -2680,6 +2717,22 @@ Do NOT use markdown code fences. Pure JSON only.`,
       }
     } else {
       if (onChunk) {
+        const openRouterBody: Record<string, unknown> = {
+          model,
+          messages,
+          stream: true,
+          stream_options: { include_usage: true },
+          include_reasoning: true,
+        };
+        if (isCustom) {
+          if (typeof this.config.temperature === 'number') {
+            openRouterBody.temperature = this.config.temperature;
+          }
+          if (typeof this.config.maxTokens === 'number' && this.config.maxTokens > 0) {
+            openRouterBody.max_tokens = this.config.maxTokens;
+          }
+        }
+
         const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
           method: 'POST',
           headers: {
@@ -2688,13 +2741,7 @@ Do NOT use markdown code fences. Pure JSON only.`,
             'HTTP-Referer': typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173',
             'X-Title': 'Educational AI Agent Chat',
           },
-          body: JSON.stringify({
-            model,
-            messages,
-            stream: true,
-            stream_options: { include_usage: true },
-            include_reasoning: true,
-          }),
+          body: JSON.stringify(openRouterBody),
           signal,
         });
 
@@ -2892,6 +2939,19 @@ Do NOT use markdown code fences. Pure JSON only.`,
           isEstimated: !usage,
         };
       } else {
+        const openRouterBody: Record<string, unknown> = {
+          model,
+          messages,
+        };
+        if (isCustom) {
+          if (typeof this.config.temperature === 'number') {
+            openRouterBody.temperature = this.config.temperature;
+          }
+          if (typeof this.config.maxTokens === 'number' && this.config.maxTokens > 0) {
+            openRouterBody.max_tokens = this.config.maxTokens;
+          }
+        }
+
         const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
           method: 'POST',
           headers: {
@@ -2900,10 +2960,7 @@ Do NOT use markdown code fences. Pure JSON only.`,
             'HTTP-Referer': typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173',
             'X-Title': 'Educational AI Agent Chat',
           },
-          body: JSON.stringify({
-            model,
-            messages,
-          }),
+          body: JSON.stringify(openRouterBody),
           signal,
         });
 

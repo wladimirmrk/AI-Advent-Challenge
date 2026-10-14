@@ -349,6 +349,8 @@ class OpenRouterClient(BaseLLMClient):
         temperature: float = 0.2,
         max_tokens: int = 2500,
         response_format: Optional[Dict[str, Any]] = None,
+        num_ctx: Optional[int] = None,
+        **kwargs: Any,
     ) -> OpenRouterResponse:
         """Execute a chat completion request to OpenRouter with automatic retries or mock fallback."""
         target_model = model or self.default_model
@@ -535,6 +537,8 @@ class OpenRouterClient(BaseLLMClient):
         temperature: float = 0.2,
         max_tokens: Optional[int] = 2500,
         response_format: Optional[Dict[str, Any]] = None,
+        num_ctx: Optional[int] = None,
+        **kwargs: Any,
     ):
         """Stream chat completion requests from OpenRouter via SSE and yield StreamChunk increments."""
         target_model = model or self.default_model
@@ -715,6 +719,8 @@ class OpenRouterClient(BaseLLMClient):
         model: Optional[str] = None,
         temperature: float = 0.2,
         max_tokens: Optional[int] = 2500,
+        num_ctx: Optional[int] = None,
+        **kwargs: Any,
     ) -> LLMResponse:
         """Normalized generation method implementing BaseLLMClient interface."""
         return self.chat_completion(
@@ -722,6 +728,8 @@ class OpenRouterClient(BaseLLMClient):
             model=model,
             temperature=temperature,
             max_tokens=max_tokens or 2500,
+            num_ctx=num_ctx,
+            **kwargs,
         )
 
     def list_models(self) -> List[str]:

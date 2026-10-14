@@ -93,13 +93,50 @@ class OllamaClient(BaseLLMClient):
 
         return text, None
 
-    def _generate_mock_response(self, messages: List[Dict[str, str]], target_model: str) -> LLMResponse:
+    def _extract_ollama_metrics(self, data: Dict[str, Any], base_duration: float = 0.0) -> Dict[str, Any]:
+        """Extract duration and token metrics from Ollama API response body."""
+        prompt_eval_dur = (data.get("prompt_eval_duration", 0) or 0) / 1e9
+        eval_dur = (data.get("eval_duration", 0) or 0) / 1e9
+        comp_toks = data.get("eval_count", 0)
+        prompt_toks = data.get("prompt_eval_count", 0)
+
+        if eval_dur > 0:
+            tok_per_sec = comp_toks / eval_dur
+        elif base_duration > 0:
+            tok_per_sec = comp_toks / base_duration
+        else:
+            tok_per_sec = 0.0
+
+        return {
+            "prompt_eval_duration_seconds": round(prompt_eval_dur, 3),
+            "eval_duration_seconds": round(eval_dur, 3),
+            "tokens_per_second": round(tok_per_sec, 2),
+            "prompt_tokens": prompt_toks,
+            "completion_tokens": comp_toks,
+            "total_tokens": prompt_toks + comp_toks,
+        }
+
+    def _generate_mock_response(
+        self,
+        messages: List[Dict[str, str]],
+        target_model: str,
+        num_ctx: Optional[int] = None,
+    ) -> LLMResponse:
         """Deterministic high-fidelity mock response for local testing and CI/CD."""
         user_msg = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
-        is_rag = "КОНТЕКСТ ИЗ КОДОВОЙ БАЗЫ CRYPTOTRACK:" in user_msg or "### Источник #" in user_msg
+        is_rag = (
+            "КОНТЕКСТ ИЗ КОДОВОЙ БАЗЫ CRYPTOTRACK:" in user_msg
+            or "### Источник #" in user_msg
+            or "КОНТЕКСТ КОДОВОЙ БАЗЫ" in user_msg
+            or "[FILE:" in user_msg
+        )
 
         # Extract citations
         sources_found = re.findall(r"### Источник #(\d+):\s*`([^`]+)`(?:\s*\(строки\s*([^)]+)\))?", user_msg)
+        if not sources_found:
+            for fm in re.findall(r"\[FILE:\s*([^:|\]\n]+)(?::L([^|\]\n]+))?", user_msg):
+                sources_found.append((0, fm[0], fm[1]))
+
         citations = []
         for sf in sources_found:
             path = sf[1]
@@ -146,6 +183,9 @@ class OllamaClient(BaseLLMClient):
 
         prompt_toks = sum(len(m.get("content", "").split()) for m in messages) * 2
         comp_toks = len(body.split()) * 2
+        latency = 0.35 if (num_ctx and num_ctx <= 4096) else 0.85
+        eval_dur = latency * 0.7
+        tok_speed = (comp_toks / eval_dur) if eval_dur > 0 else 25.0
 
         return LLMResponse(
             content=body,
@@ -154,10 +194,14 @@ class OllamaClient(BaseLLMClient):
             prompt_tokens=prompt_toks,
             completion_tokens=comp_toks,
             total_tokens=prompt_toks + comp_toks,
-            latency_seconds=0.45,
+            latency_seconds=latency,
             finish_reason="stop",
             is_mock=True,
             thinking_content="Локальный mock-анализ контекста кодовой базы...",
+            prompt_eval_duration_seconds=round(latency * 0.3, 3),
+            eval_duration_seconds=round(eval_dur, 3),
+            tokens_per_second=round(tok_speed, 2),
+            num_ctx=num_ctx,
         )
 
     def generate(
@@ -166,24 +210,33 @@ class OllamaClient(BaseLLMClient):
         model: Optional[str] = None,
         temperature: float = 0.2,
         max_tokens: Optional[int] = 2500,
+        num_ctx: Optional[int] = None,
+        **kwargs: Any,
     ) -> LLMResponse:
         """Send chat messages to local Ollama instance and return LLMResponse."""
         target_model = model or self.default_model
 
         if self.mock_mode:
-            return self._generate_mock_response(messages, target_model)
+            return self._generate_mock_response(messages, target_model, num_ctx=num_ctx)
 
         url = f"{self.base_url}/api/chat"
+        options: Dict[str, Any] = {
+            "temperature": temperature,
+        }
+        if max_tokens:
+            options["num_predict"] = max_tokens
+        if num_ctx:
+            options["num_ctx"] = num_ctx
+        for k, v in kwargs.items():
+            if k in {"top_p", "top_k", "repeat_penalty"} and v is not None:
+                options[k] = v
+
         payload = {
             "model": target_model,
             "messages": messages,
             "stream": False,
-            "options": {
-                "temperature": temperature,
-            },
+            "options": options,
         }
-        if max_tokens:
-            payload["options"]["num_predict"] = max_tokens
 
         last_error = None
         for attempt in range(1, self.max_retries + 1):
@@ -203,22 +256,24 @@ class OllamaClient(BaseLLMClient):
                     raw_content = msg.get("content", "")
                     clean_content, thinking = self._extract_thinking(raw_content)
 
-                    prompt_toks = data.get("prompt_eval_count", 0)
-                    comp_toks = data.get("eval_count", 0)
-                    total_toks = prompt_toks + comp_toks
+                    metrics = self._extract_ollama_metrics(data, latency)
 
                     return LLMResponse(
                         content=clean_content,
                         model=target_model,
                         provider="ollama",
-                        prompt_tokens=prompt_toks,
-                        completion_tokens=comp_toks,
-                        total_tokens=total_toks,
+                        prompt_tokens=metrics["prompt_tokens"],
+                        completion_tokens=metrics["completion_tokens"],
+                        total_tokens=metrics["total_tokens"],
                         latency_seconds=latency,
                         finish_reason=data.get("done_reason", "stop"),
                         raw_response=data,
                         is_mock=False,
                         thinking_content=thinking,
+                        prompt_eval_duration_seconds=metrics["prompt_eval_duration_seconds"],
+                        eval_duration_seconds=metrics["eval_duration_seconds"],
+                        tokens_per_second=metrics["tokens_per_second"],
+                        num_ctx=num_ctx,
                     )
 
                 if resp.status_code == 404:
@@ -310,6 +365,8 @@ class OllamaClient(BaseLLMClient):
         temperature: float = 0.2,
         max_tokens: Optional[int] = 2500,
         response_format: Optional[Dict[str, Any]] = None,
+        num_ctx: Optional[int] = None,
+        **kwargs: Any,
     ):
         """Stream chat messages to local Ollama instance and yield StreamChunk increments."""
         target_model = model or self.default_model
@@ -319,16 +376,23 @@ class OllamaClient(BaseLLMClient):
             return
 
         url = f"{self.base_url}/api/chat"
+        options: Dict[str, Any] = {
+            "temperature": temperature,
+        }
+        if max_tokens:
+            options["num_predict"] = max_tokens
+        if num_ctx:
+            options["num_ctx"] = num_ctx
+        for k, v in kwargs.items():
+            if k in {"top_p", "top_k", "repeat_penalty"} and v is not None:
+                options[k] = v
+
         payload: Dict[str, Any] = {
             "model": target_model,
             "messages": messages,
             "stream": True,
-            "options": {
-                "temperature": temperature,
-            },
+            "options": options,
         }
-        if max_tokens:
-            payload["options"]["num_predict"] = max_tokens
         if response_format and response_format.get("type") == "json_object":
             payload["format"] = "json"
 
