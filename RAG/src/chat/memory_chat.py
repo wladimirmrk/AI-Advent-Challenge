@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import logging
 import re
 import time
 from typing import Any, Dict, List, Optional
 
-from src.agent.base_llm import BaseLLMClient, LLMResponse
+from src.agent.base_llm import BaseLLMClient, LLMResponse, StreamChunk
 from src.agent.openrouter_client import OpenRouterClient, OpenRouterResponse
-from src.agent.rag_agent import RAGAgent, RAGResult, RetrievedSource
+from src.agent.rag_agent import RAGAgent, RAGResult, RetrievedSource, StreamingJsonAnswerExtractor
 from src.chat.models import ChatMessage, ChatSession, ChatTurnResult, TaskState
 from src.chat.session_store import SessionStore
 
@@ -433,3 +434,166 @@ class MemoryChatEngine:
             latency_seconds=round(total_latency, 3),
             total_tokens=llm_resp.total_tokens,
         )
+
+    def stream_turn(
+        self,
+        user_question: str,
+        model: Optional[str] = None,
+        use_rag: bool = True,
+        use_rewrite: bool = True,
+        use_rerank: bool = True,
+        top_k: Optional[int] = None,
+        temperature: float = 0.2,
+    ) -> ChatStreamTurnSession:
+        """Stream conversational response in real-time while maintaining TaskState and session history."""
+        t_start = time.time()
+        sources: List[RetrievedSource] = []
+        retrieval_latency = 0.0
+
+        if use_rag:
+            sources, retrieval_latency = self.retrieve_context(
+                question=user_question,
+                use_rewrite=use_rewrite,
+                use_rerank=use_rerank,
+                top_k=top_k,
+            )
+
+        messages = self._build_messages(user_question, sources)
+        target_model = model or self.rag_agent.llm_client.default_model
+
+        collected_raw_content: List[str] = []
+        collected_raw_thinking: List[str] = []
+        final_chunk_holder: List[StreamChunk] = []
+        llm_timing: List[float] = [0.0]
+
+        def live_stream_generator():
+            extractor = StreamingJsonAnswerExtractor()
+            t_llm0 = time.time()
+            try:
+                for chunk in self.rag_agent.llm_client.stream_generate(
+                    messages=messages,
+                    model=target_model,
+                    temperature=temperature,
+                    max_tokens=3500,
+                    response_format={"type": "json_object"},
+                ):
+                    if chunk.finish_reason:
+                        final_chunk_holder.append(chunk)
+
+                    if chunk.thinking_delta:
+                        collected_raw_thinking.append(chunk.thinking_delta)
+                        yield chunk
+
+                    if chunk.delta:
+                        collected_raw_content.append(chunk.delta)
+                        text_to_show = extractor.process(chunk.delta)
+                        if text_to_show:
+                            yield StreamChunk(
+                                delta=text_to_show,
+                                is_thinking=False,
+                                model=chunk.model,
+                                provider=chunk.provider,
+                            )
+
+                flushed = extractor.flush()
+                if flushed:
+                    yield StreamChunk(
+                        delta=flushed,
+                        is_thinking=False,
+                        model=target_model,
+                        provider=self.rag_agent.llm_client.provider,
+                    )
+            finally:
+                llm_timing[0] = time.time() - t_llm0
+
+        def result_getter() -> ChatTurnResult:
+            full_raw_text = "".join(collected_raw_content)
+            fc = final_chunk_holder[0] if final_chunk_holder else None
+            p_toks = fc.prompt_tokens if fc else 0
+            c_toks = fc.completion_tokens if fc else 0
+            t_toks = fc.total_tokens if fc else (p_toks + c_toks)
+
+            if t_toks == 0:
+                p_toks = sum(len(m.get("content", "").split()) for m in messages) * 2
+                c_toks = len(full_raw_text.split()) * 2
+                t_toks = p_toks + c_toks
+
+            answer_text, parsed_sources, task_update = self._parse_response(
+                raw_text=full_raw_text,
+                user_question=user_question,
+                sources=sources,
+            )
+
+            formatted_sources: list[dict] = []
+            for s in sources:
+                formatted_sources.append({
+                    "source": s.source,
+                    "section": s.section,
+                    "score": round(s.score, 4),
+                    "rerank_score": round(s.rerank_score, 4) if s.rerank_score is not None else None,
+                    "start_line": s.start_line,
+                    "end_line": s.end_line,
+                    "citation": s.citation,
+                })
+
+            self.session.add_message(
+                ChatMessage(
+                    role="user",
+                    content=user_question,
+                )
+            )
+
+            self.session.task_state.update(task_update)
+
+            asst_msg = ChatMessage(
+                role="assistant",
+                content=answer_text,
+                sources=formatted_sources,
+                task_state_snapshot=self.session.task_state.to_dict(),
+                rag_metadata={
+                    "total_tokens": t_toks,
+                    "prompt_tokens": p_toks,
+                    "completion_tokens": c_toks,
+                    "llm_latency": round(llm_timing[0], 3),
+                    "retrieval_latency": round(retrieval_latency, 3),
+                    "model": target_model,
+                    "is_mock": bool(getattr(self.rag_agent.llm_client, "mock_mode", False)),
+                    "mock_fallback": bool(getattr(self.rag_agent.llm_client, "degraded_to_mock", False)),
+                },
+            )
+            self.session.add_message(asst_msg)
+
+            if self.session_store:
+                try:
+                    self.session_store.save(self.session)
+                except Exception as e:
+                    logger.warning(f"Failed to auto-save session: {e}")
+
+            total_latency = time.time() - t_start
+
+            return ChatTurnResult(
+                answer=answer_text,
+                sources=formatted_sources,
+                task_state=self.session.task_state,
+                rag_result=None,
+                latency_seconds=round(total_latency, 3),
+                total_tokens=t_toks,
+            )
+
+        return ChatStreamTurnSession(
+            user_question=user_question,
+            sources=sources,
+            retrieval_latency=retrieval_latency,
+            chunks=live_stream_generator(),
+            get_result=result_getter,
+        )
+
+
+@dataclass
+class ChatStreamTurnSession:
+    """Session object for tracking turn retrieval info, live streaming, and final ChatTurnResult."""
+    user_question: str
+    sources: List[RetrievedSource]
+    retrieval_latency: float
+    chunks: Any
+    get_result: Any

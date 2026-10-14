@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
-from src.agent.base_llm import BaseLLMClient, LLMResponse
+from src.agent.base_llm import BaseLLMClient, LLMResponse, StreamChunk
 from src.agent.openrouter_client import OpenRouterClient, OpenRouterResponse
 from src.agent.query_rewriter import QueryRewriter, QueryRewriteResult
 from src.embeddings.ollama_embedder import OllamaEmbedder
@@ -683,3 +685,403 @@ class RAGAgent:
             pipeline_result=pipeline_res,
             grounded_answer=grounded_ans,
         )
+
+    def stream_query(
+        self,
+        question: str,
+        use_rag: bool = True,
+        use_rewrite: bool = False,
+        use_rerank: bool = False,
+        use_grounded: bool = False,
+        top_k: Optional[int] = None,
+        initial_top_k: Optional[int] = None,
+        similarity_threshold: Optional[float] = None,
+        grounded_threshold: Optional[float] = None,
+        model: Optional[str] = None,
+        filter_source: Optional[str] = None,
+        temperature: float = 0.2,
+    ) -> RAGStreamSession:
+        """Stream response tokens in real-time, returning a RAGStreamSession with metadata and live generator."""
+        t_start = time.time()
+        k_final = top_k or self.default_top_k
+        sources: List[RetrievedSource] = []
+        retrieval_latency = 0.0
+        rewrite_latency = 0.0
+        rerank_latency = 0.0
+        context_text = ""
+        rewritten_q = None
+        pipeline_res = None
+        initial_count = 0
+        dropped_count = 0
+        target_model = model or self.llm_client.default_model
+
+        if use_rag:
+            search_query = question
+            if use_rewrite and self.query_rewriter:
+                rw_res = self.query_rewriter.rewrite(question)
+                rewritten_q = rw_res.rewritten_query
+                search_query = rw_res.rewritten_query
+                rewrite_latency = rw_res.latency_seconds
+
+            t_r0 = time.time()
+            if use_rerank and self.rerank_pipeline:
+                k_initial = initial_top_k or self.initial_top_k
+                thresh = similarity_threshold if similarity_threshold is not None else self.similarity_threshold
+                raw_sources = self.retrieve_chunks(search_query, top_k=k_initial, filter_source=filter_source)
+                retrieval_latency = time.time() - t_r0
+
+                pipeline_res = self.rerank_pipeline.process(
+                    query=search_query,
+                    candidates=raw_sources,
+                    threshold=thresh,
+                    final_top_k=k_final,
+                )
+                sources = pipeline_res.final_sources
+                initial_count = pipeline_res.initial_count
+                dropped_count = pipeline_res.dropped_by_filter
+                rerank_latency = pipeline_res.total_latency
+            else:
+                sources = self.retrieve_chunks(search_query, top_k=k_final, filter_source=filter_source)
+                retrieval_latency = time.time() - t_r0
+                initial_count = len(sources)
+                dropped_count = 0
+
+            # Level 1 Anti-Hallucination Guard (Day 24)
+            top_score = max([s.score for s in sources], default=0.0)
+            g_thresh = grounded_threshold if grounded_threshold is not None else self.grounded_threshold
+
+            if use_grounded and (not sources or top_score < g_thresh):
+                refusal_answer = (
+                    "В кодовой базе проекта CryptoTrack отсутствуют релевантные сведения для ответа на данный вопрос "
+                    f"(наивысшая релевантность {top_score:.4f} ниже допустимого порога {g_thresh:.2f}). "
+                    "Ассистент переведен в режим анти-галлюцинаций («не знаю»)."
+                )
+                clarification_p = (
+                    "Пожалуйста, уточните ваш запрос: назовите конкретный класс, экран, модуль или сценарий Android-проекта CryptoTrack."
+                )
+                grounded_ans = GroundedAnswer(
+                    answer=refusal_answer,
+                    sources=[],
+                    quotes=[],
+                    status="refusal",
+                    needs_clarification=True,
+                    clarification_prompt=clarification_p,
+                    grounding_score=0.0,
+                    faithfulness_score=1.0,
+                    top_relevance_score=top_score,
+                    cutoff_threshold=g_thresh,
+                    model=target_model,
+                    raw_response_text="[LEVEL 1 RELEVANCE CUTOFF]",
+                )
+                total_latency = time.time() - t_start
+
+                def refusal_chunks():
+                    yield StreamChunk(
+                        delta=refusal_answer,
+                        is_thinking=False,
+                        model=target_model,
+                        provider=self.llm_client.provider,
+                    )
+                    yield StreamChunk(
+                        finish_reason="stop",
+                        model=target_model,
+                        provider=self.llm_client.provider,
+                    )
+
+                def refusal_get_result():
+                    return RAGResult(
+                        question=question,
+                        answer=refusal_answer,
+                        use_rag=use_rag,
+                        sources=[],
+                        model=target_model,
+                        prompt_tokens=0,
+                        completion_tokens=0,
+                        total_tokens=0,
+                        latency_seconds=total_latency,
+                        retrieval_latency=retrieval_latency,
+                        llm_latency=0.0,
+                        context_text="",
+                        rewritten_query=rewritten_q,
+                        rewrite_latency=rewrite_latency,
+                        rerank_latency=rerank_latency,
+                        initial_sources_count=initial_count,
+                        dropped_by_filter_count=dropped_count,
+                        pipeline_result=pipeline_res,
+                        grounded_answer=grounded_ans,
+                    )
+
+                return RAGStreamSession(
+                    question=question,
+                    sources=[],
+                    rewritten_query=rewritten_q,
+                    rewrite_latency=rewrite_latency,
+                    retrieval_latency=retrieval_latency,
+                    rerank_latency=rerank_latency,
+                    initial_sources_count=initial_count,
+                    dropped_by_filter_count=dropped_count,
+                    pipeline_result=pipeline_res,
+                    is_refusal=True,
+                    chunks=refusal_chunks(),
+                    get_result=refusal_get_result,
+                )
+
+            if use_grounded:
+                messages = self.build_grounded_rag_prompt(question, sources)
+            else:
+                messages = self.build_rag_prompt(question, sources)
+            context_text = messages[1]["content"]
+        else:
+            messages = self.build_no_rag_prompt(question)
+
+        resp_format = {"type": "json_object"} if (use_grounded and use_rag) else None
+
+        collected_chunks: List[StreamChunk] = []
+        raw_content_chunks: List[str] = []
+        raw_thinking_chunks: List[str] = []
+        final_chunk_holder: List[StreamChunk] = []
+        llm_timing: List[float] = [0.0]
+
+        def live_stream_generator():
+            extractor = StreamingJsonAnswerExtractor() if (use_grounded and use_rag) else None
+            t_llm0 = time.time()
+            for chunk in self.llm_client.stream_generate(
+                messages=messages,
+                model=target_model,
+                temperature=temperature,
+                response_format=resp_format,
+            ):
+                collected_chunks.append(chunk)
+                if chunk.finish_reason:
+                    final_chunk_holder.append(chunk)
+
+                if chunk.thinking_delta:
+                    raw_thinking_chunks.append(chunk.thinking_delta)
+                    yield chunk
+
+                if chunk.delta:
+                    raw_content_chunks.append(chunk.delta)
+                    if extractor:
+                        text_to_show = extractor.process(chunk.delta)
+                        if text_to_show:
+                            yield StreamChunk(
+                                delta=text_to_show,
+                                is_thinking=False,
+                                model=chunk.model,
+                                provider=chunk.provider,
+                            )
+                    else:
+                        yield chunk
+
+            if extractor:
+                flushed = extractor.flush()
+                if flushed:
+                    yield StreamChunk(
+                        delta=flushed,
+                        is_thinking=False,
+                        model=target_model,
+                        provider=self.llm_client.provider,
+                    )
+
+            llm_timing[0] = time.time() - t_llm0
+
+        def result_getter() -> RAGResult:
+            full_raw_text = "".join(raw_content_chunks)
+            total_lat = time.time() - t_start
+            fc = final_chunk_holder[0] if final_chunk_holder else None
+            p_toks = fc.prompt_tokens if fc else 0
+            c_toks = fc.completion_tokens if fc else 0
+            t_toks = fc.total_tokens if fc else (p_toks + c_toks)
+
+            if p_toks == 0 and c_toks == 0:
+                p_toks = sum(len(m.get("content", "").split()) for m in messages) * 2
+                c_toks = len(full_raw_text.split()) * 2
+                t_toks = p_toks + c_toks
+
+            grounded_answer_obj = None
+            final_ans = full_raw_text
+
+            if use_grounded and use_rag:
+                g_thresh = grounded_threshold if grounded_threshold is not None else self.grounded_threshold
+                top_score = max([s.score for s in sources], default=0.0)
+                grounded_answer_obj = self.parse_grounded_response(
+                    raw_text=full_raw_text,
+                    sources=sources,
+                    model=target_model,
+                    cutoff_threshold=g_thresh,
+                    top_score=top_score,
+                )
+                final_ans = grounded_answer_obj.answer
+
+            return RAGResult(
+                question=question,
+                answer=final_ans,
+                use_rag=use_rag,
+                sources=sources,
+                model=target_model,
+                prompt_tokens=p_toks,
+                completion_tokens=c_toks,
+                total_tokens=t_toks,
+                latency_seconds=total_lat,
+                retrieval_latency=retrieval_latency,
+                llm_latency=llm_timing[0],
+                context_text=context_text,
+                rewritten_query=rewritten_q,
+                rewrite_latency=rewrite_latency,
+                rerank_latency=rerank_latency,
+                initial_sources_count=initial_count,
+                dropped_by_filter_count=dropped_count,
+                pipeline_result=pipeline_res,
+                grounded_answer=grounded_answer_obj,
+            )
+
+        return RAGStreamSession(
+            question=question,
+            sources=sources,
+            rewritten_query=rewritten_q,
+            rewrite_latency=rewrite_latency,
+            retrieval_latency=retrieval_latency,
+            rerank_latency=rerank_latency,
+            initial_sources_count=initial_count,
+            dropped_by_filter_count=dropped_count,
+            pipeline_result=pipeline_res,
+            is_refusal=False,
+            chunks=live_stream_generator(),
+            get_result=result_getter,
+        )
+
+
+@dataclass
+class RAGStreamSession:
+    """Session object for tracking stream retrieval info and fetching final RAGResult."""
+    question: str
+    sources: List[RetrievedSource]
+    rewritten_query: Optional[str] = None
+    rewrite_latency: float = 0.0
+    retrieval_latency: float = 0.0
+    rerank_latency: float = 0.0
+    initial_sources_count: int = 0
+    dropped_by_filter_count: int = 0
+    pipeline_result: Optional[PipelineResult] = None
+    is_refusal: bool = False
+    chunks: Any = None
+    get_result: Any = None
+
+
+class StreamingJsonAnswerExtractor:
+    """Extracts and unescapes the 'answer' field on-the-fly from a streaming JSON response."""
+
+    def __init__(self):
+        self.state = "INIT"  # "INIT", "SEARCHING_ANSWER", "STREAMING_ANSWER", "DONE_ANSWER", "PASSTHROUGH"
+        self.buffer = ""
+        self.escape = False
+        self.unicode_buffer = ""
+
+    def process(self, chunk_text: str) -> str:
+        if not chunk_text:
+            return ""
+
+        if self.state == "DONE_ANSWER":
+            return ""
+
+        if self.state == "PASSTHROUGH":
+            return chunk_text
+
+        self.buffer += chunk_text
+
+        if self.state == "INIT":
+            stripped = self.buffer.lstrip()
+            if not stripped:
+                return ""
+            if stripped.startswith("{"):
+                self.state = "SEARCHING_ANSWER"
+            elif len(stripped) >= 15:
+                self.state = "PASSTHROUGH"
+                out = self.buffer
+                self.buffer = ""
+                return out
+            else:
+                return ""
+
+        if self.state == "SEARCHING_ANSWER":
+            import re
+            m = re.search(r'["\']answer["\']\s*:\s*["\']', self.buffer)
+            if m:
+                ans_start = m.end()
+                content_after = self.buffer[ans_start:]
+                self.buffer = ""
+                self.state = "STREAMING_ANSWER"
+                return self._stream_string_chars(content_after)
+            elif len(self.buffer) > 200:
+                self.state = "PASSTHROUGH"
+                out = self.buffer
+                self.buffer = ""
+                return out
+            return ""
+
+        if self.state == "STREAMING_ANSWER":
+            content = self.buffer
+            self.buffer = ""
+            return self._stream_string_chars(content)
+
+        return ""
+
+    def _stream_string_chars(self, text: str) -> str:
+        out = []
+        i = 0
+        while i < len(text):
+            c = text[i]
+            if self.unicode_buffer:
+                self.unicode_buffer += c
+                if len(self.unicode_buffer) == 4:
+                    try:
+                        out.append(chr(int(self.unicode_buffer, 16)))
+                    except Exception:
+                        out.append(f"\\u{self.unicode_buffer}")
+                    self.unicode_buffer = ""
+                i += 1
+                continue
+
+            if self.escape:
+                self.escape = False
+                if c == "n":
+                    out.append("\n")
+                elif c == "r":
+                    pass
+                elif c == "t":
+                    out.append("\t")
+                elif c == '"':
+                    out.append('"')
+                elif c == "\\":
+                    out.append("\\")
+                elif c == "u":
+                    self.unicode_buffer = ""
+                else:
+                    out.append(c)
+                i += 1
+                continue
+
+            if c == "\\":
+                self.escape = True
+                i += 1
+                continue
+
+            if c == '"':
+                self.state = "DONE_ANSWER"
+                break
+
+            out.append(c)
+            i += 1
+
+        return "".join(out)
+
+    def flush(self) -> str:
+        if self.state == "STREAMING_ANSWER" and self.buffer:
+            out = self._stream_string_chars(self.buffer)
+            self.buffer = ""
+            return out
+        if self.state == "SEARCHING_ANSWER" and self.buffer:
+            out = self.buffer
+            self.buffer = ""
+            return out
+        return ""

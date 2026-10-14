@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 import requests
 
-from src.agent.base_llm import BaseLLMClient, LLMResponse
+from src.agent.base_llm import BaseLLMClient, LLMResponse, StreamChunk
 
 logger = logging.getLogger(__name__)
 
@@ -491,6 +491,223 @@ class OpenRouterClient(BaseLLMClient):
         raise OpenRouterError(
             f"Failed to communicate with OpenRouter after {self.max_retries} attempts: {last_err}"
         )
+
+    def _stream_mock_response(self, messages: List[Dict[str, str]], target_model: str):
+        """Simulate realistic token-by-token streaming for offline testing and CI."""
+        mock_resp = self._generate_mock_response(messages, target_model)
+        if mock_resp.thinking_content:
+            parts = re.split(r"(\s+)", mock_resp.thinking_content)
+            for p in parts:
+                if p:
+                    yield StreamChunk(
+                        thinking_delta=p,
+                        is_thinking=True,
+                        model=target_model,
+                        provider=self.provider,
+                    )
+                    time.sleep(0.003)
+
+        parts = re.split(r"(\s+)", mock_resp.content)
+        for p in parts:
+            if p:
+                yield StreamChunk(
+                    delta=p,
+                    is_thinking=False,
+                    model=target_model,
+                    provider=self.provider,
+                )
+                time.sleep(0.003)
+
+        yield StreamChunk(
+            delta="",
+            finish_reason="stop",
+            model=target_model,
+            provider=self.provider,
+            prompt_tokens=mock_resp.prompt_tokens,
+            completion_tokens=mock_resp.completion_tokens,
+            total_tokens=mock_resp.total_tokens,
+        )
+
+    def stream_generate(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: float = 0.2,
+        max_tokens: Optional[int] = 2500,
+        response_format: Optional[Dict[str, Any]] = None,
+    ):
+        """Stream chat completion requests from OpenRouter via SSE and yield StreamChunk increments."""
+        target_model = model or self.default_model
+
+        if self.mock_mode:
+            yield from self._stream_mock_response(messages, target_model)
+            return
+
+        if not self.is_configured():
+            raise OpenRouterError(
+                "OpenRouter API key is not configured. "
+                "Provide it via OPENROUTER_API_KEY environment variable, .env file, or --api-key CLI flag.",
+                status_code=401,
+            )
+
+        url = f"{self.base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/wladimirmrk/AI-Advent-Challenge",
+            "X-Title": "AI-Advent-CryptoTrack-RAG",
+        }
+        payload: Dict[str, Any] = {
+            "model": target_model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens or 2500,
+            "stream": True,
+        }
+        if response_format:
+            payload["response_format"] = response_format
+
+        try:
+            resp = requests.post(url, headers=headers, json=payload, stream=True, timeout=self.timeout)
+        except requests.exceptions.RequestException as exc:
+            raise OpenRouterError(f"Network error communicating with OpenRouter: {exc}")
+
+        if resp.status_code != 200:
+            error_body = {}
+            try:
+                error_body = resp.json()
+            except Exception:
+                error_body = {"text": resp.text}
+            error_msg = error_body.get("error", {}).get("message", resp.text)
+
+            if "free-models-per-day" in error_msg:
+                logger.warning("Daily free tier quota exhausted on OpenRouter. Falling back to mock response.")
+                self.mock_mode = True
+                self.degraded_to_mock = True
+                yield from self._stream_mock_response(messages, target_model)
+                return
+
+            if resp.status_code == 401:
+                raise OpenRouterError(f"Authentication failed (401): {error_msg}. Check your OpenRouter API key.", status_code=401)
+            elif resp.status_code == 402:
+                raise OpenRouterError(f"Insufficient credits (402): {error_msg}.", status_code=402)
+            elif resp.status_code == 429:
+                raise OpenRouterError(f"Rate limit exceeded (429): {error_msg}.", status_code=429)
+            else:
+                raise OpenRouterError(f"OpenRouter API error ({resp.status_code}): {error_msg}", status_code=resp.status_code)
+
+        in_thinking = False
+        buffer = ""
+
+        def process_buffer(buf: str, flush_all: bool = False):
+            nonlocal in_thinking
+            out_chunks = []
+            while buf:
+                if not in_thinking:
+                    if "<think>" in buf:
+                        idx = buf.index("<think>")
+                        if idx > 0:
+                            out_chunks.append(StreamChunk(delta=buf[:idx], is_thinking=False, model=target_model, provider=self.provider))
+                        in_thinking = True
+                        buf = buf[idx + len("<think>"):]
+                    elif "<" in buf:
+                        idx = buf.rindex("<")
+                        candidate = buf[idx:]
+                        if "<think>".startswith(candidate) and not flush_all:
+                            if idx > 0:
+                                out_chunks.append(StreamChunk(delta=buf[:idx], is_thinking=False, model=target_model, provider=self.provider))
+                            buf = candidate
+                            break
+                        else:
+                            out_chunks.append(StreamChunk(delta=buf, is_thinking=False, model=target_model, provider=self.provider))
+                            buf = ""
+                    else:
+                        out_chunks.append(StreamChunk(delta=buf, is_thinking=False, model=target_model, provider=self.provider))
+                        buf = ""
+                else:
+                    if "</think>" in buf:
+                        idx = buf.index("</think>")
+                        if idx > 0:
+                            out_chunks.append(StreamChunk(thinking_delta=buf[:idx], is_thinking=True, model=target_model, provider=self.provider))
+                        in_thinking = False
+                        buf = buf[idx + len("</think>"):]
+                    elif "<" in buf:
+                        idx = buf.rindex("<")
+                        candidate = buf[idx:]
+                        if "</think>".startswith(candidate) and not flush_all:
+                            if idx > 0:
+                                out_chunks.append(StreamChunk(thinking_delta=buf[:idx], is_thinking=True, model=target_model, provider=self.provider))
+                            buf = candidate
+                            break
+                        else:
+                            out_chunks.append(StreamChunk(thinking_delta=buf, is_thinking=True, model=target_model, provider=self.provider))
+                            buf = ""
+                    else:
+                        out_chunks.append(StreamChunk(thinking_delta=buf, is_thinking=True, model=target_model, provider=self.provider))
+                        buf = ""
+            return buf, out_chunks
+
+        prompt_toks = 0
+        comp_toks = 0
+        finish_reason = "stop"
+
+        try:
+            for line in resp.iter_lines(decode_unicode=True):
+                if not line:
+                    continue
+                if line.startswith("data: "):
+                    raw_data = line[6:].strip()
+                    if raw_data == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(raw_data)
+                    except Exception:
+                        continue
+
+                    if "usage" in data and isinstance(data["usage"], dict):
+                        u = data["usage"]
+                        prompt_toks = u.get("prompt_tokens", prompt_toks)
+                        comp_toks = u.get("completion_tokens", comp_toks)
+
+                    choices = data.get("choices", [])
+                    if not choices:
+                        continue
+                    first = choices[0]
+                    finish_reason = first.get("finish_reason") or finish_reason
+                    delta = first.get("delta", {})
+
+                    reasoning = delta.get("reasoning") or delta.get("reasoning_content") or ""
+                    if reasoning:
+                        yield StreamChunk(
+                            thinking_delta=reasoning,
+                            is_thinking=True,
+                            model=target_model,
+                            provider=self.provider,
+                        )
+
+                    content_delta = delta.get("content", "") or ""
+                    if content_delta:
+                        buffer += content_delta
+                        buffer, chunks = process_buffer(buffer, flush_all=False)
+                        for c in chunks:
+                            yield c
+
+            if buffer:
+                _, remaining_chunks = process_buffer(buffer, flush_all=True)
+                for c in remaining_chunks:
+                    yield c
+
+            yield StreamChunk(
+                delta="",
+                finish_reason=finish_reason,
+                model=target_model,
+                provider=self.provider,
+                prompt_tokens=prompt_toks,
+                completion_tokens=comp_toks,
+                total_tokens=prompt_toks + comp_toks,
+            )
+        finally:
+            resp.close()
 
     def generate(
         self,

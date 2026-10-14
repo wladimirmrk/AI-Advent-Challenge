@@ -10,7 +10,7 @@ import time
 from typing import Any, Dict, List, Optional
 import requests
 
-from src.agent.base_llm import BaseLLMClient, LLMResponse
+from src.agent.base_llm import BaseLLMClient, LLMResponse, StreamChunk
 
 logger = logging.getLogger(__name__)
 
@@ -266,6 +266,202 @@ class OllamaClient(BaseLLMClient):
                 raise OllamaError(f"Сетевая ошибка при обращении к Ollama: {exc}")
 
         raise OllamaError(f"Не удалось получить ответ от Ollama после {self.max_retries} попыток: {last_error}")
+
+    def _stream_mock_response(self, messages: List[Dict[str, str]], target_model: str):
+        """Simulate realistic token-by-token streaming for offline testing and CI."""
+        mock_resp = self._generate_mock_response(messages, target_model)
+        if mock_resp.thinking_content:
+            parts = re.split(r"(\s+)", mock_resp.thinking_content)
+            for p in parts:
+                if p:
+                    yield StreamChunk(
+                        thinking_delta=p,
+                        is_thinking=True,
+                        model=target_model,
+                        provider=self.provider,
+                    )
+                    time.sleep(0.003)
+
+        parts = re.split(r"(\s+)", mock_resp.content)
+        for p in parts:
+            if p:
+                yield StreamChunk(
+                    delta=p,
+                    is_thinking=False,
+                    model=target_model,
+                    provider=self.provider,
+                )
+                time.sleep(0.003)
+
+        yield StreamChunk(
+            delta="",
+            finish_reason="stop",
+            model=target_model,
+            provider=self.provider,
+            prompt_tokens=mock_resp.prompt_tokens,
+            completion_tokens=mock_resp.completion_tokens,
+            total_tokens=mock_resp.total_tokens,
+        )
+
+    def stream_generate(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: float = 0.2,
+        max_tokens: Optional[int] = 2500,
+        response_format: Optional[Dict[str, Any]] = None,
+    ):
+        """Stream chat messages to local Ollama instance and yield StreamChunk increments."""
+        target_model = model or self.default_model
+
+        if self.mock_mode:
+            yield from self._stream_mock_response(messages, target_model)
+            return
+
+        url = f"{self.base_url}/api/chat"
+        payload: Dict[str, Any] = {
+            "model": target_model,
+            "messages": messages,
+            "stream": True,
+            "options": {
+                "temperature": temperature,
+            },
+        }
+        if max_tokens:
+            payload["options"]["num_predict"] = max_tokens
+        if response_format and response_format.get("type") == "json_object":
+            payload["format"] = "json"
+
+        try:
+            resp = requests.post(
+                url,
+                json=payload,
+                stream=True,
+                timeout=self.timeout,
+                headers={"Content-Type": "application/json"},
+            )
+        except requests.exceptions.ConnectionError as exc:
+            raise OllamaError(
+                f"Не удалось подключиться к Ollama по адресу {self.base_url}. "
+                "Убедитесь, что служба Ollama запущена (`ollama serve`).",
+                details={"error": str(exc)},
+            )
+        except requests.exceptions.Timeout as exc:
+            t_str = f" ({self.timeout}с)" if self.timeout else ""
+            raise OllamaError(
+                f"Превышено время ожидания ответа от Ollama{t_str}.",
+                details={"timeout": self.timeout},
+            )
+        except requests.exceptions.RequestException as exc:
+            raise OllamaError(f"Сетевая ошибка при обращении к Ollama: {exc}")
+
+        if resp.status_code == 404:
+            raise OllamaError(
+                f"Модель '{target_model}' не найдена в локальном Ollama. "
+                f"Запустите `ollama pull {target_model}` или используйте установленную модель: {self.list_models()}",
+                status_code=404,
+            )
+        if resp.status_code != 200:
+            error_text = resp.text[:300]
+            raise OllamaError(
+                f"Ошибка Ollama API (HTTP {resp.status_code}): {error_text}",
+                status_code=resp.status_code,
+            )
+
+        in_thinking = False
+        buffer = ""
+
+        def process_buffer(buf: str, flush_all: bool = False):
+            nonlocal in_thinking
+            out_chunks = []
+            while buf:
+                if not in_thinking:
+                    if "<think>" in buf:
+                        idx = buf.index("<think>")
+                        if idx > 0:
+                            out_chunks.append(StreamChunk(delta=buf[:idx], is_thinking=False, model=target_model, provider=self.provider))
+                        in_thinking = True
+                        buf = buf[idx + len("<think>"):]
+                    elif "<" in buf:
+                        idx = buf.rindex("<")
+                        candidate = buf[idx:]
+                        if "<think>".startswith(candidate) and not flush_all:
+                            if idx > 0:
+                                out_chunks.append(StreamChunk(delta=buf[:idx], is_thinking=False, model=target_model, provider=self.provider))
+                            buf = candidate
+                            break
+                        else:
+                            out_chunks.append(StreamChunk(delta=buf, is_thinking=False, model=target_model, provider=self.provider))
+                            buf = ""
+                    else:
+                        out_chunks.append(StreamChunk(delta=buf, is_thinking=False, model=target_model, provider=self.provider))
+                        buf = ""
+                else:
+                    if "</think>" in buf:
+                        idx = buf.index("</think>")
+                        if idx > 0:
+                            out_chunks.append(StreamChunk(thinking_delta=buf[:idx], is_thinking=True, model=target_model, provider=self.provider))
+                        in_thinking = False
+                        buf = buf[idx + len("</think>"):]
+                    elif "<" in buf:
+                        idx = buf.rindex("<")
+                        candidate = buf[idx:]
+                        if "</think>".startswith(candidate) and not flush_all:
+                            if idx > 0:
+                                out_chunks.append(StreamChunk(thinking_delta=buf[:idx], is_thinking=True, model=target_model, provider=self.provider))
+                            buf = candidate
+                            break
+                        else:
+                            out_chunks.append(StreamChunk(thinking_delta=buf, is_thinking=True, model=target_model, provider=self.provider))
+                            buf = ""
+                    else:
+                        out_chunks.append(StreamChunk(thinking_delta=buf, is_thinking=True, model=target_model, provider=self.provider))
+                        buf = ""
+            return buf, out_chunks
+
+        prompt_toks = 0
+        comp_toks = 0
+        done_reason = "stop"
+
+        try:
+            for line in resp.iter_lines(decode_unicode=True):
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except Exception:
+                    continue
+
+                msg = data.get("message", {})
+                content_chunk = msg.get("content", "")
+                if content_chunk:
+                    buffer += content_chunk
+                    buffer, chunks = process_buffer(buffer, flush_all=False)
+                    for c in chunks:
+                        yield c
+
+                if data.get("done", False):
+                    prompt_toks = data.get("prompt_eval_count", 0)
+                    comp_toks = data.get("eval_count", 0)
+                    done_reason = data.get("done_reason", "stop")
+                    break
+
+            if buffer:
+                _, remaining_chunks = process_buffer(buffer, flush_all=True)
+                for c in remaining_chunks:
+                    yield c
+
+            yield StreamChunk(
+                delta="",
+                finish_reason=done_reason,
+                model=target_model,
+                provider=self.provider,
+                prompt_tokens=prompt_toks,
+                completion_tokens=comp_toks,
+                total_tokens=prompt_toks + comp_toks,
+            )
+        finally:
+            resp.close()
 
     def chat_completion(
         self,

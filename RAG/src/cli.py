@@ -416,6 +416,8 @@ def run_ask(args):
     use_grounded = getattr(args, "grounded", True)
     grounded_thresh = getattr(args, "grounded_threshold", default_config.grounded_relevance_threshold)
 
+    use_stream = getattr(args, "stream", True)
+
     mode_parts = []
     if not use_rag:
         mode_parts.append("[bold yellow]БЕЗ RAG (Pretrained Baseline)[/bold yellow]")
@@ -428,6 +430,8 @@ def run_ask(args):
         if use_rerank:
             thresh_val = getattr(args, 'threshold', default_config.rerank_similarity_threshold)
             mode_parts.append(f"[bold magenta]+ Rerank & Filter (thresh={thresh_val})[/bold magenta]")
+    if use_stream:
+        mode_parts.append("[bold blue]+ Stream[/bold blue]")
 
     console.print(f"\n[bold cyan]=== CryptoTrack AI Agent Query ===[/bold cyan]")
     console.print(f"[white]Режим:[/white] {' '.join(mode_parts)}")
@@ -439,9 +443,114 @@ def run_ask(args):
         console.print(f"[red]Initialization error: {exc}[/red]")
         sys.exit(1)
 
-    with console.status(f"[cyan]Generating response using {agent.llm_client.default_model}...[/cyan]"):
+    if not use_stream:
+        with console.status(f"[cyan]Generating response using {agent.llm_client.default_model}...[/cyan]"):
+            try:
+                res = agent.query(
+                    question=args.question,
+                    use_rag=use_rag,
+                    use_rewrite=use_rewrite,
+                    use_rerank=use_rerank,
+                    use_grounded=use_grounded,
+                    top_k=args.top_k,
+                    initial_top_k=getattr(args, "initial_top_k", None),
+                    similarity_threshold=getattr(args, "threshold", None),
+                    grounded_threshold=grounded_thresh,
+                    model=args.model,
+                    filter_source=args.filter,
+                )
+            except OpenRouterError as err:
+                console.print(f"\n[bold red]OpenRouter API Error:[/bold red] {err}")
+                if err.status_code == 401:
+                    console.print("[yellow]Hint: Provide your OpenRouter API key via OPENROUTER_API_KEY env var or --api-key flag.[/yellow]")
+                sys.exit(1)
+            except Exception as exc:
+                console.print(f"\n[bold red]Query failed:[/bold red] {exc}")
+                sys.exit(1)
+
+        # 1. Display query rewrite info if applied
+        if res.rewritten_query:
+            console.print(Panel(
+                f"[dim]Исходный:[/dim] {args.question}\n[bold cyan]Оптимизированный:[/bold cyan] {res.rewritten_query}",
+                title=f"🔄 Query Rewrite ({res.rewrite_latency:.3f}s)",
+                border_style="cyan"
+            ))
+
+        # 2. Display filtering & rerank stats if applied
+        if use_rerank and res.pipeline_result:
+            p = res.pipeline_result
+            soft_warn = " [yellow](fall-soft активирован)[/yellow]" if p.fall_soft_triggered else ""
+            console.print(
+                f"[dim]Фильтрация кандидатов (порог {p.threshold}): "
+                f"{p.initial_count} найдено -> отсеяно {p.dropped_by_filter} шума -> {len(res.sources)} в контексте{soft_warn} "
+                f"(время 2-го этапа: {res.rerank_latency:.3f}s, движок: {p.rerank_engine})[/dim]"
+            )
+
+        # 3. Grounded Answer Formatting (Day 24)
+        g = res.grounded_answer
+        if g:
+            if g.is_refusal:
+                console.print(Panel(
+                    f"[bold yellow]{g.answer}[/bold yellow]\n\n"
+                    f"[cyan]💡 Уточнение:[/cyan] {g.clarification_prompt or 'Пожалуйста, уточните ваш вопрос по проекту CryptoTrack.'}",
+                    title="🛡️ Анти-галлюцинация: Режим отказа («не знаю»)",
+                    border_style="yellow",
+                ))
+            else:
+                console.print(Panel(Markdown(g.answer), title=f"🤖 Ответ модели ({res.model}) [Grounded RAG]", border_style="green"))
+
+                if g.sources:
+                    st = Table(title="📚 Список подтвержденных источников", show_lines=False)
+                    st.add_column("#", justify="center", style="cyan")
+                    st.add_column("Файл / Источник", style="bold white", overflow="fold")
+                    st.add_column("Секция / Символ", style="green", overflow="fold")
+                    st.add_column("Строки", justify="center", style="yellow")
+                    st.add_column("Chunk ID", justify="center", style="dim")
+                    st.add_column("Релевантность", justify="right", style="magenta")
+
+                    for idx, src in enumerate(g.sources, 1):
+                        lines_str = f"L{src.start_line}-L{src.end_line}" if src.start_line is not None else "—"
+                        score_str = f"{src.score:.3f}" if src.score else "—"
+                        st.add_row(str(idx), src.source, src.section or "—", lines_str, src.chunk_id or "—", score_str)
+                    console.print(st)
+
+                if g.quotes:
+                    console.print(f"\n[bold cyan]💬 Подтвержденные цитаты из контекста ({len(g.quotes)} фрагментов):[/bold cyan]")
+                    for idx, q in enumerate(g.quotes, 1):
+                        v_icon = "[bold green]✓ Verified[/bold green]" if q.is_exact_match else "[yellow]~ Partial[/yellow]"
+                        src_short = q.source.split("/")[-1] if q.source else ""
+                        src_tag = f" ({src_short})" if src_short else ""
+                        quote_content = f"[white]{q.text}[/white]"
+                        if q.source:
+                            quote_content += f"\n[dim]Источник: {q.source}[/dim]"
+                        console.print(Panel(
+                            quote_content,
+                            title=f"Цитата #{idx}{src_tag} [{v_icon}]",
+                            border_style="cyan" if q.is_exact_match else "dim yellow"
+                        ))
+
+                console.print(
+                    f"\n[dim]Метрики привязки: Подлинность цитат: [bold]{g.grounding_score*100:.1f}%[/bold] | "
+                    f"Семантическое соответствие: [bold]{g.faithfulness_score*100:.1f}%[/bold] | "
+                    f"Top Relevance: [bold]{g.top_relevance_score:.4f}[/bold] (Порог: {g.cutoff_threshold:.2f})[/dim]"
+                )
+        else:
+            border_style = "green" if use_rag else "yellow"
+            title = f"🤖 Ответ модели ({res.model}) [{'RAG: ON' if use_rag else 'RAG: OFF'}]"
+            console.print(Panel(Markdown(res.answer), title=title, border_style=border_style))
+
+        stats_text = (
+            f"[dim]Время: общ {res.latency_seconds:.2f}s "
+            f"(rewrite: {res.rewrite_latency:.2f}s, поиск: {res.retrieval_latency:.2f}s, rerank: {res.rerank_latency:.2f}s, LLM: {res.llm_latency:.2f}s) | "
+            f"Токены: {res.total_tokens} (prompt: {res.prompt_tokens}, completion: {res.completion_tokens})[/dim]"
+        )
+        console.print(stats_text + "\n")
+        return
+
+    # Streaming mode
+    with console.status(f"[cyan]Поиск в базе знаний и подготовка модели...[/cyan]"):
         try:
-            res = agent.query(
+            stream_session = agent.stream_query(
                 question=args.question,
                 use_rag=use_rag,
                 use_rewrite=use_rewrite,
@@ -464,38 +573,68 @@ def run_ask(args):
             sys.exit(1)
 
     # 1. Display query rewrite info if applied
-    if res.rewritten_query:
+    if stream_session.rewritten_query:
         console.print(Panel(
-            f"[dim]Исходный:[/dim] {args.question}\n[bold cyan]Оптимизированный:[/bold cyan] {res.rewritten_query}",
-            title=f"🔄 Query Rewrite ({res.rewrite_latency:.3f}s)",
+            f"[dim]Исходный:[/dim] {args.question}\n[bold cyan]Оптимизированный:[/bold cyan] {stream_session.rewritten_query}",
+            title=f"🔄 Query Rewrite ({stream_session.rewrite_latency:.3f}s)",
             border_style="cyan"
         ))
 
     # 2. Display filtering & rerank stats if applied
-    if use_rerank and res.pipeline_result:
-        p = res.pipeline_result
+    if use_rerank and stream_session.pipeline_result:
+        p = stream_session.pipeline_result
         soft_warn = " [yellow](fall-soft активирован)[/yellow]" if p.fall_soft_triggered else ""
         console.print(
             f"[dim]Фильтрация кандидатов (порог {p.threshold}): "
-            f"{p.initial_count} найдено -> отсеяно {p.dropped_by_filter} шума -> {len(res.sources)} в контексте{soft_warn} "
-            f"(время 2-го этапа: {res.rerank_latency:.3f}s, движок: {p.rerank_engine})[/dim]"
+            f"{p.initial_count} найдено -> отсеяно {p.dropped_by_filter} шума -> {len(stream_session.sources)} в контексте{soft_warn} "
+            f"(время 2-го этапа: {stream_session.rerank_latency:.3f}s, движок: {p.rerank_engine})[/dim]"
         )
 
-    # 3. Grounded Answer Formatting (Day 24)
-    g = res.grounded_answer
-    if g:
-        if g.is_refusal:
-            console.print(Panel(
-                f"[bold yellow]{g.answer}[/bold yellow]\n\n"
-                f"[cyan]💡 Уточнение:[/cyan] {g.clarification_prompt or 'Пожалуйста, уточните ваш вопрос по проекту CryptoTrack.'}",
-                title="🛡️ Анти-галлюцинация: Режим отказа («не знаю»)",
-                border_style="yellow",
-            ))
-        else:
-            # Model Answer
-            console.print(Panel(Markdown(g.answer), title=f"🤖 Ответ модели ({res.model}) [Grounded RAG]", border_style="green"))
+    # 3. Refusal or Streaming output
+    if stream_session.is_refusal:
+        res = stream_session.get_result()
+        g = res.grounded_answer
+        console.print(Panel(
+            f"[bold yellow]{g.answer}[/bold yellow]\n\n"
+            f"[cyan]💡 Уточнение:[/cyan] {g.clarification_prompt or 'Пожалуйста, уточните ваш вопрос по проекту CryptoTrack.'}",
+            title="🛡️ Анти-галлюцинация: Режим отказа («не знаю»)",
+            border_style="yellow",
+        ))
+    else:
+        target_model = args.model or agent.llm_client.default_model
+        provider_name = agent.llm_client.provider
+        border_style = "green" if use_rag else "yellow"
+        title_prefix = f"🤖 Ответ модели ({provider_name}:{target_model}) [{'RAG: ON' if use_rag else 'RAG: OFF'}]"
+        console.print(f"\n[bold {border_style}]=== {title_prefix} ===[/bold {border_style}]\n")
 
-            # Sources Table
+        in_thinking_block = False
+        saw_content = False
+
+        try:
+            for chunk in stream_session.chunks:
+                if chunk.thinking_delta:
+                    if not in_thinking_block:
+                        console.print("\n[dim italic]🤔 Размышления модели:[/dim italic]\n", end="")
+                        in_thinking_block = True
+                    console.print(chunk.thinking_delta, style="dim italic", end="", highlight=False)
+                    sys.stdout.flush()
+
+                if chunk.delta:
+                    if in_thinking_block:
+                        console.print("\n\n[bold green]Ответ:[/bold green]\n", end="")
+                        in_thinking_block = False
+                    saw_content = True
+                    console.print(chunk.delta, end="", highlight=False)
+                    sys.stdout.flush()
+
+            console.print("\n")
+        except KeyboardInterrupt:
+            console.print("\n[dim]Генерация прервана пользователем.[/dim]\n")
+
+        res = stream_session.get_result()
+
+        g = res.grounded_answer
+        if g and not g.is_refusal:
             if g.sources:
                 st = Table(title="📚 Список подтвержденных источников", show_lines=False)
                 st.add_column("#", justify="center", style="cyan")
@@ -511,7 +650,6 @@ def run_ask(args):
                     st.add_row(str(idx), src.source, src.section or "—", lines_str, src.chunk_id or "—", score_str)
                 console.print(st)
 
-            # Quotes Panel
             if g.quotes:
                 console.print(f"\n[bold cyan]💬 Подтвержденные цитаты из контекста ({len(g.quotes)} фрагментов):[/bold cyan]")
                 for idx, q in enumerate(g.quotes, 1):
@@ -527,19 +665,12 @@ def run_ask(args):
                         border_style="cyan" if q.is_exact_match else "dim yellow"
                     ))
 
-            # Grounding and Faithfulness Metrics
             console.print(
                 f"\n[dim]Метрики привязки: Подлинность цитат: [bold]{g.grounding_score*100:.1f}%[/bold] | "
                 f"Семантическое соответствие: [bold]{g.faithfulness_score*100:.1f}%[/bold] | "
                 f"Top Relevance: [bold]{g.top_relevance_score:.4f}[/bold] (Порог: {g.cutoff_threshold:.2f})[/dim]"
             )
-    else:
-        # Fallback raw answer
-        border_style = "green" if use_rag else "yellow"
-        title = f"🤖 Ответ модели ({res.model}) [{'RAG: ON' if use_rag else 'RAG: OFF'}]"
-        console.print(Panel(Markdown(res.answer), title=title, border_style=border_style))
 
-    # 4. Timing & token stats
     stats_text = (
         f"[dim]Время: общ {res.latency_seconds:.2f}s "
         f"(rewrite: {res.rewrite_latency:.2f}s, поиск: {res.retrieval_latency:.2f}s, rerank: {res.rerank_latency:.2f}s, LLM: {res.llm_latency:.2f}s) | "
@@ -555,8 +686,10 @@ def run_chat(args):
     use_rerank = getattr(args, "rerank", False)
     threshold = getattr(args, "threshold", default_config.rerank_similarity_threshold)
 
+    use_stream = getattr(args, "stream", True)
+
     console.print(f"\n[bold green]=== Interactive CryptoTrack AI Chat (Day 28) ===[/bold green]")
-    console.print("Commands: `/provider <ollama|openrouter>`, `/models`, `/model <name>`, `/rag on/off`, `/rewrite on/off`, `/rerank on/off`, `/thresh <val>`, `/topk <k>`, `/sources`, `/exit`\n")
+    console.print("Commands: `/provider <ollama|openrouter>`, `/models`, `/model <name>`, `/stream on/off`, `/rag on/off`, `/rewrite on/off`, `/rerank on/off`, `/thresh <val>`, `/topk <k>`, `/sources`, `/exit`\n")
 
     try:
         agent = get_rag_agent(args)
@@ -576,6 +709,7 @@ def run_chat(args):
                     badges.append("[cyan]RW[/cyan]")
                 if use_rerank:
                     badges.append(f"[magenta]RR({threshold})[/magenta]")
+            badges.append("[blue]STREAM[/blue]" if use_stream else "[dim]NO-STREAM[/dim]")
 
             provider_badge = f"{agent.llm_client.provider}:{current_model.split('/')[-1]}"
             prompt_str = f"\nCryptoTrack [{'/'.join(badges)} | {provider_badge}] > "
@@ -588,7 +722,15 @@ def run_chat(args):
                 console.print("[dim]Goodbye![/dim]")
                 break
 
-            if user_input.lower() in {"/rag on", "rag on"}:
+            if user_input.lower() in {"/stream on", "stream on"}:
+                use_stream = True
+                console.print("[green]✓ Streaming mode ENABLED[/green]")
+                continue
+            elif user_input.lower() in {"/stream off", "stream off"}:
+                use_stream = False
+                console.print("[yellow]✓ Streaming mode DISABLED (static panel)[/yellow]")
+                continue
+            elif user_input.lower() in {"/rag on", "rag on"}:
                 use_rag = True
                 console.print("[green]✓ RAG mode ENABLED[/green]")
                 continue
@@ -669,24 +811,62 @@ def run_chat(args):
                         console.print(f"  • #{s.rank} [{s.score:.4f}{rr_info}] [yellow]{s.source}[/yellow] (L{s.start_line}-L{s.end_line})")
                 continue
             elif user_input.lower() in {"/help", "help"}:
-                console.print("Available commands:\n  /provider <ollama|openrouter>\n  /models\n  /model <name>\n  /rag on|off\n  /rewrite on|off\n  /rerank on|off\n  /thresh <val>\n  /topk <k>\n  /sources\n  /exit")
+                console.print("Available commands:\n  /provider <ollama|openrouter>\n  /models\n  /model <name>\n  /stream on|off\n  /rag on|off\n  /rewrite on|off\n  /rerank on|off\n  /thresh <val>\n  /topk <k>\n  /sources\n  /exit")
                 continue
 
-            with console.status(f"[cyan]Querying {agent.llm_client.provider}...[/cyan]"):
-                res = agent.query(
-                    question=user_input,
-                    use_rag=use_rag,
-                    use_rewrite=use_rewrite,
-                    use_rerank=use_rerank,
-                    top_k=args.top_k,
-                    similarity_threshold=threshold,
-                    model=current_model,
-                )
-            last_sources = res.sources
+            if use_stream:
+                with console.status(f"[cyan]Querying {agent.llm_client.provider}...[/cyan]"):
+                    session = agent.stream_query(
+                        question=user_input,
+                        use_rag=use_rag,
+                        use_rewrite=use_rewrite,
+                        use_rerank=use_rerank,
+                        top_k=args.top_k,
+                        similarity_threshold=threshold,
+                        model=current_model,
+                    )
+                last_sources = session.sources
+                border_style = "green" if use_rag else "yellow"
+                title = f"🤖 [{agent.llm_client.provider}:{current_model.split('/')[-1]} | {' / '.join(badges)}]"
+                console.print(f"\n[bold {border_style}]=== {title} ===[/bold {border_style}]\n")
 
-            border_style = "green" if use_rag else "yellow"
-            title = f"🤖 [{agent.llm_client.provider} | {' / '.join(badges)}] ({res.total_tokens} tok | {res.latency_seconds:.2f}s)"
-            console.print(Panel(Markdown(res.answer), title=title, border_style=border_style))
+                in_thinking_block = False
+                try:
+                    for chunk in session.chunks:
+                        if chunk.thinking_delta:
+                            if not in_thinking_block:
+                                console.print("\n[dim italic]🤔 Размышления модели:[/dim italic]\n", end="")
+                                in_thinking_block = True
+                            console.print(chunk.thinking_delta, style="dim italic", end="", highlight=False)
+                            sys.stdout.flush()
+                        if chunk.delta:
+                            if in_thinking_block:
+                                console.print("\n\n[bold green]Ответ:[/bold green]\n", end="")
+                                in_thinking_block = False
+                            console.print(chunk.delta, end="", highlight=False)
+                            sys.stdout.flush()
+
+                    console.print("\n")
+                except KeyboardInterrupt:
+                    console.print("\n[dim]Генерация прервана.[/dim]\n")
+
+                res = session.get_result()
+                console.print(f"[dim]({res.total_tokens} tok | {res.latency_seconds:.2f}s)[/dim]")
+            else:
+                with console.status(f"[cyan]Querying {agent.llm_client.provider}...[/cyan]"):
+                    res = agent.query(
+                        question=user_input,
+                        use_rag=use_rag,
+                        use_rewrite=use_rewrite,
+                        use_rerank=use_rerank,
+                        top_k=args.top_k,
+                        similarity_threshold=threshold,
+                        model=current_model,
+                    )
+                last_sources = res.sources
+                border_style = "green" if use_rag else "yellow"
+                title = f"🤖 [{agent.llm_client.provider} | {' / '.join(badges)}] ({res.total_tokens} tok | {res.latency_seconds:.2f}s)"
+                console.print(Panel(Markdown(res.answer), title=title, border_style=border_style))
 
         except KeyboardInterrupt:
             break
@@ -742,12 +922,13 @@ def run_chat_memory(args):
     use_rerank = getattr(args, "rerank", True)
     threshold = getattr(args, "threshold", default_config.rerank_similarity_threshold)
     window_size = getattr(args, "window", 10)
+    use_stream = getattr(args, "stream", True)
 
     existing_sessions = store.list_sessions()
     console.print(f"\n[bold green]=== Production-like RAG Chat with Task Memory (Day 28) ===[/bold green]")
     if existing_sessions:
         console.print(f"[dim]💡 Сохранённых сессий: {len(existing_sessions)} (введите [bold cyan]/switch[/bold cyan] для выбора)[/dim]")
-    console.print("Команды: `/provider <ollama|openrouter>`, `/models`, `/model <name>`, `/switch [№]`, `/state`, `/sources`, `/history`, `/new`, `/save`, `/rag on/off`, `/topk <k>`, `/exit`\n")
+    console.print("Команды: `/provider <ollama|openrouter>`, `/models`, `/model <name>`, `/stream on/off`, `/switch [№]`, `/state`, `/sources`, `/history`, `/new`, `/save`, `/rag on/off`, `/topk <k>`, `/exit`\n")
 
     try:
         agent = get_rag_agent(args)
@@ -774,6 +955,7 @@ def run_chat_memory(args):
                 if use_rerank:
                     badges.append(f"[magenta]RR({threshold})[/magenta]")
             badges.append(f"[blue]Turn:{session.task_state.turn_number}[/blue]")
+            badges.append("[blue]STREAM[/blue]" if use_stream else "[dim]NO-STREAM[/dim]")
 
             provider_badge = f"{agent.llm_client.provider}:{current_model.split('/')[-1]}"
             prompt_str = f"\nCryptoTrack [{'/'.join(badges)} | {provider_badge}] > "
@@ -786,6 +968,15 @@ def run_chat_memory(args):
                 store.save(session)
                 console.print(f"[dim]Сессия {session.session_id} сохранена. До свидания![/dim]")
                 break
+
+            if user_input.lower() in {"/stream on", "stream on"}:
+                use_stream = True
+                console.print("[green]✓ Потоковый вывод ВКЛЮЧЕН[/green]")
+                continue
+            elif user_input.lower() in {"/stream off", "stream off"}:
+                use_stream = False
+                console.print("[yellow]✓ Потоковый вывод ОТКЛЮЧЕН (статическая панель)[/yellow]")
+                continue
 
             if user_input.lower() in {"/state", "state"}:
                 console.print(Panel(
@@ -973,19 +1164,58 @@ def run_chat_memory(args):
                 console.print("Доступные команды:\n  /provider <ollama|openrouter> - Сменить провайдера LLM\n  /models     - Список доступных моделей провайдера\n  /model <name>   - Сменить модель LLM\n  /switch [№] - Выбрать и переключить активную сессию по номеру\n  /state      - Показать текущую память задачи\n  /sources    - Показать источники последнего ответа\n  /history    - Просмотреть историю диалога\n  /save       - Сохранить текущую сессию\n  /new        - Начать новую сессию\n  /rag on|off - Переключить RAG\n  /rewrite on|off - Переключить Query Rewrite\n  /rerank on|off  - Переключить Rerank\n  /topk <k>       - Изменить количество чанков\n  /exit       - Выход")
                 continue
 
-            with console.status(f"[cyan]Поиск в кодовой базе и генерация ответа...[/cyan]"):
-                res = engine.process_turn(
-                    user_question=user_input,
-                    model=current_model,
-                    use_rag=use_rag,
-                    use_rewrite=use_rewrite,
-                    use_rerank=use_rerank,
-                    top_k=args.top_k,
-                )
+            if use_stream:
+                with console.status(f"[cyan]Поиск в кодовой базе и запуск генерации...[/cyan]"):
+                    stream_turn_session = engine.stream_turn(
+                        user_question=user_input,
+                        model=current_model,
+                        use_rag=use_rag,
+                        use_rewrite=use_rewrite,
+                        use_rerank=use_rerank,
+                        top_k=args.top_k,
+                    )
 
-            border_style = "green" if use_rag else "yellow"
-            title = f"🤖 [Ход #{session.task_state.turn_number} | {res.total_tokens} токенов | {res.latency_seconds:.2f}с]"
-            console.print(Panel(Markdown(res.answer), title=title, border_style=border_style))
+                border_style = "green" if use_rag else "yellow"
+                turn_no = session.task_state.turn_number + 1
+                title = f"🤖 [Ход #{turn_no} | {agent.llm_client.provider}:{current_model.split('/')[-1]}]"
+                console.print(f"\n[bold {border_style}]=== {title} ===[/bold {border_style}]\n")
+
+                in_thinking_block = False
+                try:
+                    for chunk in stream_turn_session.chunks:
+                        if chunk.thinking_delta:
+                            if not in_thinking_block:
+                                console.print("\n[dim italic]🤔 Размышления модели:[/dim italic]\n", end="")
+                                in_thinking_block = True
+                            console.print(chunk.thinking_delta, style="dim italic", end="", highlight=False)
+                            sys.stdout.flush()
+                        if chunk.delta:
+                            if in_thinking_block:
+                                console.print("\n\n[bold green]Ответ:[/bold green]\n", end="")
+                                in_thinking_block = False
+                            console.print(chunk.delta, end="", highlight=False)
+                            sys.stdout.flush()
+
+                    console.print("\n")
+                except KeyboardInterrupt:
+                    console.print("\n[dim]Генерация прервана пользователем.[/dim]\n")
+
+                res = stream_turn_session.get_result()
+                console.print(f"[dim]({res.total_tokens} токенов | {res.latency_seconds:.2f}с)[/dim]\n")
+            else:
+                with console.status(f"[cyan]Поиск в кодовой базе и генерация ответа...[/cyan]"):
+                    res = engine.process_turn(
+                        user_question=user_input,
+                        model=current_model,
+                        use_rag=use_rag,
+                        use_rewrite=use_rewrite,
+                        use_rerank=use_rerank,
+                        top_k=args.top_k,
+                    )
+
+                border_style = "green" if use_rag else "yellow"
+                title = f"🤖 [Ход #{session.task_state.turn_number} | {res.total_tokens} токенов | {res.latency_seconds:.2f}с]"
+                console.print(Panel(Markdown(res.answer), title=title, border_style=border_style))
 
             if res.sources:
                 src_lines = []
@@ -1298,6 +1528,9 @@ def main():
     p_ask.add_argument("--model", default=None, help="LLM model identifier")
     p_ask.add_argument("--api-key", default=None, help="OpenRouter API Key")
     p_ask.add_argument("--filter", default=None, help="Filter sources by substring")
+    p_stream_ask = p_ask.add_mutually_exclusive_group()
+    p_stream_ask.add_argument("--stream", dest="stream", action="store_true", default=True, help="Enable streaming response tokens (default: True)")
+    p_stream_ask.add_argument("--no-stream", dest="stream", action="store_false", help="Disable streaming response")
     p_ask.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
     p_ask.add_argument("--width", type=int, default=None, help="Explicit console width (default: auto-detected visible window width)")
 
@@ -1314,6 +1547,9 @@ def main():
     p_chat.add_argument("--provider", choices=["ollama", "openrouter"], default=default_config.llm_provider, help="LLM provider")
     p_chat.add_argument("--model", default=None)
     p_chat.add_argument("--api-key", default=None)
+    p_stream_chat = p_chat.add_mutually_exclusive_group()
+    p_stream_chat.add_argument("--stream", dest="stream", action="store_true", default=True, help="Enable streaming response tokens (default: True)")
+    p_stream_chat.add_argument("--no-stream", dest="stream", action="store_false", help="Disable streaming response")
     p_chat.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
     p_chat.add_argument("--width", type=int, default=None, help="Explicit console width (default: auto-detected visible window width)")
 
@@ -1375,6 +1611,9 @@ def main():
     p_cm.add_argument("--provider", choices=["ollama", "openrouter"], default=default_config.llm_provider, help="LLM provider: 'ollama' (local) or 'openrouter' (cloud)")
     p_cm.add_argument("--model", default=None)
     p_cm.add_argument("--api-key", default=None)
+    p_stream_cm = p_cm.add_mutually_exclusive_group()
+    p_stream_cm.add_argument("--stream", dest="stream", action="store_true", default=True, help="Enable streaming response tokens (default: True)")
+    p_stream_cm.add_argument("--no-stream", dest="stream", action="store_false", help="Disable streaming response")
     p_cm.add_argument("--mock", action="store_true", help="Run in mock/offline mode")
     p_cm.add_argument("--width", type=int, default=None, help="Explicit console width (default: auto-detected visible window width)")
 

@@ -19,6 +19,21 @@ class LLMResponse:
     thinking_content: Optional[str] = None
 
 
+@dataclass
+class StreamChunk:
+    """Incremental chunk emitted during LLM streaming."""
+    delta: str = ""                       # Content delta token
+    thinking_delta: str = ""              # Reasoning / thinking delta token
+    is_thinking: bool = False             # True if chunk belongs to reasoning/thinking
+    finish_reason: Optional[str] = None   # "stop", "length", None
+    model: str = ""                       # Model identifier
+    provider: str = ""                    # Provider identifier
+    prompt_tokens: int = 0                # Prompt tokens if known at chunk arrival
+    completion_tokens: int = 0            # Completion tokens if known
+    total_tokens: int = 0                 # Total tokens if known
+    raw_chunk: Dict[str, Any] = field(default_factory=dict)
+
+
 class BaseLLMClient(ABC):
     """Abstract base interface for LLM providers (Ollama, OpenRouter, etc.)."""
 
@@ -35,6 +50,35 @@ class BaseLLMClient(ABC):
     ) -> LLMResponse:
         """Send chat messages and return a normalized LLMResponse."""
         pass
+
+    @abstractmethod
+    def stream_generate(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: float = 0.2,
+        max_tokens: Optional[int] = None,
+        response_format: Optional[Dict[str, Any]] = None,
+    ):
+        """Stream chat messages and yield StreamChunk increments."""
+        pass
+
+    def stream_chat_completion(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: float = 0.2,
+        max_tokens: Optional[int] = None,
+        response_format: Optional[Dict[str, Any]] = None,
+    ):
+        """Compatibility alias for stream_generate."""
+        return self.stream_generate(
+            messages=messages,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
+        )
 
     @abstractmethod
     def list_models(self) -> List[str]:
