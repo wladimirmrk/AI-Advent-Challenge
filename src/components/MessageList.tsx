@@ -321,6 +321,99 @@ const McpToolCallCard: React.FC<{ calls: McpCallMeta[] }> = ({ calls }) => {
   );
 };
 
+interface MessagePart {
+  type: 'markdown' | 'details';
+  content?: string;
+  summary?: string;
+  body?: string;
+}
+
+function parseMessageWithDetails(text: string): MessagePart[] {
+  const parts: MessagePart[] = [];
+  const regex = /<details(?:\s+[^>]*)?>\s*<summary(?:\s+[^>]*)?>([\s\S]*?)<\/summary>([\s\S]*?)<\/details>/gi;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      const before = text.slice(lastIndex, match.index).trim();
+      if (before) {
+        parts.push({ type: 'markdown', content: before });
+      }
+    }
+
+    const rawSummary = match[1].trim();
+    const rawBody = match[2].trim();
+
+    parts.push({
+      type: 'details',
+      summary: rawSummary,
+      body: rawBody,
+    });
+
+    lastIndex = regex.lastIndex;
+  }
+
+  if (lastIndex < text.length) {
+    const after = text.slice(lastIndex).trim();
+    if (after) {
+      parts.push({ type: 'markdown', content: after });
+    }
+  }
+
+  return parts.length > 0 ? parts : [{ type: 'markdown', content: text }];
+}
+
+const CollapsibleStepCard: React.FC<{
+  summary: string;
+  body: string;
+}> = ({ summary, body }) => {
+  const [isOpen, setIsOpen] = useState(false);
+
+  // Extract clean title and badge if present
+  const badgeMatch = summary.match(/<span\s+class="step-summary-badge">(.*?)<\/span>/i);
+  const badge = badgeMatch ? badgeMatch[1].replace(/<[^>]+>/g, '').trim() : null;
+
+  const cleanTitle = summary
+    .replace(/<span\s+class="step-summary-badge">.*?<\/span>/gi, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\(нажмите.*?\)/gi, '')
+    .trim();
+
+  return (
+    <div className={`pipeline-step-card ${isOpen ? 'step-card-open' : 'step-card-closed'}`}>
+      <div
+        className="pipeline-step-header"
+        onClick={() => setIsOpen(!isOpen)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            setIsOpen(!isOpen);
+          }
+        }}
+      >
+        <div className="pipeline-step-title-row">
+          <Layers size={14} style={{ color: '#0ea5e9', flexShrink: 0 }} />
+          <span className="pipeline-step-title">{cleanTitle}</span>
+          {badge && <span className="step-summary-badge">{badge}</span>}
+        </div>
+        <div className="pipeline-step-toggle-btn">
+          <span>{isOpen ? 'Скрыть' : 'Раскрыть'}</span>
+          {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </div>
+      </div>
+
+      {isOpen && (
+        <div className="pipeline-step-body">
+          <Markdown content={body} />
+        </div>
+      )}
+    </div>
+  );
+};
+
 function cleanMessageContent(content: string): string {
   return content
     .replace(/<task_update\s+[^>]+\/?>/gi, '')
@@ -687,14 +780,22 @@ export const MessageList: React.FC<MessageListProps> = ({
                               {check && <InvariantCheckCard check={check} />}
                               {(displayContent || (!msg.thinking && !msg.mcpCalls)) && (
                                 <div className="message-content">
-                                  <Markdown
-                                    content={
-                                      displayContent ||
+                                  {parseMessageWithDetails(
+                                    displayContent ||
                                       (msg.mcpCalls && msg.mcpCalls.length > 0
                                         ? '✅ Все операции успешно выполнены через внешние MCP-серверы.'
                                         : msg.content)
-                                    }
-                                  />
+                                  ).map((part, pIdx) =>
+                                    part.type === 'details' ? (
+                                      <CollapsibleStepCard
+                                        key={pIdx}
+                                        summary={part.summary || ''}
+                                        body={part.body || ''}
+                                      />
+                                    ) : (
+                                      <Markdown key={pIdx} content={part.content || ''} />
+                                    )
+                                  )}
                                   {msg.isStreaming && !msg.isThinking && (
                                     <span className="streaming-cursor" aria-hidden="true" />
                                   )}

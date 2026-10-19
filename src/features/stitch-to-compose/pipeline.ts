@@ -20,9 +20,25 @@ import {
   ComposeGenerationResult,
   DesignScreen,
   ProjectFileWriteResult,
+  StitchPipelineStepItem,
 } from './types';
 import { writeComposeScreenToProject } from './project-writer';
 import { agentInstance, Agent } from '../../agent/Agent';
+
+/**
+ * Formats a pipeline step's intermediate result into collapsible markdown.
+ */
+export function formatStepIntermediateResult(step: StitchPipelineStepItem): string {
+  if (!step.intermediateResult) return '';
+  const { summary, markdown } = step.intermediateResult;
+  return [
+    `<details>`,
+    `<summary>🔍 <b>Промежуточный результат: ${step.title}</b> <span class="step-summary-badge">${summary}</span> <i>(нажмите, чтобы раскрыть/скрыть)</i></summary>`,
+    ``,
+    markdown,
+    `</details>`,
+  ].join('\n');
+}
 
 /**
  * Extracts JSON object from LLM response text that might be surrounded by markdown code blocks.
@@ -250,6 +266,65 @@ export async function generateComposeFromStitch(
   const designScreen = convertDomToDesignScreen(dom, screenName);
   irTime = Date.now() - t0;
 
+  // Emit Step 2 Intermediate Result
+  const nodeCount = designScreen.metadata?.nodeCount || 1;
+  const colorCount = designScreen.tokens?.colors ? Object.keys(designScreen.tokens.colors).length : 0;
+  const spacingCount = designScreen.tokens?.spacing ? Object.keys(designScreen.tokens.spacing).length : 0;
+
+  const tokenSections: string[] = [];
+  if (designScreen.tokens?.colors && Object.keys(designScreen.tokens.colors).length > 0) {
+    tokenSections.push(
+      `- **Цвета (${colorCount}):** ` +
+        Object.entries(designScreen.tokens.colors)
+          .map(([k, v]) => `\`${k}: ${v}\``)
+          .join(', ')
+    );
+  }
+  if (designScreen.tokens?.spacing && Object.keys(designScreen.tokens.spacing).length > 0) {
+    tokenSections.push(
+      `- **Отступы (${spacingCount}):** ` +
+        Object.entries(designScreen.tokens.spacing)
+          .map(([k, v]) => `\`${k}: ${v}dp\``)
+          .join(', ')
+    );
+  }
+  if (designScreen.tokens?.radii && Object.keys(designScreen.tokens.radii).length > 0) {
+    tokenSections.push(
+      `- **Скругления:** ` +
+        Object.entries(designScreen.tokens.radii)
+          .map(([k, v]) => `\`${k}: ${v}dp\``)
+          .join(', ')
+    );
+  }
+
+  const irMarkdown = [
+    `##### 📐 Извлеченные Design Tokens & Параметры экрана:`,
+    `- **Экран:** \`${designScreen.name || screenName}\``,
+    `- **Узлов в дереве IR:** **${nodeCount}** (глубина: ${designScreen.metadata?.depth || 1})`,
+    tokenSections.length > 0 ? tokenSections.join('\n') : '',
+    ``,
+    `##### 🌳 Структура Design IR (JSON):`,
+    '```json',
+    JSON.stringify(designScreen, null, 2),
+    '```',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  options.onStepResult?.({
+    step: 2,
+    stage: 'ir',
+    title: 'Design IR & Дизайн-токены',
+    status: 'done',
+    detail: `${nodeCount} узлов IR, ${colorCount} цветов`,
+    intermediateResult: {
+      summary: `${nodeCount} узлов, ${colorCount} цветов`,
+      type: 'ir',
+      data: designScreen,
+      markdown: irMarkdown,
+    },
+  });
+
   // 2. Project RAG Indexing & Retrieval
   options.onProgress?.('rag', 'Поиск контекста и существующих компонентов в Android-проекте...');
   const t1 = Date.now();
@@ -287,6 +362,36 @@ export async function generateComposeFromStitch(
     .join('\n\n');
 
   const symbolsFound = retrievedChunks.map((c) => c.symbol);
+
+  // Emit Step 3 Intermediate Result
+  const chunkPreviews = retrievedChunks
+    .map((c, idx) => {
+      return `${idx + 1}. 🧩 **\`${c.symbol}\`** (файл: \`${c.file}\`, релевантность: **${(c.score * 100).toFixed(0)}%**)\n\`\`\`kotlin\n${c.content.slice(0, 300)}${c.content.length > 300 ? '\n// ...' : ''}\n\`\`\``;
+    })
+    .join('\n\n');
+
+  const ragMarkdown = [
+    `##### 📚 Найденные компоненты дизайн-системы CryptoTrack:`,
+    `- **Поисковый запрос:** \`${retrievalResult.query.rawQuery || 'Design system symbols'}\``,
+    `- **Ключевые символы:** ${retrievalResult.query.symbols.map((s) => `\`${s}\``).join(', ') || 'ApexButton, ApexCard, ApexSearchBar'}`,
+    `- **Всего найдено чанков:** **${retrievedChunks.length}** (из ${retrievalResult.totalCandidates} кандидатов, кэш: ${retrievalResult.fromCache ? 'да' : 'нет'})`,
+    ``,
+    chunkPreviews || '*Существующие компоненты не найдены.*',
+  ].join('\n');
+
+  options.onStepResult?.({
+    step: 3,
+    stage: 'rag',
+    title: 'RAG контекст проекта (CryptoTrack)',
+    status: 'done',
+    detail: `Найдено ${retrievedChunks.length} компонентов и токенов CryptoTrack`,
+    intermediateResult: {
+      summary: `${retrievedChunks.length} компонентов найдено`,
+      type: 'rag',
+      data: retrievalResult,
+      markdown: ragMarkdown,
+    },
+  });
 
   // 3. LLM Call 1: Compose Planning Stage
   options.onProgress?.('planning', 'LLM Call 1: Создание структурированного Compose плана...');
@@ -350,6 +455,50 @@ ${projectContextText || 'Существующие компоненты не на
   }
   planTime = Date.now() - t2;
 
+  // Emit Step 4 Intermediate Result
+  const reusedItems = plan.components.filter((c) => c.isReused);
+  const newItems = plan.components.filter((c) => !c.isReused);
+
+  const planTable = [
+    `| Узел IR | Тип | Реализация | Переиспользован | Обоснование |`,
+    `| :--- | :--- | :--- | :---: | :--- |`,
+    ...plan.components.map(
+      (c) =>
+        `| \`${c.designNodeId}\` | \`${c.nodeType}\` | **\`${c.implementation}\`** | ${
+          c.isReused ? '✅ Да' : '⚪ Новый'
+        } | ${c.reason || '—'} |`
+    ),
+  ].join('\n');
+
+  const planMarkdown = [
+    `##### 📋 План реализации Compose:`,
+    `- **Корневой контейнер:** \`${plan.root}\``,
+    `- **Иерархия:** *${plan.hierarchySummary || 'Scaffold -> Column -> Components'}*`,
+    `- **Переиспользуемых компонентов:** **${reusedItems.length}** | **Новых:** **${newItems.length}**`,
+    ``,
+    `##### 🗺️ Таблица маппинга компонентов:`,
+    planTable,
+    ``,
+    `##### 📄 Исходный Compose Plan (JSON):`,
+    '```json',
+    JSON.stringify(plan, null, 2),
+    '```',
+  ].join('\n');
+
+  options.onStepResult?.({
+    step: 4,
+    stage: 'planning',
+    title: 'Compose Planning (LLM Call 1)',
+    status: 'done',
+    detail: `Переиспользовано: ${reusedItems.length} существующих компонентов`,
+    intermediateResult: {
+      summary: `Переиспользовано ${reusedItems.length} компонентов`,
+      type: 'plan',
+      data: plan,
+      markdown: planMarkdown,
+    },
+  });
+
   // 4. LLM Call 2: Compose Generation Stage
   options.onProgress?.('generating', 'LLM Call 2: Генерация production-ready Jetpack Compose кода...');
   const t3 = Date.now();
@@ -411,6 +560,38 @@ ${projectContextText || 'Стандартные Material 3 компоненты.
   }
   genTime = Date.now() - t3;
 
+  // Emit Step 5 Intermediate Result
+  const codeLines = (generationResult.code || '').split('\n').length;
+  const genMarkdown = [
+    `##### 💻 Сгенерированный экран Jetpack Compose (\`${generationResult.screen?.file || (screenName + '.kt')}\`):`,
+    `- **Функция:** \`@Composable fun ${generationResult.screen?.name || screenName}(...)\``,
+    `- **Объем:** **${codeLines}** строк Kotlin кода`,
+    `- **Переиспользовано:** ${generationResult.reusedComponents?.map((c) => `\`${c}\``).join(', ') || 'нет'}`,
+    generationResult.warnings && generationResult.warnings.length > 0
+      ? `\n> ⚠️ **Предупреждения:**\n${generationResult.warnings.map((w) => `> - ${w}`).join('\n')}\n`
+      : '',
+    ``,
+    '```kotlin',
+    generationResult.code,
+    '```',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  options.onStepResult?.({
+    step: 5,
+    stage: 'generating',
+    title: 'Генерация Jetpack Compose (LLM Call 2)',
+    status: 'done',
+    detail: `${codeLines} строк Kotlin Jetpack Compose`,
+    intermediateResult: {
+      summary: `${codeLines} строк Kotlin`,
+      type: 'code',
+      data: generationResult,
+      markdown: genMarkdown,
+    },
+  });
+
   // 5. Write generated screen to project files if enabled
   let writtenFile: ProjectFileWriteResult | undefined;
   let fileWritingTime = 0;
@@ -437,6 +618,42 @@ ${projectContextText || 'Стандартные Material 3 компоненты.
       };
     }
     fileWritingTime = Date.now() - tWrite;
+
+    // Emit Step 6 Intermediate Result
+    if (writtenFile) {
+      const isOk = writtenFile.status !== 'error';
+      const writeMarkdown = [
+        `##### 💾 Запись файла в проект Android:`,
+        `- **Целевой файл:** \`${writtenFile.filePath}\``,
+        `- **Относительный путь:** \`${writtenFile.relativePath}\``,
+        `- **Модуль:** \`${writtenFile.moduleName}\``,
+        `- **Статус:** **${
+          writtenFile.status === 'created'
+            ? '✅ Создан новый файл'
+            : writtenFile.status === 'updated'
+            ? '🔄 Обновлен существующий файл'
+            : '❌ Ошибка записи'
+        }**`,
+        `- **Объем:** **${writtenFile.linesCount}** строк, **${writtenFile.bytesWritten}** байт`,
+        writtenFile.error ? `\n> ❌ **Ошибка:** ${writtenFile.error}\n` : '',
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+      options.onStepResult?.({
+        step: 6,
+        stage: 'writing',
+        title: 'Запись файлов в проект Android',
+        status: isOk ? 'done' : 'error',
+        detail: `Записано: ${writtenFile.relativePath} (${writtenFile.status})`,
+        intermediateResult: {
+          summary: `${writtenFile.relativePath || 'Файл'} (${writtenFile.status})`,
+          type: 'file',
+          data: writtenFile,
+          markdown: writeMarkdown,
+        },
+      });
+    }
   }
 
   options.onProgress?.('done', 'Генерация Compose успешно завершена!');

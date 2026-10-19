@@ -177,6 +177,32 @@ export interface StitchScreenPipelineResult {
   rawMcpCalls?: any[];
 }
 
+export type StitchPipelineStage =
+  | 'mcp'
+  | 'parsing'
+  | 'ir'
+  | 'rag'
+  | 'planning'
+  | 'generating'
+  | 'writing'
+  | 'done';
+
+export interface StitchStepIntermediateResult {
+  summary: string;
+  type: 'html' | 'ir' | 'rag' | 'plan' | 'code' | 'file';
+  markdown: string;
+  data?: unknown;
+}
+
+export interface StitchPipelineStepItem {
+  step: number;
+  stage: StitchPipelineStage;
+  title: string;
+  status: 'pending' | 'running' | 'done' | 'error';
+  detail?: string;
+  intermediateResult?: StitchStepIntermediateResult;
+}
+
 export interface StitchToComposeOptions {
   html: string;
   screenName?: string;
@@ -191,6 +217,7 @@ export interface StitchToComposeOptions {
     stage: 'parsing' | 'ir' | 'rag' | 'planning' | 'generating' | 'writing' | 'done',
     message?: string
   ) => void;
+  onStepResult?: (step: StitchPipelineStepItem) => void;
 }
 
 export interface StitchToComposePipelineResult {

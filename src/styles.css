@@ -6603,6 +6603,95 @@ input:checked + .slider:before {
 }
 
 /* ========================================================
+   Pipeline Step Collapsible Card (Stitch to Compose)
+   ======================================================== */
+
+.pipeline-step-card {
+  border-radius: 8px;
+  margin: 10px 0 12px 0;
+  background: rgba(14, 165, 233, 0.05);
+  border: 1px solid rgba(14, 165, 233, 0.25);
+  border-left: 3px solid #0ea5e9;
+  overflow: hidden;
+  transition: all 0.2s ease;
+  font-size: 13px;
+}
+
+.pipeline-step-card.step-card-open {
+  background: rgba(14, 165, 233, 0.08);
+  border-color: rgba(14, 165, 233, 0.4);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.pipeline-step-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  cursor: pointer;
+  user-select: none;
+  background: rgba(255, 255, 255, 0.02);
+  transition: background 0.15s ease;
+}
+
+.pipeline-step-header:hover {
+  background: rgba(14, 165, 233, 0.12);
+}
+
+.pipeline-step-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.pipeline-step-title {
+  font-weight: 600;
+  color: var(--text-primary, #f1f5f9);
+}
+
+.step-summary-badge {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(14, 165, 233, 0.18);
+  color: #38bdf8;
+  border: 1px solid rgba(14, 165, 233, 0.35);
+  padding: 1px 7px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.pipeline-step-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary, #94a3b8);
+  font-size: 11px;
+  margin-left: 10px;
+  flex-shrink: 0;
+}
+
+.pipeline-step-body {
+  padding: 12px 14px;
+  border-top: 1px solid rgba(14, 165, 233, 0.15);
+  background: rgba(0, 0, 0, 0.25);
+  overflow-x: auto;
+}
+
+[data-theme='light'] .pipeline-step-card {
+  background: rgba(14, 165, 233, 0.04);
+  border-color: rgba(14, 165, 233, 0.25);
+}
+
+[data-theme='light'] .pipeline-step-body {
+  background: rgba(0, 0, 0, 0.03);
+  color: #334155;
+}
+
+/* ========================================================
    Message Action Bar & Rollback / Undo Button
    ======================================================== */
 

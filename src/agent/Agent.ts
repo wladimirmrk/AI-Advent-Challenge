@@ -111,6 +111,8 @@ import {
   generateComposeFromStitch,
   fetchScreenFromMcp,
   DEFAULT_STITCH_PROJECT_ID,
+  formatStepIntermediateResult,
+  StitchPipelineStepItem,
 } from '../features/stitch-to-compose';
 
 export class Agent {
@@ -4299,13 +4301,13 @@ Do NOT use markdown code fences. Pure JSON only.`,
     this.notify();
 
     // 3. Step definitions for sequential tracking
-    const stepsStatus = [
-      { step: 1, title: 'Получение экрана из Stitch MCP (list_screens)', status: 'running', detail: `Поиск экрана "${screenQuery}"...` },
-      { step: 2, title: 'Design IR & Дизайн-токены', status: 'pending', detail: '' },
-      { step: 3, title: 'RAG контекст проекта (CryptoTrack)', status: 'pending', detail: '' },
-      { step: 4, title: 'Compose Planning (LLM Call 1)', status: 'pending', detail: '' },
-      { step: 5, title: 'Генерация Jetpack Compose (LLM Call 2)', status: 'pending', detail: '' },
-      { step: 6, title: 'Запись файлов в проект Android', status: 'pending', detail: '' },
+    const stepsStatus: StitchPipelineStepItem[] = [
+      { step: 1, stage: 'mcp', title: 'Получение экрана из Stitch MCP (list_screens)', status: 'running', detail: `Поиск экрана "${screenQuery}"...` },
+      { step: 2, stage: 'ir', title: 'Design IR & Дизайн-токены', status: 'pending', detail: '' },
+      { step: 3, stage: 'rag', title: 'RAG контекст проекта (CryptoTrack)', status: 'pending', detail: '' },
+      { step: 4, stage: 'planning', title: 'Compose Planning (LLM Call 1)', status: 'pending', detail: '' },
+      { step: 5, stage: 'generating', title: 'Генерация Jetpack Compose (LLM Call 2)', status: 'pending', detail: '' },
+      { step: 6, stage: 'writing', title: 'Запись файлов в проект Android', status: 'pending', detail: '' },
     ];
 
     const renderProgressMessage = (extraContent = '') => {
@@ -4327,6 +4329,11 @@ Do NOT use markdown code fences. Pure JSON only.`,
             : '⚪';
         const desc = s.detail ? ` — *${s.detail}*` : '';
         lines.push(`- ${icon} **Шаг ${s.step}: ${s.title}**${desc}`);
+        if (s.intermediateResult) {
+          lines.push('');
+          lines.push(formatStepIntermediateResult(s));
+          lines.push('');
+        }
       }
       if (extraContent) {
         lines.push('', extraContent);
@@ -4374,8 +4381,34 @@ Do NOT use markdown code fences. Pure JSON only.`,
         ];
       }
 
+      const htmlPreview =
+        mcpScreen.html.length > 600
+          ? mcpScreen.html.slice(0, 600) + '\n<!-- ... оставшаяся разметка ... -->'
+          : mcpScreen.html;
+      const step1Markdown = [
+        `##### 🌐 Данные экрана из Google Stitch:`,
+        `- **Название экрана:** \`${mcpScreen.screenName}\``,
+        `- **ID экрана:** \`${mcpScreen.screenId}\``,
+        `- **Проект Stitch ID:** \`${mcpScreen.projectId || DEFAULT_STITCH_PROJECT_ID}\``,
+        `- **Размер разметки:** **${mcpScreen.html.length}** символов`,
+        mcpScreen.metadata ? `- **Метаданные:** \`${JSON.stringify(mcpScreen.metadata)}\`` : '',
+        ``,
+        `##### 📄 Исходный HTML разметки экрана:`,
+        '```html',
+        htmlPreview,
+        '```',
+      ]
+        .filter(Boolean)
+        .join('\n');
+
       stepsStatus[0].status = 'done';
       stepsStatus[0].detail = `Экран найден: "${mcpScreen.screenName}" (ID: \`${mcpScreen.screenId}\`, HTML получен по downloadUrl)`;
+      stepsStatus[0].intermediateResult = {
+        summary: `${mcpScreen.screenName} (${mcpScreen.html.length} символов HTML)`,
+        type: 'html',
+        data: mcpScreen,
+        markdown: step1Markdown,
+      };
       stepsStatus[1].status = 'running';
       stepsStatus[1].detail = 'Парсинг HTML и построение Design IR...';
       assistantMessage.content = renderProgressMessage();
@@ -4390,6 +4423,17 @@ Do NOT use markdown code fences. Pure JSON only.`,
           projectId: DEFAULT_STITCH_PROJECT_ID,
           screenData: mcpScreen.screenData,
           writeToProject: true,
+          onStepResult: (stepItem) => {
+            const idx = stepsStatus.findIndex((s) => s.step === stepItem.step);
+            if (idx >= 0) {
+              stepsStatus[idx] = { ...stepsStatus[idx], ...stepItem };
+              if (idx + 1 < stepsStatus.length && stepsStatus[idx + 1].status === 'pending') {
+                stepsStatus[idx + 1].status = 'running';
+              }
+              assistantMessage.content = renderProgressMessage();
+              this.notify();
+            }
+          },
           onProgress: (stage) => {
             if (stage === 'ir') {
               stepsStatus[1].status = 'running';
