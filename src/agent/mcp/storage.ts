@@ -63,6 +63,23 @@ export const DEFAULT_MCP_SERVERS: McpServerConfig[] = [
       { name: 'get_aggregated_summary', description: 'Агрегированная сводка фонового мониторинга' },
     ],
   },
+  {
+    id: 'mcp-git-branch-server',
+    name: 'CryptoTrack Git Branch',
+    url: 'http://localhost:3005/sse',
+    transport: 'sse',
+    headers: {},
+    headersRaw: '{\n  "Authorization": ""\n}',
+    enabled: true,
+    createdAt: 1700000000004,
+    scope: 'global',
+    tools: [
+      {
+        name: 'get_current_git_branch',
+        description: 'Получить название текущей git ветки проекта CryptoTrack',
+      },
+    ],
+  },
 ];
 
 export function loadGlobalMcpEnabled(): boolean {
