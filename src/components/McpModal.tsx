@@ -16,15 +16,33 @@ import {
   Power,
   RefreshCw,
   Terminal,
+  Globe,
+  MessageSquare,
 } from 'lucide-react';
 import { McpServerConfig, McpConnectionResult } from '../agent/mcp/types';
-import { loadMcpServers, saveMcpServers, DEFAULT_MCP_SERVERS } from '../agent/mcp/storage';
+import {
+  loadMcpServers,
+  saveMcpServers,
+  DEFAULT_MCP_SERVERS,
+  loadGlobalMcpEnabled,
+  saveGlobalMcpEnabled,
+  loadChatMcpEnabled,
+  saveChatMcpEnabled,
+  loadChatMcpServers,
+  saveChatMcpServers,
+} from '../agent/mcp/storage';
 import { testMcpConnection, callMcpTool } from '../agent/mcp/McpClient';
+import { McpRouter } from '../agent/mcp/McpRouter';
+import { Agent } from '../agent/Agent';
+import { ErrorBoundary } from './ErrorBoundary';
 
 interface McpModalProps {
   isOpen: boolean;
   onClose: () => void;
   onServersChange?: (servers: McpServerConfig[]) => void;
+  chatId?: string;
+  chatTitle?: string;
+  agent?: Agent;
 }
 
 interface TestState {
@@ -40,11 +58,73 @@ interface ToolExecutionState {
   isError?: boolean;
 }
 
-export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersChange }) => {
-  const [servers, setServers] = useState<McpServerConfig[]>([]);
+export const McpModal: React.FC<McpModalProps> = ({
+  isOpen,
+  onClose,
+  onServersChange,
+  chatId,
+  chatTitle,
+  agent,
+}) => {
+  const [globalServers, setGlobalServers] = useState<McpServerConfig[]>(() => {
+    try {
+      return agent ? agent.getGlobalMcpServers() : loadMcpServers();
+    } catch (e) {
+      console.warn('Failed to initialize global servers:', e);
+      return [];
+    }
+  });
+
+  const [chatServers, setChatServers] = useState<McpServerConfig[]>(() => {
+    try {
+      return chatId ? (agent ? agent.getChatMcpServers() : loadChatMcpServers(chatId)) : [];
+    } catch (e) {
+      console.warn('Failed to initialize chat servers:', e);
+      return [];
+    }
+  });
+
+  const [globalEnabled, setGlobalEnabled] = useState<boolean>(() => {
+    try {
+      return agent ? agent.isGlobalMcpEnabled() : loadGlobalMcpEnabled();
+    } catch (e) {
+      return true;
+    }
+  });
+
+  const [chatEnabledSetting, setChatEnabledSetting] = useState<boolean | null>(() => {
+    try {
+      return chatId ? (agent ? agent.getChatMcpEnabledSetting() : loadChatMcpEnabled(chatId)) : null;
+    } catch (e) {
+      return null;
+    }
+  });
+
+  const [activeTab, setActiveTab] = useState<'all' | 'global' | 'chat'>('all');
   const [editingServer, setEditingServer] = useState<McpServerConfig | null>(null);
   const [isAddingNew, setIsAddingNew] = useState(false);
-  const [testStates, setTestStates] = useState<Record<string, TestState>>({});
+  const [testStates, setTestStates] = useState<Record<string, TestState>>(() => {
+    try {
+      const initialTests: Record<string, TestState> = {};
+      const gServers = agent ? agent.getGlobalMcpServers() : loadMcpServers();
+      const cServers = chatId ? (agent ? agent.getChatMcpServers() : loadChatMcpServers(chatId)) : [];
+      for (const s of [...gServers, ...cServers]) {
+        if (s.tools && Array.isArray(s.tools) && s.tools.length > 0) {
+          initialTests[s.id] = {
+            status: 'success',
+            result: {
+              success: true,
+              serverName: s.name,
+              tools: s.tools,
+            },
+          };
+        }
+      }
+      return initialTests;
+    } catch (e) {
+      return {};
+    }
+  });
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
   const [toolExecStates, setToolExecStates] = useState<Record<string, ToolExecutionState>>({});
 
@@ -54,32 +134,116 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
   const [formTransport, setFormTransport] = useState<'sse' | 'http'>('sse');
   const [formHeadersRaw, setFormHeadersRaw] = useState('{}');
   const [formEnabled, setFormEnabled] = useState(true);
+  const [formScope, setFormScope] = useState<'global' | 'chat'>('global');
   const [formJsonError, setFormJsonError] = useState<string | null>(null);
 
-  // Load servers on open
+  // Load servers and toggles on open
   useEffect(() => {
     if (isOpen) {
-      const loaded = loadMcpServers();
-      setServers(loaded);
-      onServersChange?.(loaded);
+      const gServers = agent ? agent.getGlobalMcpServers() : loadMcpServers();
+      const cServers = chatId
+        ? agent
+          ? agent.getChatMcpServers()
+          : loadChatMcpServers(chatId)
+        : [];
+      const gEnabled = agent ? agent.isGlobalMcpEnabled() : loadGlobalMcpEnabled();
+      const cSetting = chatId
+        ? agent
+          ? agent.getChatMcpEnabledSetting()
+          : loadChatMcpEnabled(chatId)
+        : null;
+
+      setGlobalServers(gServers);
+      setChatServers(cServers);
+      setGlobalEnabled(gEnabled);
+      setChatEnabledSetting(cSetting);
+
+      const initialTests: Record<string, TestState> = {};
+      for (const s of [...gServers, ...cServers]) {
+        if (s.tools && Array.isArray(s.tools) && s.tools.length > 0) {
+          initialTests[s.id] = {
+            status: 'success',
+            result: {
+              success: true,
+              serverName: s.name,
+              tools: s.tools,
+            },
+          };
+        }
+      }
+      setTestStates(initialTests);
     }
-  }, [isOpen]);
+  }, [isOpen, chatId, agent]);
 
   if (!isOpen) return null;
 
-  const persistServers = (updated: McpServerConfig[]) => {
-    setServers(updated);
-    saveMcpServers(updated);
-    onServersChange?.(updated);
+  const persistGlobalServers = (updated: McpServerConfig[]) => {
+    setGlobalServers(updated);
+    if (agent) {
+      agent.saveGlobalMcpServers(updated);
+    } else {
+      saveMcpServers(updated);
+    }
+    notifyParent();
   };
 
-  const handleStartAdd = () => {
+  const persistChatServers = (updated: McpServerConfig[]) => {
+    setChatServers(updated);
+    if (chatId) {
+      if (agent) {
+        agent.saveChatMcpServers(updated);
+      } else {
+        saveChatMcpServers(chatId, updated);
+      }
+    }
+    notifyParent();
+  };
+
+  const notifyParent = () => {
+    if (agent) {
+      onServersChange?.(agent.getEffectiveMcpServers());
+    } else {
+      const g = loadMcpServers();
+      const c = chatId ? loadChatMcpServers(chatId) : [];
+      onServersChange?.([...g.filter((s) => s.enabled), ...c.filter((s) => s.enabled)]);
+    }
+  };
+
+  const handleToggleGlobalEnabled = () => {
+    const next = !globalEnabled;
+    setGlobalEnabled(next);
+    if (agent) {
+      agent.setGlobalMcpEnabled(next);
+    } else {
+      saveGlobalMcpEnabled(next);
+    }
+    notifyParent();
+  };
+
+  const handleSetChatEnabled = (val: boolean | null) => {
+    setChatEnabledSetting(val);
+    if (chatId) {
+      if (agent) {
+        agent.setChatMcpEnabled(val);
+      } else {
+        saveChatMcpEnabled(chatId, val);
+      }
+    }
+    notifyParent();
+  };
+
+  const isEffectiveActiveForThisChat = agent
+    ? agent.isMcpActive()
+    : globalEnabled && chatEnabledSetting !== false;
+
+  const handleStartAdd = (targetScope: 'global' | 'chat' = 'global') => {
     setEditingServer(null);
-    setFormName('Локальный MCP сервер');
+    setFormName(targetScope === 'chat' ? 'Локальный инструмент чата' : 'Локальный MCP сервер');
     setFormUrl('http://localhost:3001/sse');
     setFormTransport('sse');
     setFormHeadersRaw('{\n  "Authorization": ""\n}');
     setFormEnabled(true);
+    setFormScope(targetScope);
     setFormJsonError(null);
     setIsAddingNew(true);
   };
@@ -97,6 +261,7 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
           : '{\n  "Authorization": ""\n}')
     );
     setFormEnabled(server.enabled);
+    setFormScope(server.scope === 'chat' ? 'chat' : 'global');
     setFormJsonError(null);
   };
 
@@ -123,20 +288,37 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
     setFormJsonError(null);
 
     if (editingServer) {
-      const updated = servers.map((s) =>
-        s.id === editingServer.id
-          ? {
-              ...s,
-              name: formName.trim() || 'MCP Server',
-              url: formUrl.trim(),
-              transport: formTransport,
-              headers: parsedHeaders,
-              headersRaw: formHeadersRaw,
-              enabled: formEnabled,
-            }
-          : s
-      );
-      persistServers(updated);
+      const origScope = editingServer.scope === 'chat' ? 'chat' : 'global';
+      const newScope = formScope;
+
+      const updatedItem: McpServerConfig = {
+        ...editingServer,
+        name: formName.trim() || 'MCP Server',
+        url: formUrl.trim(),
+        transport: formTransport,
+        headers: parsedHeaders,
+        headersRaw: formHeadersRaw,
+        enabled: formEnabled,
+        scope: newScope,
+        chatId: newScope === 'chat' ? chatId : undefined,
+      };
+
+      if (origScope === newScope) {
+        if (newScope === 'chat') {
+          persistChatServers(chatServers.map((s) => (s.id === editingServer.id ? updatedItem : s)));
+        } else {
+          persistGlobalServers(globalServers.map((s) => (s.id === editingServer.id ? updatedItem : s)));
+        }
+      } else {
+        // Scope changed: move item
+        if (origScope === 'chat') {
+          persistChatServers(chatServers.filter((s) => s.id !== editingServer.id));
+          persistGlobalServers([...globalServers, updatedItem]);
+        } else {
+          persistGlobalServers(globalServers.filter((s) => s.id !== editingServer.id));
+          persistChatServers([...chatServers, updatedItem]);
+        }
+      }
       setEditingServer(null);
     } else {
       const newServer: McpServerConfig = {
@@ -148,32 +330,51 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
         headersRaw: formHeadersRaw,
         enabled: formEnabled,
         createdAt: Date.now(),
+        scope: formScope,
+        chatId: formScope === 'chat' ? chatId : undefined,
       };
-      persistServers([...servers, newServer]);
+
+      if (formScope === 'chat') {
+        persistChatServers([...chatServers, newServer]);
+      } else {
+        persistGlobalServers([...globalServers, newServer]);
+      }
       setIsAddingNew(false);
     }
   };
 
-  const handleDeleteServer = (id: string) => {
-    if (window.confirm('Удалить данный MCP сервер?')) {
-      const updated = servers.filter((s) => s.id !== id);
-      persistServers(updated);
-      if (editingServer?.id === id) {
+  const handleDeleteServer = (server: McpServerConfig) => {
+    if (window.confirm(`Удалить MCP сервер "${server.name}"?`)) {
+      if (server.scope === 'chat') {
+        persistChatServers(chatServers.filter((s) => s.id !== server.id));
+      } else {
+        persistGlobalServers(globalServers.filter((s) => s.id !== server.id));
+      }
+      if (editingServer?.id === server.id) {
         setEditingServer(null);
       }
     }
   };
 
-  const handleToggleEnabled = (id: string) => {
-    const updated = servers.map((s) => (s.id === id ? { ...s, enabled: !s.enabled } : s));
-    persistServers(updated);
+  const handleToggleEnabled = (server: McpServerConfig) => {
+    if (server.scope === 'chat') {
+      persistChatServers(
+        chatServers.map((s) => (s.id === server.id ? { ...s, enabled: !s.enabled } : s))
+      );
+    } else {
+      persistGlobalServers(
+        globalServers.map((s) => (s.id === server.id ? { ...s, enabled: !s.enabled } : s))
+      );
+    }
   };
 
   const handleResetToDefaults = () => {
-    if (window.confirm('Сбросить список серверов к настройкам по умолчанию?')) {
-      persistServers(DEFAULT_MCP_SERVERS);
+    if (window.confirm('Сбросить глобальный список серверов к настройкам по умолчанию?')) {
+      persistGlobalServers(DEFAULT_MCP_SERVERS);
     }
   };
+
+  const [isDiscoveringAll, setIsDiscoveringAll] = useState(false);
 
   const handleTestServer = async (server: McpServerConfig) => {
     setTestStates((prev) => ({
@@ -190,8 +391,30 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
           result,
         },
       }));
-      if (result.success && result.tools.length > 0) {
+
+      if (result.success && result.tools && result.tools.length > 0) {
         setExpandedTools((prev) => ({ ...prev, [server.id]: true }));
+
+        const updatedServer: McpServerConfig = {
+          ...server,
+          tools: result.tools,
+          lastDiscoveredAt: Date.now(),
+        };
+
+        const router = McpRouter.getInstance();
+        for (const t of result.tools) {
+          router.registerRoute(t.name, updatedServer, t);
+        }
+
+        if (server.scope === 'chat') {
+          persistChatServers(
+            chatServers.map((s) => (s.id === server.id ? updatedServer : s))
+          );
+        } else {
+          persistGlobalServers(
+            globalServers.map((s) => (s.id === server.id ? updatedServer : s))
+          );
+        }
       }
     } catch (err: any) {
       setTestStates((prev) => ({
@@ -206,6 +429,16 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
           },
         },
       }));
+    }
+  };
+
+  const handleDiscoverAll = async () => {
+    setIsDiscoveringAll(true);
+    try {
+      const active = displayedServers.filter((s) => s.enabled);
+      await Promise.all(active.map((s) => handleTestServer(s)));
+    } finally {
+      setIsDiscoveringAll(false);
     }
   };
 
@@ -312,22 +545,31 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
         [toolKey]: {
           ...current,
           isLoading: false,
-          result: res.result,
-          isError: res.isError || !res.success,
+          result: res.result || (res.isError ? res.error : 'Успешно выполнено без возврата текста.'),
+          isError: res.isError,
         },
       }));
-    } catch (err: any) {
+    } catch (e: any) {
       setToolExecStates((prev) => ({
         ...prev,
         [toolKey]: {
           ...current,
           isLoading: false,
-          result: `Ошибка: ${err.message}`,
+          result: `Ошибка выполнения инструмента: ${e?.message || String(e)}`,
           isError: true,
         },
       }));
     }
   };
+
+  // Determine list of servers according to active tab
+  const allServers = [...globalServers, ...chatServers];
+  const displayedServers =
+    activeTab === 'global'
+      ? globalServers
+      : activeTab === 'chat'
+      ? chatServers
+      : allServers;
 
   const isFormOpen = isAddingNew || editingServer !== null;
 
@@ -340,7 +582,8 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
         aria-modal="true"
         aria-labelledby="mcp-modal-title"
       >
-        {/* Header */}
+        <ErrorBoundary fallbackTitle="Ошибка отображения настроек MCP">
+          {/* Header */}
         <div className="modal-header mcp-modal-header">
           <div className="modal-title-group">
             <div className="modal-icon-badge mcp-icon-badge">
@@ -351,7 +594,7 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
                 Model Context Protocol (MCP)
               </h2>
               <p className="modal-subtitle">
-                Подключение серверов инструментов через протокол MCP (День 16)
+                Глобальные и контекстные MCP-инструменты агента
               </p>
             </div>
           </div>
@@ -365,54 +608,205 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
           </button>
         </div>
 
-        {/* Local server reminder / helper box */}
-        <div className="mcp-local-hint">
-          <div className="mcp-local-hint-icon">
-            <HelpCircle size={16} />
-          </div>
-          <div className="mcp-local-hint-content">
-            <strong>Локальный сервер для тестирования:</strong>
-            <span>
-              {' '}
-              Запустите в терминале <code>npm run mcp:server</code> для поднятия SSE-сервера на порту 3001 с инструментами{' '}
-              <code>calculate</code>, <code>get_system_time</code> и <code>echo</code>.
-            </span>
-          </div>
-        </div>
+        {/* Master Switch & Per-chat Controls */}
+        <div className="mcp-modal-body">
+          <div className="mcp-controls-panel">
+            {/* Global Master Switch */}
+            <div className="mcp-switch-row">
+              <div className="mcp-switch-info">
+                <div className="mcp-switch-title">
+                  <Server size={16} />
+                  <span>Глобальный MCP (Master Switch)</span>
+                  <span className={`mcp-badge ${globalEnabled ? 'mcp-badge-sse' : 'mcp-badge-inactive'}`}>
+                    {globalEnabled ? 'Включен' : 'Отключен'}
+                  </span>
+                </div>
+                <div className="mcp-switch-desc">
+                  {globalEnabled
+                    ? 'MCP активен во всем приложении. Серверы и инструменты подключаются в диалогах.'
+                    : 'MCP отключен глобально. Никакие внешние инструменты не подключаются ни в одном диалоге.'}
+                </div>
+              </div>
+              <div className="mcp-switch-actions">
+                <button
+                  type="button"
+                  className={`mcp-toggle-btn ${globalEnabled ? 'active' : 'inactive'}`}
+                  onClick={handleToggleGlobalEnabled}
+                >
+                  <Power size={14} />
+                  <span>{globalEnabled ? 'Включено' : 'Выключено'}</span>
+                </button>
+              </div>
+            </div>
 
-        {/* Modal Body */}
-        <div className="modal-body mcp-modal-body">
+            {/* Per-Chat Switch (if chatId is available) */}
+            {chatId && (
+              <div
+                className="mcp-switch-row"
+                style={{
+                  borderTop: '1px solid var(--border-color, rgba(255,255,255,0.06))',
+                  paddingTop: 10,
+                }}
+              >
+                <div className="mcp-switch-info">
+                  <div className="mcp-switch-title">
+                    <MessageSquare size={15} />
+                    <span>Для чата «{chatTitle || 'Текущий диалог'}»</span>
+                    <span
+                      className={`mcp-badge ${
+                        isEffectiveActiveForThisChat ? 'mcp-badge-sse' : 'mcp-badge-inactive'
+                      }`}
+                    >
+                      {isEffectiveActiveForThisChat ? 'Активен в чате' : 'Отключен в чате'}
+                    </span>
+                  </div>
+                  <div className="mcp-switch-desc">
+                    Индивидуальная настройка MCP для текущего чата
+                  </div>
+                </div>
+                <div className="mcp-switch-actions">
+                  <div className="mcp-segmented-control">
+                    <button
+                      type="button"
+                      className={`mcp-segmented-btn ${chatEnabledSetting === null ? 'active' : ''}`}
+                      onClick={() => handleSetChatEnabled(null)}
+                      title="Использовать статус глобального переключателя"
+                    >
+                      Как глобально
+                    </button>
+                    <button
+                      type="button"
+                      className={`mcp-segmented-btn ${chatEnabledSetting === true ? 'active' : ''}`}
+                      onClick={() => handleSetChatEnabled(true)}
+                      title="Принудительно включить для этого чата"
+                    >
+                      Вкл
+                    </button>
+                    <button
+                      type="button"
+                      className={`mcp-segmented-btn ${chatEnabledSetting === false ? 'active' : ''}`}
+                      onClick={() => handleSetChatEnabled(false)}
+                      title="Принудительно отключить только для этого чата"
+                    >
+                      Выкл
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Local server reminder / helper box */}
+          <div className="mcp-local-hint">
+            <div className="mcp-local-hint-icon">
+              <HelpCircle size={16} />
+            </div>
+            <div className="mcp-local-hint-content">
+              <strong>Тестирование серверов:</strong>
+              <span>
+                {' '}
+                Запустите в терминале <code>npm run mcp:servers</code> для поднятия экосистемы 3 серверов (каталог: 3001, логистика: 3002, аналитика: 3003).
+              </span>
+            </div>
+          </div>
+
+          {/* Scope Tabs */}
+          <div className="mcp-tabs">
+            <button
+              type="button"
+              className={`mcp-tab-btn ${activeTab === 'all' ? 'active' : ''}`}
+              onClick={() => setActiveTab('all')}
+            >
+              <span>Все серверы ({allServers.length})</span>
+            </button>
+            <button
+              type="button"
+              className={`mcp-tab-btn ${activeTab === 'global' ? 'active' : ''}`}
+              onClick={() => setActiveTab('global')}
+            >
+              <Globe size={13} />
+              <span>Глобальные ({globalServers.length})</span>
+            </button>
+            {chatId && (
+              <button
+                type="button"
+                className={`mcp-tab-btn ${activeTab === 'chat' ? 'active' : ''}`}
+                onClick={() => setActiveTab('chat')}
+              >
+                <MessageSquare size={13} />
+                <span>Серверы этого чата ({chatServers.length})</span>
+              </button>
+            )}
+          </div>
+
           {/* Action bar */}
           <div className="mcp-action-bar">
             {!isFormOpen && (
-              <button
-                type="button"
-                className="btn btn-primary mcp-add-btn"
-                onClick={handleStartAdd}
-              >
-                <Plus size={16} />
-                <span>Добавить MCP-сервер</span>
-              </button>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="btn btn-primary mcp-add-btn"
+                  onClick={() => handleStartAdd(activeTab === 'chat' ? 'chat' : 'global')}
+                >
+                  <Plus size={16} />
+                  <span>
+                    {activeTab === 'chat' ? 'Добавить сервер в этот чат' : 'Добавить MCP-сервер'}
+                  </span>
+                </button>
+                {chatId && activeTab !== 'chat' && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary mcp-add-btn"
+                    onClick={() => handleStartAdd('chat')}
+                    title="Добавить сервер, доступный только в этом чате"
+                  >
+                    <MessageSquare size={15} />
+                    <span>Добавить в этот чат</span>
+                  </button>
+                )}
+              </div>
             )}
 
             <div className="mcp-status-summary">
               <span className="mcp-summary-item">
-                Серверов: <strong>{servers.length}</strong>
+                Всего серверов: <strong>{allServers.length}</strong>
               </span>
               <span className="mcp-summary-item">
                 Активных:{' '}
                 <strong className="text-success">
-                  {servers.filter((s) => s.enabled).length}
+                  {displayedServers.filter((s) => s.enabled).length}
                 </strong>
               </span>
             </div>
 
-            {servers.length === 0 && !isFormOpen && (
+            {!isFormOpen && displayedServers.some((s) => s.enabled) && (
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={handleDiscoverAll}
+                disabled={isDiscoveringAll}
+                title="Опросить активные серверы и актуализировать список доступных инструментов"
+              >
+                {isDiscoveringAll ? (
+                  <>
+                    <Loader2 size={13} className="spin-animation" />
+                    <span>Синхронизация...</span>
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw size={13} />
+                    <span>Опросить инструменты</span>
+                  </>
+                )}
+              </button>
+            )}
+
+            {globalServers.length === 0 && !isFormOpen && (
               <button
                 type="button"
                 className="btn btn-secondary btn-sm"
                 onClick={handleResetToDefaults}
-                title="Восстановить тестовый локальный сервер"
+                title="Восстановить тестовые глобальные серверы"
               >
                 <RefreshCw size={14} />
                 <span>Сбросить к умолчанию</span>
@@ -424,7 +818,13 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
           {isFormOpen && (
             <form className="mcp-form-card" onSubmit={handleSaveForm}>
               <div className="mcp-form-header">
-                <h3>{editingServer ? 'Редактировать MCP-сервер' : 'Новое подключение к MCP'}</h3>
+                <h3>
+                  {editingServer
+                    ? 'Редактировать MCP-сервер'
+                    : formScope === 'chat'
+                    ? 'Новый MCP-сервер для этого чата'
+                    : 'Новое глобальное подключение к MCP'}
+                </h3>
                 <button
                   type="button"
                   className="btn btn-ghost btn-sm"
@@ -437,6 +837,37 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
                   <X size={15} />
                 </button>
               </div>
+
+              {/* Scope Selection */}
+              {chatId && (
+                <div className="form-group">
+                  <label className="form-label">Область действия сервера (Scope)</label>
+                  <div className="mcp-scope-selector-group">
+                    <div
+                      className={`mcp-scope-option ${formScope === 'global' ? 'selected' : ''}`}
+                      onClick={() => setFormScope('global')}
+                    >
+                      <Globe size={16} />
+                      <div>
+                        <div style={{ fontWeight: 500 }}>Глобальный сервер</div>
+                        <div style={{ fontSize: '11px', opacity: 0.8 }}>Доступен во всех чатах</div>
+                      </div>
+                    </div>
+                    <div
+                      className={`mcp-scope-option ${formScope === 'chat' ? 'selected' : ''}`}
+                      onClick={() => setFormScope('chat')}
+                    >
+                      <MessageSquare size={16} />
+                      <div>
+                        <div style={{ fontWeight: 500 }}>Только для этого чата</div>
+                        <div style={{ fontSize: '11px', opacity: 0.8 }}>
+                          «{chatTitle || 'Текущий диалог'}»
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="form-group">
                 <label className="form-label" htmlFor="mcp-name">
@@ -454,14 +885,14 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
               </div>
 
               <div className="form-row">
-                <div className="form-group flex-1">
+                <div className="form-group flex-2">
                   <label className="form-label" htmlFor="mcp-url">
-                    URL эндпоинта
+                    URL конечной точки
                   </label>
                   <input
                     id="mcp-url"
                     type="url"
-                    className="form-input"
+                    className="form-input code-font"
                     placeholder="http://localhost:3001/sse"
                     value={formUrl}
                     onChange={(e) => setFormUrl(e.target.value)}
@@ -469,9 +900,9 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
                   />
                 </div>
 
-                <div className="form-group" style={{ width: '220px' }}>
+                <div className="form-group flex-1">
                   <label className="form-label" htmlFor="mcp-transport">
-                    Способ подключения
+                    Транспорт
                   </label>
                   <select
                     id="mcp-transport"
@@ -480,7 +911,7 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
                     onChange={(e) => setFormTransport(e.target.value as 'sse' | 'http')}
                   >
                     <option value="sse">SSE (Server-Sent Events)</option>
-                    <option value="http">Streamable HTTP</option>
+                    <option value="http">Streamable HTTP (POST)</option>
                   </select>
                 </div>
               </div>
@@ -490,35 +921,35 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
                   <label className="form-label" htmlFor="mcp-headers">
                     HTTP Заголовки (JSON)
                   </label>
-                  <span className="form-hint">Формат: {`{"Header-Name": "value"}`}</span>
+                  <span className="form-hint">Авторизация, Bearer-токены, ключи API</span>
                 </div>
                 <textarea
                   id="mcp-headers"
-                  className={`form-textarea code-font ${formJsonError ? 'input-error' : ''}`}
-                  rows={4}
-                  placeholder={`{\n  "Authorization": "Bearer YOUR_TOKEN",\n  "X-Custom-Header": "value"\n}`}
+                  className="form-textarea code-font"
+                  rows={3}
                   value={formHeadersRaw}
                   onChange={(e) => {
                     setFormHeadersRaw(e.target.value);
-                    if (formJsonError) setFormJsonError(null);
+                    setFormJsonError(null);
                   }}
+                  placeholder={'{\n  "Authorization": "Bearer secret_token"\n}'}
                 />
                 {formJsonError && (
-                  <div className="form-error-message">
+                  <div className="form-error-banner">
                     <AlertCircle size={14} />
                     <span>{formJsonError}</span>
                   </div>
                 )}
               </div>
 
-              <div className="form-group checkbox-group">
+              <div className="form-checkbox-row">
                 <label className="checkbox-label">
                   <input
                     type="checkbox"
                     checked={formEnabled}
                     onChange={(e) => setFormEnabled(e.target.checked)}
                   />
-                  <span>Включить сервер (активен)</span>
+                  <span>Включить сервер сразу после сохранения</span>
                 </label>
               </div>
 
@@ -543,24 +974,39 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
 
           {/* Server List */}
           <div className="mcp-server-list">
-            {servers.length === 0 && !isFormOpen && (
+            {displayedServers.length === 0 && !isFormOpen && (
               <div className="mcp-empty-state">
                 <Server size={36} className="mcp-empty-icon" />
-                <p>Нет добавленных MCP серверов.</p>
+                <p>
+                  {activeTab === 'chat'
+                    ? 'У этого чата пока нет собственных MCP-серверов.'
+                    : 'Нет доступных MCP серверов в выбранной категории.'}
+                </p>
                 <button
                   type="button"
                   className="btn btn-primary btn-sm"
-                  onClick={handleStartAdd}
+                  onClick={() => handleStartAdd(activeTab === 'chat' ? 'chat' : 'global')}
                 >
-                  <Plus size={14} /> Добавить первый сервер
+                  <Plus size={14} />
+                  <span>
+                    {activeTab === 'chat'
+                      ? 'Добавить сервер в этот чат'
+                      : 'Добавить первый сервер'}
+                  </span>
                 </button>
               </div>
             )}
 
-            {servers.map((server) => {
+            {displayedServers.map((server) => {
               const testState = testStates[server.id] || { status: 'idle' };
               const isToolsExpanded = Boolean(expandedTools[server.id]);
-              const tools = testState.result?.tools || [];
+              const tools = Array.isArray(testState.result?.tools)
+                ? testState.result.tools
+                : Array.isArray(server.tools)
+                ? server.tools
+                : [];
+              const isChatScoped = server.scope === 'chat';
+              const serverTransport = server.transport || 'sse';
 
               return (
                 <div
@@ -575,7 +1021,7 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
                       <button
                         type="button"
                         className={`mcp-power-btn ${server.enabled ? 'active' : ''}`}
-                        onClick={() => handleToggleEnabled(server.id)}
+                        onClick={() => handleToggleEnabled(server)}
                         title={server.enabled ? 'Отключить сервер' : 'Включить сервер'}
                       >
                         <Power size={14} />
@@ -583,9 +1029,21 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
 
                       <div className="mcp-server-details">
                         <div className="mcp-server-title-row">
-                          <span className="mcp-server-name">{server.name}</span>
-                          <span className={`mcp-badge mcp-badge-${server.transport}`}>
-                            {server.transport.toUpperCase()}
+                          <span className="mcp-server-name">{server.name || 'MCP Server'}</span>
+                          <span
+                            className={`mcp-badge ${
+                              isChatScoped ? 'mcp-badge-chat' : 'mcp-badge-global'
+                            }`}
+                            title={
+                              isChatScoped
+                                ? `Привязан к чату "${chatTitle || server.chatId || ''}"`
+                                : 'Доступен во всех чатах'
+                            }
+                          >
+                            {isChatScoped ? '💬 Этот чат' : '🌐 Глобальный'}
+                          </span>
+                          <span className={`mcp-badge mcp-badge-${serverTransport}`}>
+                            {serverTransport.toUpperCase()}
                           </span>
                           {!server.enabled && (
                             <span className="mcp-badge mcp-badge-inactive">Выключен</span>
@@ -593,258 +1051,274 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
                         </div>
 
                         <div className="mcp-server-url" title={server.url}>
-                          <code>{server.url}</code>
+                          <code>{server.url || ''}</code>
                         </div>
 
-                        {server.headers && Object.keys(server.headers).length > 0 && (
-                          <div className="mcp-headers-count">
-                            <span>Заголовков: {Object.keys(server.headers).length}</span>
-                          </div>
-                        )}
+                        {server.headers &&
+                          typeof server.headers === 'object' &&
+                          !Array.isArray(server.headers) &&
+                          Object.keys(server.headers).length > 0 && (
+                            <div className="mcp-headers-count">
+                              <span>
+                                Заголовков: {Object.keys(server.headers).length} (
+                                {Object.keys(server.headers).join(', ')})
+                              </span>
+                            </div>
+                          )}
                       </div>
                     </div>
 
-                    {/* Actions and Status */}
                     <div className="mcp-card-right">
-                      {/* Connection Test Button */}
+                      {/* Test Connection Button */}
                       <button
                         type="button"
                         className="btn btn-secondary btn-sm mcp-test-btn"
                         onClick={() => handleTestServer(server)}
                         disabled={testState.status === 'testing'}
-                        title="Установить MCP-соединение и запросить инструменты"
+                        title="Проверить доступность и запросить список инструментов"
                       >
                         {testState.status === 'testing' ? (
                           <>
-                            <Loader2 size={14} className="spin-icon" />
-                            <span>Проверка...</span>
+                            <Loader2 size={13} className="spin-animation" />
+                            <span>Тест...</span>
                           </>
                         ) : (
                           <>
                             <Play size={13} />
-                            <span>Проверить</span>
+                            <span>Тест</span>
                           </>
                         )}
                       </button>
 
+                      {/* Edit Button */}
                       <button
                         type="button"
-                        className="icon-action-btn"
+                        className="btn-icon"
                         onClick={() => handleStartEdit(server)}
-                        title="Редактировать"
+                        title="Редактировать конфигурацию"
                       >
-                        <Edit2 size={14} />
+                        <Edit2 size={15} />
                       </button>
 
+                      {/* Delete Button */}
                       <button
                         type="button"
-                        className="icon-action-btn text-danger"
-                        onClick={() => handleDeleteServer(server.id)}
-                        title="Удалить"
+                        className="btn-icon btn-icon-danger"
+                        onClick={() => handleDeleteServer(server)}
+                        title="Удалить сервер"
                       >
-                        <Trash2 size={14} />
+                        <Trash2 size={15} />
                       </button>
                     </div>
                   </div>
 
-                  {/* Test Result Feedback */}
-                  {testState.status === 'success' && testState.result && (
-                    <div className="mcp-test-feedback success">
+                  {/* Test Feedback Area */}
+                  {testState.status !== 'idle' && testState.result && (
+                    <div
+                      className={`mcp-test-feedback ${
+                        testState.status === 'success' ? 'success' : 'error'
+                      }`}
+                    >
                       <div className="mcp-feedback-header">
-                        <div className="mcp-feedback-title">
-                          <CheckCircle2 size={16} className="text-success" />
-                          <span>
-                            Соединение установлено! Найдено инструментов: <strong>{tools.length}</strong>
-                          </span>
-                        </div>
+                        {testState.status === 'success' ? (
+                          <>
+                            <CheckCircle2 size={16} className="text-success" />
+                            <span className="mcp-feedback-title">
+                              Сервер доступен. Найдено инструментов: {tools.length}
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <AlertCircle size={16} className="text-danger" />
+                            <span className="mcp-feedback-title">Ошибка подключения</span>
+                          </>
+                        )}
+
                         {testState.result.latencyMs !== undefined && (
                           <span className="mcp-latency">
-                            {testState.result.latencyMs}ms
+                            {testState.result.latencyMs} мс
                           </span>
                         )}
                       </div>
 
-                      {tools.length > 0 && (
-                        <div className="mcp-tools-collapsible">
-                          <button
-                            type="button"
-                            className="mcp-tools-toggle-btn"
-                            onClick={() => toggleToolsExpanded(server.id)}
-                          >
-                            {isToolsExpanded ? (
-                              <ChevronDown size={14} />
-                            ) : (
-                              <ChevronRight size={14} />
-                            )}
-                            <span>Список инструментов ({tools.length})</span>
-                          </button>
-
-                          {isToolsExpanded && (
-                            <div className="mcp-tools-list">
-                              {tools.map((tool) => {
-                                const toolKey = `${server.id}-${tool.name}`;
-                                const execState = toolExecStates[toolKey] || {
-                                  isOpen: false,
-                                  isLoading: false,
-                                  argsRaw: getSampleArgsForTool(tool.name),
-                                };
-
-                                return (
-                                  <div key={tool.name} className="mcp-tool-item">
-                                    <div
-                                      className="mcp-tool-header"
-                                      style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-                                    >
-                                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                        <Code2 size={14} className="mcp-tool-icon" />
-                                        <span className="mcp-tool-name">{tool.name}</span>
-                                      </div>
-                                      <button
-                                        type="button"
-                                        className="btn btn-secondary btn-xs"
-                                        style={{ padding: '2px 8px', fontSize: '11px', height: '24px' }}
-                                        onClick={() => toggleToolExecOpen(toolKey, tool.name)}
-                                      >
-                                        <Terminal size={12} style={{ marginRight: '4px' }} />
-                                        <span>{execState.isOpen ? 'Скрыть тест' : 'Тестировать'}</span>
-                                      </button>
-                                    </div>
-                                    {tool.description && (
-                                      <p className="mcp-tool-desc">{tool.description}</p>
-                                    )}
-                                    {tool.inputSchema?.properties && (
-                                      <div className="mcp-tool-params">
-                                        <span className="mcp-params-label">Параметры:</span>
-                                        {Object.entries(tool.inputSchema.properties).map(
-                                          ([pName, pVal]: [string, any]) => (
-                                            <span key={pName} className="mcp-param-tag">
-                                              {pName}
-                                              {tool.inputSchema?.required?.includes(pName) && (
-                                                <span className="required-star">*</span>
-                                              )}
-                                              {pVal?.type ? `: ${pVal.type}` : ''}
-                                            </span>
-                                          )
-                                        )}
-                                      </div>
-                                    )}
-
-                                    {/* Interactive execution panel */}
-                                    {execState.isOpen && (
-                                      <div
-                                        style={{
-                                          marginTop: '8px',
-                                          padding: '8px',
-                                          background: 'rgba(0, 0, 0, 0.25)',
-                                          borderRadius: '6px',
-                                          border: '1px solid rgba(255, 255, 255, 0.1)',
-                                        }}
-                                      >
-                                        <div
-                                          style={{
-                                            fontSize: '11px',
-                                            marginBottom: '4px',
-                                            color: 'var(--text-secondary, #94a3b8)',
-                                          }}
-                                        >
-                                          Аргументы вызова (JSON):
-                                        </div>
-                                        <textarea
-                                          value={execState.argsRaw}
-                                          onChange={(e) => handleUpdateToolArgs(toolKey, e.target.value)}
-                                          rows={3}
-                                          style={{
-                                            width: '100%',
-                                            fontFamily: 'monospace',
-                                            fontSize: '11px',
-                                            background: 'rgba(0, 0, 0, 0.4)',
-                                            border: '1px solid rgba(255, 255, 255, 0.15)',
-                                            borderRadius: '4px',
-                                            color: '#f8fafc',
-                                            padding: '6px',
-                                            resize: 'vertical',
-                                            boxSizing: 'border-box',
-                                          }}
-                                        />
-                                        <div
-                                          style={{
-                                            marginTop: '6px',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            gap: '8px',
-                                          }}
-                                        >
-                                          <button
-                                            type="button"
-                                            className="btn btn-primary btn-xs"
-                                            disabled={execState.isLoading}
-                                            onClick={() => handleExecuteTool(server, tool.name, toolKey)}
-                                            style={{ padding: '3px 10px', fontSize: '11px' }}
-                                          >
-                                            {execState.isLoading ? (
-                                              <>
-                                                <Loader2 size={12} className="spin-icon" style={{ marginRight: '4px' }} />
-                                                <span>Выполнение...</span>
-                                              </>
-                                            ) : (
-                                              <>
-                                                <Play size={12} style={{ marginRight: '4px' }} />
-                                                <span>Выполнить вызов</span>
-                                              </>
-                                            )}
-                                          </button>
-                                        </div>
-
-                                        {execState.result && (
-                                          <div style={{ marginTop: '8px' }}>
-                                            <div
-                                              style={{
-                                                fontSize: '11px',
-                                                marginBottom: '4px',
-                                                fontWeight: 600,
-                                                color: execState.isError ? '#ef4444' : '#22c55e',
-                                              }}
-                                            >
-                                              {execState.isError ? 'Ошибка выполнения:' : 'Результат ответа MCP:'}
-                                            </div>
-                                            <pre
-                                              style={{
-                                                background: 'rgba(0, 0, 0, 0.5)',
-                                                padding: '6px',
-                                                borderRadius: '4px',
-                                                fontSize: '11px',
-                                                maxHeight: '180px',
-                                                overflowY: 'auto',
-                                                margin: 0,
-                                                color: execState.isError ? '#fca5a5' : '#86efac',
-                                                whiteSpace: 'pre-wrap',
-                                              }}
-                                            >
-                                              {execState.result}
-                                            </pre>
-                                          </div>
-                                        )}
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
+                      {testState.status === 'error' && testState.result.error && (
+                        <p className="mcp-feedback-error-text">
+                          {testState.result.error}
+                        </p>
                       )}
                     </div>
                   )}
 
-                  {testState.status === 'error' && testState.result && (
-                    <div className="mcp-test-feedback error">
-                      <div className="mcp-feedback-header">
-                        <div className="mcp-feedback-title">
-                          <AlertCircle size={16} className="text-danger" />
-                          <span>Ошибка подключения к MCP-серверу</span>
+                  {/* Discovered Tools List (Collapsible) */}
+                  {tools.length > 0 && (
+                    <div className="mcp-tools-collapsible">
+                      <button
+                        type="button"
+                        className="mcp-tools-toggle-btn"
+                        onClick={() => toggleToolsExpanded(server.id)}
+                      >
+                        {isToolsExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                        <span>
+                          {isToolsExpanded ? 'Скрыть инструменты' : 'Показать инструменты'} ({tools.length})
+                        </span>
+                      </button>
+
+                      {isToolsExpanded && (
+                        <div className="mcp-tools-list">
+                          {tools.map((tool) => {
+                            if (!tool || typeof tool !== 'object') return null;
+                            const toolName = typeof tool.name === 'string' ? tool.name : 'unknown_tool';
+                            const toolKey = `${server.id}_${toolName}`;
+                            const execState = toolExecStates[toolKey] || {
+                              isOpen: false,
+                              isLoading: false,
+                              argsRaw: getSampleArgsForTool(toolName),
+                            };
+
+                            const inputSchema =
+                              tool.inputSchema &&
+                              typeof tool.inputSchema === 'object' &&
+                              !Array.isArray(tool.inputSchema)
+                                ? tool.inputSchema
+                                : null;
+                            const properties =
+                              inputSchema?.properties &&
+                              typeof inputSchema.properties === 'object' &&
+                              !Array.isArray(inputSchema.properties)
+                                ? inputSchema.properties
+                                : null;
+                            const hasParams = properties !== null && Object.keys(properties).length > 0;
+                            const requiredParams = Array.isArray(inputSchema?.required)
+                              ? inputSchema.required
+                              : [];
+                            const toolDesc =
+                              typeof tool.description === 'string'
+                                ? tool.description
+                                : tool.description
+                                ? JSON.stringify(tool.description)
+                                : null;
+
+                            return (
+                              <div key={toolName} className="mcp-tool-item">
+                                <div className="mcp-tool-header">
+                                  <div className="mcp-tool-title-row">
+                                    <Code2 size={14} className="mcp-tool-icon" />
+                                    <code className="mcp-tool-name">{toolName}</code>
+                                  </div>
+
+                                  {/* Interactive Run Tool Button */}
+                                  <button
+                                    type="button"
+                                    className={`btn btn-sm ${
+                                      execState.isOpen ? 'btn-primary' : 'btn-secondary'
+                                    }`}
+                                    onClick={() => toggleToolExecOpen(toolKey, toolName)}
+                                    title="Выполнить инструмент с параметрами в реальном времени"
+                                  >
+                                    <Terminal size={12} />
+                                    <span>{execState.isOpen ? 'Скрыть запуск' : 'Запустить'}</span>
+                                  </button>
+                                </div>
+
+                                {toolDesc && <p className="mcp-tool-desc">{toolDesc}</p>}
+
+                                {hasParams && properties && (
+                                  <div className="mcp-tool-params">
+                                    <span className="mcp-params-label">Параметры:</span>
+                                    {Object.entries(properties).map(
+                                      ([pName, pSchema]: [string, any]) => {
+                                        const isReq = requiredParams.includes(pName);
+                                        const paramType =
+                                          pSchema && typeof pSchema === 'object' && pSchema.type
+                                            ? String(pSchema.type)
+                                            : '';
+                                        const paramDesc =
+                                          pSchema &&
+                                          typeof pSchema === 'object' &&
+                                          typeof pSchema.description === 'string'
+                                            ? pSchema.description
+                                            : '';
+                                        return (
+                                          <span
+                                            key={pName}
+                                            className={`mcp-param-tag ${isReq ? 'required' : ''}`}
+                                            title={paramDesc}
+                                          >
+                                            {pName}
+                                            {paramType && ` (${paramType})`}
+                                            {isReq && <span className="required-star">*</span>}
+                                          </span>
+                                        );
+                                      }
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Interactive Run Card */}
+                                {execState.isOpen && (
+                                  <div className="mcp-tool-exec-box">
+                                    <div className="mcp-tool-exec-header">
+                                      <span>JSON Аргументы для вызова:</span>
+                                    </div>
+                                    <textarea
+                                      className="form-textarea code-font"
+                                      rows={2}
+                                      value={execState.argsRaw}
+                                      onChange={(e) =>
+                                        handleUpdateToolArgs(toolKey, e.target.value)
+                                      }
+                                      placeholder="{}"
+                                    />
+
+                                    <div className="mcp-tool-exec-actions">
+                                      <button
+                                        type="button"
+                                        className="btn btn-primary btn-sm"
+                                        onClick={() =>
+                                          handleExecuteTool(server, tool.name, toolKey)
+                                        }
+                                        disabled={execState.isLoading}
+                                      >
+                                        {execState.isLoading ? (
+                                          <>
+                                            <Loader2 size={13} className="spin-animation" />
+                                            <span>Выполняется...</span>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <Play size={13} />
+                                            <span>Выполнить вызов</span>
+                                          </>
+                                        )}
+                                      </button>
+                                    </div>
+
+                                    {/* Tool Call Output Result */}
+                                    {execState.result !== undefined && (
+                                      <div
+                                        className={`mcp-tool-result ${
+                                          execState.isError ? 'error' : 'success'
+                                        }`}
+                                      >
+                                        <div className="mcp-tool-result-header">
+                                          <span>
+                                            {execState.isError
+                                              ? 'Ошибка выполнения:'
+                                              : 'Результат вызова инструмента:'}
+                                          </span>
+                                        </div>
+                                        <pre className="mcp-tool-result-body">
+                                          {execState.result}
+                                        </pre>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
-                      </div>
-                      <p className="mcp-feedback-error-text">{testState.result.error}</p>
+                      )}
                     </div>
                   )}
                 </div>
@@ -853,15 +1327,18 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, onServersCh
           </div>
         </div>
 
-        {/* Modal Footer */}
+        {/* Footer */}
         <div className="modal-footer mcp-modal-footer">
           <div className="mcp-footer-note">
-            <span>Протокол MCP: стандарт расширения возможностей ИИ-агентов внешними инструментами.</span>
+            <span>
+              Глобальные и контекстные серверы оркестрируются через <code>McpRouter</code>.
+            </span>
           </div>
-          <button type="button" className="btn btn-secondary" onClick={onClose}>
-            Закрыть
+          <button type="button" className="btn btn-primary" onClick={onClose}>
+            Готово
           </button>
         </div>
+        </ErrorBoundary>
       </div>
     </div>
   );

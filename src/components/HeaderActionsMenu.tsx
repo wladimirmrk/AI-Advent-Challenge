@@ -12,6 +12,7 @@ interface HeaderActionsMenuProps {
   invariantsCount: number;
   memoryCount: number;
   mcpCount?: number;
+  isMcpActive?: boolean;
   hasMessages: boolean;
   disabled?: boolean;
   active?: boolean;
@@ -25,6 +26,7 @@ export const HeaderActionsMenu: React.FC<HeaderActionsMenuProps> = ({
   invariantsCount,
   memoryCount,
   mcpCount = 0,
+  isMcpActive = true,
   hasMessages,
   disabled,
   active,
@@ -58,7 +60,7 @@ export const HeaderActionsMenu: React.FC<HeaderActionsMenuProps> = ({
   }, [isOpen]);
 
   const close = () => setIsOpen(false);
-  const totalCount = invariantsCount + memoryCount + (mcpCount || 0);
+  const totalCount = invariantsCount + memoryCount + (isMcpActive ? (mcpCount || 0) : 0);
 
   return (
     <div className="header-actions-menu" ref={containerRef}>
@@ -138,8 +140,12 @@ export const HeaderActionsMenu: React.FC<HeaderActionsMenuProps> = ({
           >
             <Server size={15} />
             <span className="header-actions-item-label">MCP</span>
-            {mcpCount > 0 && (
-              <span className="header-actions-item-count mcp">{mcpCount}</span>
+            {!isMcpActive ? (
+              <span className="header-actions-item-count mcp off">off</span>
+            ) : (
+              mcpCount > 0 && (
+                <span className="header-actions-item-count mcp">{mcpCount}</span>
+              )
             )}
           </button>
 

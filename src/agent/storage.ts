@@ -28,6 +28,7 @@ import {
   InvariantItem,
 } from './types';
 import { resolveContextLimit } from './tokenizer';
+import { deleteChatMcpStorage } from './mcp/storage';
 
 const STORAGE_KEYS = {
   CHAT_LIST: 'agent_chat_list',
@@ -417,6 +418,7 @@ export function deleteChatStorage(chatId: string): void {
     localStorage.removeItem(getChatKey(STORAGE_KEYS.ACTIVE_BRANCH, chatId));
     localStorage.removeItem(getChatKey(STORAGE_KEYS.CONFIG, chatId));
     localStorage.removeItem(getChatKey(STORAGE_KEYS.WORKING_MEMORY, chatId));
+    deleteChatMcpStorage(chatId);
     if (chatId === 'default') {
       localStorage.removeItem(STORAGE_KEYS.MESSAGES);
       localStorage.removeItem(STORAGE_KEYS.SUMMARY);

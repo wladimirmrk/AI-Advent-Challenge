@@ -13,8 +13,8 @@ import { TaskStatusBar } from './TaskStatusBar';
 import { HeaderActionsMenu } from './HeaderActionsMenu';
 import { McpModal } from './McpModal';
 import { ModelParamsModal } from './ModelParamsModal';
-import { loadMcpServers } from '../agent/mcp/storage';
-import { McpServerConfig } from '../agent/mcp/types';
+import { ErrorBoundary } from './ErrorBoundary';
+import { chatManagerInstance } from '../agent/ChatManager';
 import { Bot, Settings as SettingsIcon, Cpu, User, SlidersHorizontal } from 'lucide-react';
 
 interface ChatProps {
@@ -28,7 +28,6 @@ export const Chat: React.FC<ChatProps> = ({
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isModelParamsOpen, setIsModelParamsOpen] = useState(false);
   const [isMcpModalOpen, setIsMcpModalOpen] = useState(false);
-  const [mcpServers, setMcpServers] = useState<McpServerConfig[]>(() => loadMcpServers());
   const [isFactsDrawerOpen, setIsFactsDrawerOpen] = useState(false);
   const [isMemoryHubOpen, setIsMemoryHubOpen] = useState(false);
   const [memoryHubTab, setMemoryHubTab] = useState<'working' | 'short_term' | 'long_term' | 'invariants'>('invariants');
@@ -275,7 +274,8 @@ export const Chat: React.FC<ChatProps> = ({
               agentState.longTermMemory.decisions.length +
               agentState.longTermMemory.knowledge.length
             }
-            mcpCount={mcpServers.filter((s) => s.enabled).length}
+            mcpCount={agent.getEffectiveMcpServers().length}
+            isMcpActive={agent.isMcpActive()}
             hasMessages={agentState.messages.length > 0}
             disabled={agentState.isLoading}
             active={isMemoryHubOpen}
@@ -413,11 +413,21 @@ export const Chat: React.FC<ChatProps> = ({
       />
 
       {/* MCP Modal */}
-      <McpModal
-        isOpen={isMcpModalOpen}
-        onClose={() => setIsMcpModalOpen(false)}
-        onServersChange={setMcpServers}
-      />
+      <ErrorBoundary fallbackTitle="Ошибка при открытии настроек MCP">
+        <McpModal
+          isOpen={isMcpModalOpen}
+          onClose={() => setIsMcpModalOpen(false)}
+          onServersChange={() => {
+            setAgentState(agent.getState());
+          }}
+          chatId={agent.getChatId()}
+          chatTitle={
+            chatManagerInstance.getChats().find((c) => c.id === agent.getChatId())?.title ||
+            'Текущий диалог'
+          }
+          agent={agent}
+        />
+      </ErrorBoundary>
     </div>
   );
 };

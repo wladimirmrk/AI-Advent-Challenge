@@ -45,6 +45,28 @@ export class McpRouter {
   }
 
   /**
+   * Returns discovered tools for a specific server ID
+   */
+  public getServerTools(serverId: string): McpToolInfo[] | undefined {
+    return this.serverToolsMap.get(serverId);
+  }
+
+  /**
+   * Seeds routing table and tool map from cached tools in server configurations
+   */
+  public seedFromServers(servers?: McpServerConfig[]): void {
+    const list = (servers || loadMcpServers()).filter((s) => s.enabled);
+    for (const server of list) {
+      if (server.tools && server.tools.length > 0) {
+        this.serverToolsMap.set(server.id, server.tools);
+        for (const tool of server.tools) {
+          this.toolRoutes.set(tool.name, server);
+        }
+      }
+    }
+  }
+
+  /**
    * Discovers tools on all enabled MCP servers and builds routing index.
    */
   public async discoverAllTools(
@@ -65,16 +87,30 @@ export class McpRouter {
       activeServers.map(async (server) => {
         try {
           const res = await testMcpConnection(server);
-          if (res.success && res.tools) {
+          if (res.success && res.tools && res.tools.length > 0) {
             this.serverToolsMap.set(server.id, res.tools);
+            server.tools = res.tools;
+            server.lastDiscoveredAt = Date.now();
             for (const tool of res.tools) {
               this.toolRoutes.set(tool.name, server);
             }
           } else {
             console.warn(`[McpRouter] Server ${server.name} (${server.url}) discovery failed:`, res.error);
+            if (server.tools && server.tools.length > 0) {
+              this.serverToolsMap.set(server.id, server.tools);
+              for (const tool of server.tools) {
+                this.toolRoutes.set(tool.name, server);
+              }
+            }
           }
         } catch (err) {
           console.warn(`[McpRouter] Error discovering tools on ${server.name}:`, err);
+          if (server.tools && server.tools.length > 0) {
+            this.serverToolsMap.set(server.id, server.tools);
+            for (const tool of server.tools) {
+              this.toolRoutes.set(tool.name, server);
+            }
+          }
         }
       })
     );
@@ -87,47 +123,115 @@ export class McpRouter {
    * Resolves target server for a given tool name.
    */
   public resolveTargetServer(toolName: string, servers?: McpServerConfig[]): McpServerConfig | null {
+    const activeServers = (servers || loadMcpServers()).filter((s) => s.enabled);
+    if (activeServers.length === 0) return null;
+
+    // 0. Namespaced tool call check (e.g. "google_stitch.list_projects", "Google Stitch:list_projects", "stitch/list_projects")
+    const sepMatch = toolName.match(/^([^.:/]+)[.:/](.+)$/);
+    if (sepMatch) {
+      const serverPrefix = sepMatch[1].trim().toLowerCase().replace(/[\s_-]+/g, '');
+      const actualTool = sepMatch[2].trim();
+      for (const server of activeServers) {
+        const sName = server.name.toLowerCase().replace(/[\s_-]+/g, '');
+        const sId = server.id.toLowerCase().replace(/[\s_-]+/g, '');
+        if (sName.includes(serverPrefix) || sId.includes(serverPrefix) || serverPrefix.includes(sName) || serverPrefix.includes(sId)) {
+          const tools = this.serverToolsMap.get(server.id) || server.tools || [];
+          if (tools.some((t) => t.name === actualTool)) {
+            this.toolRoutes.set(actualTool, server);
+            return server;
+          }
+        }
+      }
+    }
+
+    // 0.5 If toolName matches a server name or id directly (e.g. "google_stitch" or "Google Stitch")
+    // Note: Do NOT match if toolName is a generic wrapper like "mcp_call" or "call"
+    const GENERIC_WRAPPERS = new Set([
+      'mcp_call',
+      'call_tool',
+      'calltool',
+      'tool_call',
+      'toolcall',
+      'call',
+      'tool',
+      'mcp',
+      'tools/call',
+      'execute_tool',
+      'run_tool',
+    ]);
+    if (!GENERIC_WRAPPERS.has(toolName.toLowerCase())) {
+      for (const server of activeServers) {
+        const sName = server.name.toLowerCase().replace(/[\s_-]+/g, '');
+        const sId = server.id.toLowerCase().replace(/[\s_-]+/g, '');
+        const cleanTool = toolName.toLowerCase().replace(/[\s_-]+/g, '');
+        if (sName === cleanTool || sId === cleanTool || sName.includes(cleanTool) || cleanTool.includes(sName)) {
+          return server;
+        }
+      }
+    }
+
     // 1. Direct hit from dynamic routing index
     if (this.toolRoutes.has(toolName)) {
       const server = this.toolRoutes.get(toolName)!;
-      const activeServers = servers || loadMcpServers();
       const current = activeServers.find((s) => s.id === server.id && s.enabled);
       if (current) return current;
     }
 
-    // 2. Known domain routing fallback heuristics
-    const activeServers = (servers || loadMcpServers()).filter((s) => s.enabled);
+    // 2. Direct hit from server.tools or serverToolsMap
     for (const server of activeServers) {
-      const url = server.url.toLowerCase();
-      const name = server.name.toLowerCase();
-
-      // Logistics & Orders server tools
-      if (['order_get_status', 'delivery_calculate_cost', 'schedule_monitor'].includes(toolName)) {
-        if (url.includes(':3002') || name.includes('логист') || name.includes('заказ')) {
-          this.toolRoutes.set(toolName, server);
-          return server;
-        }
-      }
-
-      // Analytics & Pipeline server tools
-      if (['search', 'summarize', 'saveToFile', 'get_aggregated_summary'].includes(toolName)) {
-        if (url.includes(':3003') || name.includes('аналитик') || name.includes('отчет')) {
-          this.toolRoutes.set(toolName, server);
-          return server;
-        }
-      }
-
-      // Catalog & Inventory server tools
-      if (['store_search_products', 'store_get_product', 'calculate', 'get_system_time', 'echo'].includes(toolName)) {
-        if (url.includes(':3001') || name.includes('каталог') || name.includes('склад')) {
-          this.toolRoutes.set(toolName, server);
-          return server;
-        }
+      const tools = this.serverToolsMap.get(server.id) || server.tools || [];
+      if (tools.some((t) => t.name === toolName)) {
+        this.toolRoutes.set(toolName, server);
+        return server;
       }
     }
 
-    // 3. Fallback to first available enabled server
-    return activeServers[0] || null;
+    // 3. Known domain routing fallback heuristics (ONLY for default mock demo servers)
+    for (const server of activeServers) {
+      const isMockLogistics =
+        server.id === 'mcp-logistics-server' ||
+        (server.url.includes(':3002') && server.name.toLowerCase().includes('логист'));
+      if (
+        isMockLogistics &&
+        ['order_get_status', 'delivery_calculate_cost', 'schedule_monitor'].includes(toolName)
+      ) {
+        this.toolRoutes.set(toolName, server);
+        return server;
+      }
+
+      const isMockAnalytics =
+        server.id === 'mcp-analytics-server' ||
+        (server.url.includes(':3003') && server.name.toLowerCase().includes('аналитик'));
+      if (
+        isMockAnalytics &&
+        ['search', 'summarize', 'saveToFile', 'get_aggregated_summary'].includes(toolName)
+      ) {
+        this.toolRoutes.set(toolName, server);
+        return server;
+      }
+
+      const isMockCatalog =
+        server.id === 'mcp-catalog-server' ||
+        (server.url.includes(':3001') &&
+          (server.name.toLowerCase().includes('каталог') ||
+            server.name.toLowerCase().includes('склад')));
+      if (
+        isMockCatalog &&
+        ['store_search_products', 'store_get_product', 'calculate', 'get_system_time', 'echo'].includes(
+          toolName
+        )
+      ) {
+        this.toolRoutes.set(toolName, server);
+        return server;
+      }
+    }
+
+    // 4. Fallback: if only 1 server is active, route tool to it
+    if (activeServers.length === 1) {
+      return activeServers[0];
+    }
+
+    return null;
   }
 
   /**
@@ -150,7 +254,75 @@ export class McpRouter {
       };
     }
 
-    const targetServer = this.resolveTargetServer(toolName, activeServers);
+    let actualToolName = toolName;
+    const cleanArgs: Record<string, unknown> = { ...args };
+
+    const GENERIC_ROUTER_WRAPPERS = new Set([
+      'mcp_call',
+      'call_tool',
+      'calltool',
+      'tool_call',
+      'toolcall',
+      'call',
+      'tool',
+      'mcp',
+      'tools/call',
+      'execute_tool',
+      'run_tool',
+    ]);
+
+    // If actualToolName is a generic wrapper (e.g. mcp_call), unwrap the real tool name from cleanArgs
+    if (GENERIC_ROUTER_WRAPPERS.has(actualToolName.toLowerCase())) {
+      const candidate =
+        cleanArgs.name ||
+        cleanArgs.tool ||
+        cleanArgs.tool_name ||
+        cleanArgs.action ||
+        cleanArgs.method;
+      if (typeof candidate === 'string' && candidate.trim()) {
+        actualToolName = candidate.trim();
+        delete cleanArgs.name;
+        delete cleanArgs.tool;
+        delete cleanArgs.tool_name;
+        delete cleanArgs.action;
+        delete cleanArgs.method;
+
+        const nested =
+          cleanArgs.arguments ||
+          cleanArgs.parameters ||
+          cleanArgs.params ||
+          cleanArgs.args;
+        if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+          Object.assign(cleanArgs, nested);
+          delete cleanArgs.arguments;
+          delete cleanArgs.parameters;
+          delete cleanArgs.params;
+          delete cleanArgs.args;
+        }
+      }
+    }
+
+    // Unwrap single arguments object if passed: e.g. { arguments: { ... } }
+    if (
+      cleanArgs.arguments &&
+      typeof cleanArgs.arguments === 'object' &&
+      !Array.isArray(cleanArgs.arguments) &&
+      Object.keys(cleanArgs).length === 1
+    ) {
+      const nested = cleanArgs.arguments as Record<string, unknown>;
+      delete cleanArgs.arguments;
+      Object.assign(cleanArgs, nested);
+    }
+
+    // Handle namespaced tool name (e.g. google_stitch.list_projects -> list_projects)
+    const sepMatch = actualToolName.match(/^([^.:/]+)[.:/](.+)$/);
+    if (sepMatch) {
+      actualToolName = sepMatch[2].trim();
+    }
+
+    const targetServer =
+      this.resolveTargetServer(toolName, activeServers) ||
+      this.resolveTargetServer(actualToolName, activeServers);
 
     if (!targetServer) {
       return {
@@ -162,11 +334,69 @@ export class McpRouter {
       };
     }
 
-    const res = await callMcpTool(targetServer, toolName, args);
+    const serverTools = this.serverToolsMap.get(targetServer.id) || targetServer.tools || [];
+
+    // Guard: Check if actualToolName is accidentally the server name or id rather than a tool name
+    const sName = targetServer.name.toLowerCase().replace(/[\s_-]+/g, '');
+    const sId = targetServer.id.toLowerCase().replace(/[\s_-]+/g, '');
+    const cleanTool = actualToolName.toLowerCase().replace(/[\s_-]+/g, '');
+    const isServerName = (sName === cleanTool || sId === cleanTool || sName.includes(cleanTool) || cleanTool.includes(sName)) &&
+      !serverTools.some((t) => t.name === actualToolName);
+
+    if (isServerName) {
+      // 1. Check if the tool name was passed inside arguments: e.g. { "name": "list_projects" } or { "tool": "list_projects" }
+      const argTool =
+        cleanArgs.name ||
+        cleanArgs.tool ||
+        cleanArgs.tool_name ||
+        cleanArgs.action ||
+        cleanArgs.method;
+      if (typeof argTool === 'string' && serverTools.some((t) => t.name === argTool.trim())) {
+        actualToolName = argTool.trim();
+        delete cleanArgs.name;
+        delete cleanArgs.tool;
+        delete cleanArgs.tool_name;
+        delete cleanArgs.action;
+        delete cleanArgs.method;
+
+        const nested =
+          cleanArgs.arguments ||
+          cleanArgs.parameters ||
+          cleanArgs.params ||
+          cleanArgs.args;
+        if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+          Object.assign(cleanArgs, nested);
+          delete cleanArgs.arguments;
+          delete cleanArgs.parameters;
+          delete cleanArgs.params;
+          delete cleanArgs.args;
+        }
+      } else if (serverTools.length > 0) {
+        // 2. Intelligent inference: if target server has list_projects and caller passed no tool name
+        const listProjTool = serverTools.find((t) => t.name === 'list_projects');
+        if (listProjTool && (Object.keys(cleanArgs).length === 0 || cleanArgs.name === undefined)) {
+          actualToolName = 'list_projects';
+        } else {
+          return {
+            toolName,
+            args,
+            serverName: targetServer.name,
+            serverUrl: targetServer.url,
+            isError: true,
+            latencyMs: 0,
+            result: `Ошибка вызова MCP: "${toolName}" — это имя сервера, а не инструмента.\nДоступные инструменты сервера "${targetServer.name}":\n` +
+              serverTools.map((t) => `- ${t.name}: ${t.description || 'нет описания'}`).join('\n') +
+              `\n\nДля вызова используйте точное имя инструмента, например: <mcp_call name="${serverTools[0]?.name || 'tool_name'}">{}</mcp_call>`,
+          };
+        }
+      }
+    }
+
+    const res = await callMcpTool(targetServer, actualToolName, cleanArgs);
 
     return {
-      toolName,
-      args,
+      toolName: actualToolName,
+      args: cleanArgs,
       result: res.result,
       isError: res.isError,
       serverName: targetServer.name,
@@ -188,32 +418,59 @@ export class McpRouter {
     ];
 
     for (const server of activeServers) {
-      const tools = this.serverToolsMap.get(server.id) || [];
+      const tools = this.serverToolsMap.get(server.id) || server.tools || [];
       lines.push(`\n### MCP Server: "${server.name}" (${server.url})`);
 
       if (tools.length > 0) {
         for (const t of tools) {
+          if (!t || typeof t !== 'object') continue;
+          const requiredList = Array.isArray(t.inputSchema?.required)
+            ? t.inputSchema.required
+            : typeof t.inputSchema?.required === 'string'
+            ? [t.inputSchema.required]
+            : [];
           const reqStr =
-            t.inputSchema?.required && t.inputSchema.required.length > 0
-              ? ` [required: ${t.inputSchema.required.join(', ')}]`
+            requiredList.length > 0
+              ? ` [required: ${requiredList.join(', ')}]`
               : '';
-          lines.push(`- \`${t.name}\`${reqStr}: ${t.description || 'Нет описания'}`);
+          const descStr =
+            typeof t.description === 'string'
+              ? t.description
+              : t.description
+              ? JSON.stringify(t.description)
+              : 'Нет описания';
+          lines.push(`- \`${t.name || 'unknown'}\`${reqStr}: ${descStr}`);
         }
       } else {
-        const url = server.url.toLowerCase();
-        const name = server.name.toLowerCase();
+        const isMockLogistics =
+          server.id === 'mcp-logistics-server' ||
+          server.id.includes('day18') ||
+          server.name.toLowerCase().includes('scheduler') ||
+          (server.url.includes(':3002') && server.name.toLowerCase().includes('логист'));
+        const isMockAnalytics =
+          server.id === 'mcp-analytics-server' ||
+          server.id.includes('day19') ||
+          server.name.toLowerCase().includes('pipeline') ||
+          (server.url.includes(':3003') && server.name.toLowerCase().includes('аналитик'));
+        const isMockCatalog =
+          server.id === 'mcp-catalog-server' ||
+          server.id.includes('day17') ||
+          server.name.toLowerCase().includes('mock store') ||
+          (server.url.includes(':3001') &&
+            (server.name.toLowerCase().includes('каталог') ||
+              server.name.toLowerCase().includes('склад')));
 
-        if (url.includes(':3002') || name.includes('логист') || name.includes('logistics')) {
+        if (isMockLogistics) {
           lines.push(`- \`order_get_status\` [required: order_id]: Проверить статус и трекинг заказа`);
           lines.push(`- \`delivery_calculate_cost\` [required: city]: Рассчитать стоимость и срок доставки курьером`);
           lines.push(`- \`schedule_monitor\` [required: interval_seconds]: Запланировать фоновый мониторинг`);
-        } else if (url.includes(':3003') || name.includes('аналитик') || name.includes('analytics') || name.includes('pipeline')) {
+          lines.push(`- \`get_aggregated_summary\`: Получить агрегированную аналитическую сводку фонового мониторинга`);
+        } else if (isMockAnalytics) {
           lines.push(`- \`search\` [required: query]: Поиск информации в каталоге для аналитического пайплайна`);
           lines.push(`- \`summarize\`: Аналитическая выжимка, расчет метрик и рекомендаций (markdown/json)`);
           lines.push(`- \`saveToFile\` [required: content]: Сохранение отчета на диск в каталог data/reports`);
           lines.push(`- \`get_aggregated_summary\`: Агрегированная сводка фонового мониторинга`);
-        } else {
-          // General Store & Catalog Server fallback (covers Day 17-19 and default port 3001)
+        } else if (isMockCatalog) {
           lines.push(`- \`store_search_products\`: Поиск товаров в каталоге интернет-магазина (query, category, max_price)`);
           lines.push(`- \`store_get_product\` [required: sku]: Данные о товаре по SKU (цена, характеристики, склад, остаток)`);
           lines.push(`- \`order_get_status\` [required: order_id]: Проверить статус и трекинг заказа`);
@@ -222,22 +479,24 @@ export class McpRouter {
           lines.push(`- \`get_aggregated_summary\`: Получить агрегированную аналитическую сводку фонового мониторинга`);
           lines.push(`- \`calculate\` [required: expression]: Вычислить математическое выражение`);
           lines.push(`- \`get_system_time\`: Текущее время сервера`);
+        } else {
+          lines.push(`- *(Инструменты еще не загружены или сервер недоступен)*`);
         }
       }
     }
 
     lines.push(`\n[MULTI-SERVER WORKFLOW & CALL FORMAT]:`);
-    lines.push(`To call any tool, output the following tag:`);
-    lines.push(`<mcp_call name="tool_name">`);
+    lines.push(`To call any tool, output the following XML tag:`);
+    lines.push(`<mcp_call name="exact_tool_name">`);
     lines.push(`{"param1": "value1"}`);
     lines.push(`</mcp_call>`);
-    lines.push(
-      `\nFor complex multi-step user requests (e.g. product selection, delivery estimation, report generation):`
-    );
-    lines.push(`1. Choose the right tool from the corresponding server.`);
-    lines.push(`2. Execute calls sequentially in causal order across different servers.`);
-    lines.push(`3. When you receive <mcp_result>, continue with the next logical step until the goal is achieved.`);
-    lines.push(`4. When all information is collected and saved, formulate a clear, comprehensive final answer for the user.`);
+    lines.push(``);
+    lines.push(`CRITICAL RULES FOR CALLING TOOLS:`);
+    lines.push(`1. The 'name' attribute in <mcp_call name="..."> MUST be the EXACT tool name from the list above (for example: name="list_projects" or name="store_search_products").`);
+    lines.push(`2. NEVER write name="mcp_call", name="tool_call" or the server name. The 'name' attribute MUST be the specific tool name: e.g. <mcp_call name="list_projects">{}</mcp_call>.`);
+    lines.push(`3. NEVER wrap the tool name inside JSON arguments as {"name": "..."}. Arguments must only contain parameters needed by the tool.`);
+    lines.push(`4. If a tool takes no arguments, pass an empty JSON object: {}`);
+    lines.push(`5. For complex requests, execute calls sequentially across servers until the goal is achieved, then formulate the final user response.`);
 
     return lines.join('\n');
   }

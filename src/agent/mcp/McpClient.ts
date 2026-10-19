@@ -146,6 +146,59 @@ export async function callMcpTool(
   const startTime = Date.now();
   let clientInstance: Client | null = null;
 
+  let targetToolName = toolName;
+  let targetArgs: Record<string, unknown> = { ...args };
+
+  // Fallback unwrapper for generic tool wrappers (e.g. name="mcp_call", args={ name: "list_projects" })
+  const GENERIC_NAMES = [
+    'mcp_call',
+    'call_tool',
+    'calltool',
+    'tool_call',
+    'toolcall',
+    'call',
+    'tool',
+    'mcp',
+    'tools/call',
+    'execute_tool',
+    'run_tool',
+  ];
+  if (GENERIC_NAMES.includes(targetToolName.toLowerCase())) {
+    const candidate =
+      targetArgs.name ||
+      targetArgs.tool ||
+      targetArgs.tool_name ||
+      targetArgs.action ||
+      targetArgs.method;
+    if (typeof candidate === 'string' && candidate.trim()) {
+      targetToolName = candidate.trim();
+      delete targetArgs.name;
+      delete targetArgs.tool;
+      delete targetArgs.tool_name;
+      delete targetArgs.action;
+      delete targetArgs.method;
+
+      const nested =
+        targetArgs.arguments ||
+        targetArgs.parameters ||
+        targetArgs.params ||
+        targetArgs.args;
+      if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+        targetArgs = { ...(nested as Record<string, unknown>) };
+      }
+    }
+  }
+
+  // Also unwrap single wrapper arguments object if passed e.g. { arguments: { ... } }
+  if (
+    targetArgs.arguments &&
+    typeof targetArgs.arguments === 'object' &&
+    !Array.isArray(targetArgs.arguments) &&
+    Object.keys(targetArgs).length === 1
+  ) {
+    targetArgs = { ...(targetArgs.arguments as Record<string, unknown>) };
+  }
+
   try {
     const { client, transport } = createMcpClientAndTransport(config);
     clientInstance = client;
@@ -160,8 +213,8 @@ export async function callMcpTool(
 
     // Call tool
     const response = await client.callTool({
-      name: toolName,
-      arguments: args,
+      name: targetToolName,
+      arguments: targetArgs,
     });
 
     const latencyMs = Date.now() - startTime;

@@ -325,7 +325,7 @@ function cleanMessageContent(content: string): string {
   return content
     .replace(/<task_update\s+[^>]+\/?>/gi, '')
     .replace(/<\|tool_call_start\|>[\s\S]*?<\|tool_call_end\|>/gi, '')
-    .replace(/<mcp_call\s+name=["'][^"']+["']\s*>[\s\S]*?<\/mcp_call>/gi, '')
+    .replace(/<mcp_call\b[\s\S]*?<\/mcp_call>|<mcp_call\b[^>]*\/>/gi, '')
     .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
     .trim();
 }
@@ -651,7 +651,7 @@ export const MessageList: React.FC<MessageListProps> = ({
                           const { check, cleanedContent } = parseInvariantCheck(afterStateCleaned);
                           const displayContent = cleanedContent
                             .replace(/<\|tool_call_start\|>[\s\S]*?<\|tool_call_end\|>/gi, '')
-                            .replace(/<mcp_call\s+name=["'][^"']+["']\s*>[\s\S]*?<\/mcp_call>/gi, '')
+                            .replace(/<mcp_call\b[\s\S]*?<\/mcp_call>|<mcp_call\b[^>]*\/>/gi, '')
                             .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
                             .trim();
 

@@ -7,6 +7,10 @@ export interface McpServerConfig {
   headersRaw?: string;
   enabled: boolean;
   createdAt: number;
+  scope?: 'global' | 'chat';
+  chatId?: string;
+  tools?: McpToolInfo[];
+  lastDiscoveredAt?: number;
 }
 
 export interface McpToolInfo {

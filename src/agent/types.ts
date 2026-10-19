@@ -236,6 +236,9 @@ export interface AgentState {
   activeProfileId: string;
   memoryTokensBreakdown: MemoryTokensBreakdown;
   isAutoRunning: boolean;
+  isMcpGloballyEnabled?: boolean;
+  isChatMcpEnabled?: boolean | null;
+  effectiveMcpServersCount?: number;
 }
 
 export type StateListener = (state: AgentState) => void;

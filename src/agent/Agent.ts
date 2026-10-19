@@ -45,7 +45,17 @@ import {
   McpCallMeta,
   StreamChunkCallback,
 } from './types';
-import { loadMcpServers } from './mcp/storage';
+import {
+  loadMcpServers,
+  saveMcpServers,
+  loadGlobalMcpEnabled,
+  saveGlobalMcpEnabled,
+  loadChatMcpEnabled,
+  saveChatMcpEnabled,
+  loadChatMcpServers,
+  saveChatMcpServers,
+} from './mcp/storage';
+import { McpServerConfig } from './mcp/types';
 import { McpRouter } from './mcp/McpRouter';
 import {
   canTransition,
@@ -218,6 +228,11 @@ export class Agent {
       this.activeProfileId = this.longTermMemory.profile.id;
     }
 
+    // 8.5 Initialize MCP routing table with available tools
+    if (this.isMcpActive()) {
+      McpRouter.getInstance().seedFromServers(this.getEffectiveMcpServers());
+    }
+
     // 9. Initialize token statistics based on restored history and context strategy
     this.tokenStats = this.calculateInitialTokenStats();
   }
@@ -290,6 +305,9 @@ export class Agent {
       activeProfileId: this.activeProfileId,
       memoryTokensBreakdown: this.getMemoryTokensBreakdown(),
       isAutoRunning: this.isAutoRunning,
+      isMcpGloballyEnabled: this.isGlobalMcpEnabled(),
+      isChatMcpEnabled: this.getChatMcpEnabledSetting(),
+      effectiveMcpServersCount: this.getEffectiveMcpServers().length,
     };
   }
 
@@ -1355,14 +1373,122 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
       return args;
     };
 
-    // Format 1: <mcp_call name="tool_name">...</mcp_call>
-    const mcpCallRegex = /<mcp_call\s+name=["']([^"']+)["']\s*>([\s\S]*?)<\/mcp_call>/gi;
+    const GENERIC_TOOL_NAMES = new Set([
+      'mcp_call',
+      'call_tool',
+      'calltool',
+      'tool_call',
+      'toolcall',
+      'call',
+      'tool',
+      'mcp',
+      'tools/call',
+      'execute_tool',
+      'run_tool',
+    ]);
+
+    const normalizeCall = (
+      rawName: string,
+      rawArgs: Record<string, unknown>
+    ): { name: string; args: Record<string, unknown> } => {
+      let resolvedName = (rawName || '').trim();
+      let resolvedArgs: Record<string, unknown> = { ...rawArgs };
+
+      if (resolvedName.includes('.') || resolvedName.includes(':')) {
+        const subName = resolvedName.split(/[.:]/).pop()?.trim();
+        if (subName) {
+          resolvedName = subName;
+        }
+      }
+
+      const isGeneric =
+        !resolvedName ||
+        GENERIC_TOOL_NAMES.has(resolvedName.toLowerCase()) ||
+        resolvedName.toLowerCase().includes('stitch') ||
+        resolvedName.toLowerCase().includes('server');
+
+      // Check if real tool name was passed inside arguments: e.g. { "name": "list_projects" }
+      const candidateName =
+        resolvedArgs.name ||
+        resolvedArgs.tool ||
+        resolvedArgs.tool_name ||
+        resolvedArgs.action ||
+        resolvedArgs.method;
+
+      if (typeof candidateName === 'string' && candidateName.trim()) {
+        const candidateStr = candidateName.trim();
+        if (isGeneric || GENERIC_TOOL_NAMES.has(resolvedName.toLowerCase())) {
+          resolvedName = candidateStr;
+          if (resolvedName.includes('.') || resolvedName.includes(':')) {
+            const subName = resolvedName.split(/[.:]/).pop()?.trim();
+            if (subName) {
+              resolvedName = subName;
+            }
+          }
+          delete resolvedArgs.name;
+          delete resolvedArgs.tool;
+          delete resolvedArgs.tool_name;
+          delete resolvedArgs.action;
+          delete resolvedArgs.method;
+
+          // If arguments/parameters were nested inside: e.g. { name: "list_projects", arguments: {} }
+          const nested =
+            resolvedArgs.arguments ||
+            resolvedArgs.parameters ||
+            resolvedArgs.params ||
+            resolvedArgs.args;
+
+          if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+            resolvedArgs = { ...(nested as Record<string, unknown>) };
+          }
+        }
+      }
+
+      // Check if arguments/parameters are nested inside resolvedArgs: e.g. { arguments: { ... } }
+      const nested =
+        resolvedArgs.arguments ||
+        resolvedArgs.parameters ||
+        resolvedArgs.params ||
+        resolvedArgs.args;
+      if (
+        nested &&
+        typeof nested === 'object' &&
+        !Array.isArray(nested) &&
+        Object.keys(resolvedArgs).length === 1
+      ) {
+        resolvedArgs = { ...(nested as Record<string, unknown>) };
+      }
+
+      return { name: resolvedName, args: resolvedArgs };
+    };
+
+    // Format 1: <mcp_call ...>...</mcp_call> or self-closing <mcp_call .../>
+    const mcpCallRegex = /<mcp_call\b([^>]*)>([\s\S]*?)<\/mcp_call>|<mcp_call\b([^>]*)\/>/gi;
     let mcpMatch;
     while ((mcpMatch = mcpCallRegex.exec(content)) !== null) {
-      const name = mcpMatch[1].trim();
-      const rawArgs = mcpMatch[2].trim();
-      const args = parseArgsHelper(rawArgs);
-      calls.push({ name, args, rawTag: mcpMatch[0] });
+      const rawAttrs = (mcpMatch[1] ?? mcpMatch[3] ?? '').trim();
+      const rawBody = (mcpMatch[2] ?? '').trim();
+
+      // Extract attributes: name="...", tool="...", action="..."
+      const toolAttrMatch = rawAttrs.match(/\btool(?:_name)?=["']([^"']+)["']/i) || rawAttrs.match(/\btool(?:_name)?=([a-zA-Z0-9_.:/-]+)/i);
+      const nameAttrMatch = rawAttrs.match(/\bname=["']([^"']+)["']/i) || rawAttrs.match(/\bname=([a-zA-Z0-9_.:/-]+)/i);
+
+      let name = (toolAttrMatch ? toolAttrMatch[1] : nameAttrMatch ? nameAttrMatch[1] : '').trim();
+      let args = parseArgsHelper(rawBody);
+
+      // If the body contains a function call syntax like list_projects() or [list_projects()]
+      const bodyFuncMatch = rawBody.match(/\[?\s*([a-zA-Z0-9_]+)\s*\(([\s\S]*?)\)\s*\]?/);
+      if (bodyFuncMatch && bodyFuncMatch[1] !== 'name' && bodyFuncMatch[1] !== 'tool' && (!name || name.toLowerCase().includes('stitch') || name.toLowerCase().includes('server') || GENERIC_TOOL_NAMES.has(name.toLowerCase()))) {
+        name = bodyFuncMatch[1].trim();
+        if (bodyFuncMatch[2].trim()) {
+          args = parseArgsHelper(bodyFuncMatch[2].trim());
+        }
+      }
+
+      const normalized = normalizeCall(name, args);
+      if (normalized.name) {
+        calls.push({ name: normalized.name, args: normalized.args, rawTag: mcpMatch[0] });
+      }
     }
 
     // Format 2: <|tool_call_start|>...<|tool_call_end|> (e.g. Qwen, Hermes)
@@ -1372,19 +1498,25 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
       const inner = qwenMatch[1].trim();
 
       // Case 2a: JSON array/object inside <|tool_call_start|>[{"name": "...", "arguments": ...}]<|tool_call_end|>
-      if (inner.startsWith('[') && inner.includes('"name"')) {
+      if ((inner.startsWith('[') || inner.startsWith('{')) && (inner.includes('"name"') || inner.includes('"tool"'))) {
         try {
           const parsed = JSON.parse(inner);
-          if (Array.isArray(parsed)) {
-            for (const item of parsed) {
-              if (item?.name) {
+          const list = Array.isArray(parsed) ? parsed : [parsed];
+          for (const item of list) {
+            const toolName = item?.name || item?.tool || item?.tool_name;
+            const toolArgs = (item.arguments || item.parameters || item.args || {}) as Record<string, unknown>;
+            if (toolName) {
+              const normalized = normalizeCall(String(toolName).trim(), toolArgs);
+              if (normalized.name) {
                 calls.push({
-                  name: String(item.name).trim(),
-                  args: (item.arguments || {}) as Record<string, unknown>,
+                  name: normalized.name,
+                  args: normalized.args,
                   rawTag: qwenMatch[0],
                 });
               }
             }
+          }
+          if (list.length > 0 && (list[0]?.name || list[0]?.tool)) {
             continue;
           }
         } catch {}
@@ -1396,7 +1528,10 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
         const name = funcMatch[1].trim();
         const rawArgs = funcMatch[2].trim();
         const args = parseArgsHelper(rawArgs);
-        calls.push({ name, args, rawTag: qwenMatch[0] });
+        const normalized = normalizeCall(name, args);
+        if (normalized.name) {
+          calls.push({ name: normalized.name, args: normalized.args, rawTag: qwenMatch[0] });
+        }
       }
     }
 
@@ -1407,13 +1542,18 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
       const inner = genericMatch[1].trim();
       try {
         const parsed = JSON.parse(inner);
-        if (parsed?.name) {
-          calls.push({
-            name: String(parsed.name).trim(),
-            args: (parsed.arguments || {}) as Record<string, unknown>,
-            rawTag: genericMatch[0],
-          });
-          continue;
+        const toolName = parsed?.name || parsed?.tool || parsed?.tool_name || parsed?.action;
+        const toolArgs = (parsed.arguments || parsed.parameters || parsed.args || {}) as Record<string, unknown>;
+        if (toolName) {
+          const normalized = normalizeCall(String(toolName).trim(), toolArgs);
+          if (normalized.name) {
+            calls.push({
+              name: normalized.name,
+              args: normalized.args,
+              rawTag: genericMatch[0],
+            });
+            continue;
+          }
         }
       } catch {}
 
@@ -1421,7 +1561,10 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
       if (funcMatch) {
         const name = funcMatch[1].trim();
         const args = parseArgsHelper(funcMatch[2].trim());
-        calls.push({ name, args, rawTag: genericMatch[0] });
+        const normalized = normalizeCall(name, args);
+        if (normalized.name) {
+          calls.push({ name: normalized.name, args: normalized.args, rawTag: genericMatch[0] });
+        }
       }
     }
 
@@ -1436,7 +1579,8 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
     return content
       .replace(/<think>[\s\S]*?<\/think>/gi, '')
       .replace(/<\|tool_call_start\|>[\s\S]*?<\|tool_call_end\|>/gi, '')
-      .replace(/<mcp_call\s+name=["'][^"']+["']\s*>[\s\S]*?<\/mcp_call>/gi, '')
+      .replace(/<mcp_call\b[\s\S]*?<\/mcp_call>/gi, '')
+      .replace(/<mcp_call\b[^>]*\/>/gi, '')
       .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
       .trim();
   }
@@ -1449,7 +1593,8 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
     let cleaned = content
       .replace(/<think>[\s\S]*?<\/think>/gi, '')
       .replace(/<\|tool_call_start\|>[\s\S]*?<\|tool_call_end\|>/gi, '')
-      .replace(/<mcp_call\s+name=["'][^"']+["']\s*>[\s\S]*?<\/mcp_call>/gi, '')
+      .replace(/<mcp_call\b[\s\S]*?<\/mcp_call>/gi, '')
+      .replace(/<mcp_call\b[^>]*\/>/gi, '')
       .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
       .replace(/<state_check>[\s\S]*?<\/state_check>/gi, '')
       .replace(/<task_update[\s\S]*?<\/task_update>/gi, '');
@@ -1532,24 +1677,186 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
   }
 
   /**
+   * Check if MCP is enabled globally in application settings
+   */
+  public isGlobalMcpEnabled(): boolean {
+    return loadGlobalMcpEnabled();
+  }
+
+  /**
+   * Set global MCP master switch
+   */
+  public setGlobalMcpEnabled(enabled: boolean): void {
+    saveGlobalMcpEnabled(enabled);
+    this.tokenStats = this.calculateInitialTokenStats();
+    this.notify();
+  }
+
+  /**
+   * Get raw per-chat MCP setting: true (forced on), false (forced off), or null (inherit global)
+   */
+  public getChatMcpEnabledSetting(): boolean | null {
+    return loadChatMcpEnabled(this.chatId);
+  }
+
+  /**
+   * Set per-chat MCP setting: true, false, or null (inherit global)
+   */
+  public setChatMcpEnabled(enabled: boolean | null): void {
+    saveChatMcpEnabled(this.chatId, enabled);
+    this.tokenStats = this.calculateInitialTokenStats();
+    this.notify();
+  }
+
+  /**
+   * Determines if MCP is currently active for this agent/chat
+   */
+  public isMcpActive(): boolean {
+    if (!this.isGlobalMcpEnabled()) {
+      return false;
+    }
+    const chatSetting = this.getChatMcpEnabledSetting();
+    if (chatSetting === false) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Returns global MCP servers
+   */
+  public getGlobalMcpServers(): McpServerConfig[] {
+    return loadMcpServers();
+  }
+
+  /**
+   * Persists global MCP servers
+   */
+  public saveGlobalMcpServers(servers: McpServerConfig[]): void {
+    saveMcpServers(servers);
+    this.tokenStats = this.calculateInitialTokenStats();
+    this.notify();
+  }
+
+  /**
+   * Returns per-chat MCP servers specifically registered for this chat
+   */
+  public getChatMcpServers(): McpServerConfig[] {
+    return loadChatMcpServers(this.chatId);
+  }
+
+  /**
+   * Persists per-chat MCP servers specifically for this chat
+   */
+  public saveChatMcpServers(servers: McpServerConfig[]): void {
+    saveChatMcpServers(this.chatId, servers);
+    this.tokenStats = this.calculateInitialTokenStats();
+    this.notify();
+  }
+
+  /**
+   * Returns effective list of active MCP servers for this agent/chat.
+   * If MCP is inactive, returns empty array.
+   * Otherwise combines enabled global servers and enabled chat-specific servers.
+   */
+  public getEffectiveMcpServers(): McpServerConfig[] {
+    if (!this.isMcpActive()) {
+      return [];
+    }
+    const globalServers = this.getGlobalMcpServers().filter((s) => s.enabled);
+    const chatServers = this.getChatMcpServers().filter((s) => s.enabled);
+
+    const map = new Map<string, McpServerConfig>();
+    for (const s of globalServers) {
+      map.set(s.id, s);
+    }
+    for (const s of chatServers) {
+      map.set(s.id, s);
+    }
+    return Array.from(map.values());
+  }
+
+  /**
    * Executes an MCP tool on enabled MCP servers via smart McpRouter.
    */
   public async executeMcpTool(
     toolName: string,
     args: Record<string, unknown> = {}
   ): Promise<McpCallMeta> {
+    if (!this.isMcpActive()) {
+      return {
+        toolName,
+        args,
+        result: 'Ошибка: MCP отключен в настройках (глобально или для данного чата).',
+        isError: true,
+        latencyMs: 0,
+      };
+    }
+    const servers = this.getEffectiveMcpServers();
     const router = McpRouter.getInstance();
-    return router.executeTool(toolName, args);
+    return router.executeTool(toolName, args, servers);
   }
 
   /**
    * Formats description and instructions for active MCP tools into the system prompt.
    */
   public formatMcpToolsPrompt(): string {
-    const servers = loadMcpServers().filter((s) => s.enabled);
+    const servers = this.getEffectiveMcpServers();
     if (servers.length === 0) return '';
     const router = McpRouter.getInstance();
+    router.seedFromServers(servers);
     return router.formatSystemPromptInstructions(servers);
+  }
+
+  /**
+   * Ensures MCP tools are discovered for all effective servers.
+   * Caches discovered tools in localStorage for fast immediate subsequent loads.
+   */
+  public async ensureMcpDiscovery(forceRefresh = false): Promise<void> {
+    if (!this.isMcpActive()) return;
+    const servers = this.getEffectiveMcpServers();
+    if (servers.length === 0) return;
+
+    const router = McpRouter.getInstance();
+    router.seedFromServers(servers);
+
+    const needsDiscovery = forceRefresh || servers.some((s) => !s.tools || s.tools.length === 0);
+    if (needsDiscovery) {
+      try {
+        await router.discoverAllTools(servers, forceRefresh);
+        let globalChanged = false;
+        let chatChanged = false;
+
+        const currentGlobals = this.getGlobalMcpServers();
+        const currentChats = this.getChatMcpServers();
+
+        for (const s of servers) {
+          const discovered = router.getServerTools(s.id);
+          if (discovered && discovered.length > 0) {
+            s.tools = discovered;
+            s.lastDiscoveredAt = Date.now();
+            if (s.scope === 'chat') {
+              const idx = currentChats.findIndex((c) => c.id === s.id);
+              if (idx >= 0) {
+                currentChats[idx] = { ...s };
+                chatChanged = true;
+              }
+            } else {
+              const idx = currentGlobals.findIndex((g) => g.id === s.id);
+              if (idx >= 0) {
+                currentGlobals[idx] = { ...s };
+                globalChanged = true;
+              }
+            }
+          }
+        }
+
+        if (globalChanged) saveMcpServers(currentGlobals);
+        if (chatChanged) saveChatMcpServers(this.chatId, currentChats);
+      } catch (err) {
+        console.warn('[Agent] MCP auto-discovery error:', err);
+      }
+    }
   }
 
   // ==========================================
@@ -3172,6 +3479,11 @@ Do NOT use markdown code fences. Pure JSON only.`,
       }
     }
 
+    // 2.5 Ensure MCP tools are discovered before compiling system prompt
+    if (this.isMcpActive()) {
+      await this.ensureMcpDiscovery();
+    }
+
     // 3. Prepare messages to send to LLM according to strategy
     let messagesToSend = this.getPreparedMessages(pastMessages, userMessage);
 
@@ -3299,6 +3611,10 @@ Do NOT use markdown code fences. Pure JSON only.`,
       let intermediateHistory: Array<{ role: string; content: string }> = [...messagesToSend];
 
       while (turnCount < MAX_MCP_TURNS) {
+        if (!this.isMcpActive()) {
+          finalContent = this.cleanModelRawToolTokens(currentContent) || currentContent;
+          break;
+        }
         const mcpCalls = this.parseMcpCalls(currentContent);
         if (mcpCalls.length === 0) {
           finalContent = this.cleanModelRawToolTokens(currentContent) || currentContent;
