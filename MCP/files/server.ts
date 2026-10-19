@@ -53,7 +53,10 @@ const DEFAULT_SEARCH_EXTENSIONS = [
  */
 export function resolveSafePath(projectRoot: string, userPath: string): string {
   const root = path.resolve(projectRoot);
-  const resolved = path.resolve(root, userPath || '.');
+  const raw = String(userPath || '').trim();
+  // Strip leading slashes to prevent resolving to drive root on Windows (e.g. "/docs/decisions" -> "docs/decisions")
+  const normalizedUserPath = raw.replace(/^[/\\]+/, '');
+  const resolved = path.resolve(root, normalizedUserPath || '.');
   const rel = path.relative(root, resolved);
 
   if (rel.startsWith('..') || path.isAbsolute(rel)) {
@@ -112,10 +115,15 @@ export const AVAILABLE_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
+        directory: {
+          type: 'string',
+          description:
+            'Относительный путь к подпапке/каталогу проекта (например: "docs/decisions", "core", "feature"). Алиас для subpath. По умолчанию корень проекта.',
+        },
         subpath: {
           type: 'string',
           description:
-            'Относительный путь к подпапке проекта (например: "docs", "core", "feature"). По умолчанию корень проекта.',
+            'Относительный путь к подпапке проекта (например: "docs", "core", "feature"). Алиас для directory. По умолчанию корень проекта.',
         },
         pattern: {
           type: 'string',
@@ -170,6 +178,11 @@ export const AVAILABLE_TOOLS = [
           items: { type: 'string' },
           description:
             'Список расширений для фильтрации (например: [".kt", ".kts", ".md"]). По умолчанию все поддерживаемые текстовые файлы.',
+        },
+        directory: {
+          type: 'string',
+          description:
+            'Ограничить поиск подпапкой или каталогом (например: "core", "feature", "docs/decisions"). Алиас для subpath.',
         },
         subpath: {
           type: 'string',
@@ -272,9 +285,15 @@ export function createFilesMcpServer(projectRoot: string = DEFAULT_PROJECT_PATH)
     const { name, arguments: args } = request.params;
 
     // 1. list_project_files
-    if (name === 'list_project_files') {
+    if (name === 'list_project_files' || name === 'list_files' || name === 'list_directory') {
       try {
-        const subpath = args?.subpath ? String(args.subpath).trim() : '';
+        const rawSubpath =
+          args?.directory ??
+          args?.dir ??
+          args?.subpath ??
+          args?.path ??
+          args?.folder;
+        const subpath = rawSubpath ? String(rawSubpath).trim() : '';
         const pattern = args?.pattern ? String(args.pattern).trim().toLowerCase() : '';
         const limit = typeof args?.limit === 'number' && args.limit > 0 ? args.limit : 100;
 
@@ -282,6 +301,19 @@ export function createFilesMcpServer(projectRoot: string = DEFAULT_PROJECT_PATH)
         if (!fs.existsSync(targetDir)) {
           return {
             content: [{ type: 'text', text: `Каталог не найден: "${subpath || '.'}"` }],
+            isError: true,
+          };
+        }
+
+        const stat = fs.statSync(targetDir);
+        if (!stat.isDirectory()) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Указанный путь является файлом, а не каталогом: "${subpath}"`,
+              },
+            ],
             isError: true,
           };
         }
@@ -303,6 +335,7 @@ export function createFilesMcpServer(projectRoot: string = DEFAULT_PROJECT_PATH)
                 {
                   success: true,
                   subpath: subpath || '.',
+                  directory: subpath || '.',
                   totalFiles: totalFound,
                   returnedFiles: sliced.length,
                   files: sliced,
@@ -397,7 +430,7 @@ export function createFilesMcpServer(projectRoot: string = DEFAULT_PROJECT_PATH)
     }
 
     // 3. search_project_files
-    if (name === 'search_project_files') {
+    if (name === 'search_project_files' || name === 'search_files') {
       try {
         const query = String(args?.query || '').trim();
         if (!query) {
@@ -407,7 +440,13 @@ export function createFilesMcpServer(projectRoot: string = DEFAULT_PROJECT_PATH)
           };
         }
 
-        const subpath = args?.subpath ? String(args.subpath).trim() : '';
+        const rawSubpath =
+          args?.directory ??
+          args?.dir ??
+          args?.subpath ??
+          args?.path ??
+          args?.folder;
+        const subpath = rawSubpath ? String(rawSubpath).trim() : '';
         const maxResults =
           typeof args?.maxResults === 'number' && args.maxResults > 0 ? args.maxResults : 40;
 

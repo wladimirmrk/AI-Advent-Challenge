@@ -1932,7 +1932,8 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
    */
   public async executeMcpTool(
     toolName: string,
-    args: Record<string, unknown> = {}
+    args: Record<string, unknown> = {},
+    userContext?: string
   ): Promise<McpCallMeta> {
     if (!this.isMcpActive()) {
       return {
@@ -1945,7 +1946,11 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
     }
     const servers = this.getEffectiveMcpServers();
     const router = McpRouter.getInstance();
-    return router.executeTool(toolName, args, servers);
+    const context =
+      userContext ||
+      [...this.messages].reverse().find((m) => m.role === 'user')?.content ||
+      '';
+    return router.executeTool(toolName, args, servers, context);
   }
 
   /**
@@ -3794,7 +3799,7 @@ Do NOT use markdown code fences. Pure JSON only.`,
           const sig = `${call.name}:${JSON.stringify(call.args)}`;
           executedSignatures.add(sig);
 
-          const callMeta = await this.executeMcpTool(call.name, call.args);
+          const callMeta = await this.executeMcpTool(call.name, call.args, trimmedInput);
           executedCalls.push(callMeta);
           assistantMessage.mcpCalls = [...executedCalls];
           toolResultsText += `<mcp_result name="${call.name}" is_error="${callMeta.isError}">\n${callMeta.result}\n</mcp_result>\n`;

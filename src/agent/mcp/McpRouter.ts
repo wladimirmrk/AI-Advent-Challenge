@@ -269,12 +269,233 @@ export class McpRouter {
   }
 
   /**
+   * Adapts and normalizes raw tool arguments based on the target tool's inputSchema:
+   * 1. Preserves existing parameters matching declared schema properties (with type coercion).
+   * 2. Maps invented/alias parameters to existing schema properties (e.g. directory -> subpath, text -> content, orderId -> order_id).
+   * 3. Contextually extracts and substitutes missing parameters from user request (userContext).
+   * 4. Prunes unmapped hallucinated keys so the MCP server receives clean, valid schema parameters.
+   */
+  public adaptToolArguments(
+    toolInfo: McpToolInfo | undefined,
+    rawArgs: Record<string, unknown> = {},
+    userContext?: string
+  ): Record<string, unknown> {
+    if (!toolInfo || !toolInfo.inputSchema?.properties) {
+      return { ...rawArgs };
+    }
+
+    const properties = toolInfo.inputSchema.properties;
+    const declaredKeys = Object.keys(properties);
+    if (declaredKeys.length === 0) {
+      return {};
+    }
+
+    const requiredList = Array.isArray(toolInfo.inputSchema.required)
+      ? toolInfo.inputSchema.required
+      : typeof toolInfo.inputSchema.required === 'string'
+      ? [toolInfo.inputSchema.required]
+      : [];
+
+    const resultArgs: Record<string, unknown> = {};
+    const unhandledRaw: Record<string, unknown> = {};
+
+    // Helper: Coerce value to expected schema type
+    const coerceType = (val: unknown, propSchema: any): unknown => {
+      if (val === undefined || val === null) return val;
+      const expectedType = propSchema?.type;
+      if (expectedType === 'number') {
+        if (typeof val === 'string' && val.trim() !== '' && !isNaN(Number(val))) {
+          return Number(val);
+        }
+      } else if (expectedType === 'boolean') {
+        if (typeof val === 'string') {
+          if (val.toLowerCase() === 'true') return true;
+          if (val.toLowerCase() === 'false') return false;
+        }
+      } else if (expectedType === 'string') {
+        if (typeof val !== 'string' && typeof val !== 'object') {
+          return String(val);
+        }
+      }
+      return val;
+    };
+
+    // Step 1: Direct matches
+    for (const [k, v] of Object.entries(rawArgs)) {
+      if (declaredKeys.includes(k)) {
+        resultArgs[k] = coerceType(v, properties[k]);
+      } else {
+        unhandledRaw[k] = v;
+      }
+    }
+
+    // Step 2: Semantic and synonym mappings for invented / alias keys
+    // Maps canonical schema key to known invented/alias names
+    const COMMON_ALIASES: Record<string, string[]> = {
+      subpath: ['directory', 'dir', 'folder', 'path', 'location', 'subfolder', 'folder_path', 'dir_path', 'target_dir'],
+      filePath: ['path', 'file', 'filename', 'file_path', 'filepath', 'target_file', 'doc', 'document', 'file_name'],
+      content: ['text', 'body', 'data', 'code', 'file_content', 'fileContent', 'content_text', 'payload'],
+      query: ['search', 'keyword', 'keywords', 'q', 'search_term', 'term', 'find', 'prompt', 'text'],
+      sku: ['sku_code', 'skuId', 'productId', 'product_id', 'id', 'item_id', 'code', 'product_sku'],
+      order_id: ['orderId', 'order', 'id', 'order_number', 'orderNo', 'order_num'],
+      city: ['destination', 'town', 'address', 'location', 'cityName', 'city_name'],
+      max_price: ['maxPrice', 'price', 'budget', 'limit_price', 'cost', 'max_cost'],
+      category: ['cat', 'category_name', 'genre', 'type'],
+      interval_seconds: ['interval', 'seconds', 'period', 'delay', 'intervalSeconds'],
+      delay_seconds: ['delay', 'delaySeconds'],
+      limit: ['maxResults', 'max_results', 'count', 'max', 'limit_count'],
+      pattern: ['mask', 'filter', 'regex', 'extension', 'glob', 'wildcard'],
+      startLine: ['start_line', 'start', 'from_line', 'line_start'],
+      endLine: ['end_line', 'end', 'to_line', 'line_end'],
+      searchString: ['search_string', 'search', 'target', 'old_text', 'oldText'],
+      replaceString: ['replace_string', 'replace', 'replacement', 'new_text', 'newText'],
+    };
+
+    for (const [rawKey, rawVal] of Object.entries(unhandledRaw)) {
+      let matchedProp: string | null = null;
+
+      // 2a. Case-insensitive / snake_case / camelCase normalization
+      const cleanRawKey = rawKey.toLowerCase().replace(/[\s_-]+/g, '');
+      for (const prop of declaredKeys) {
+        const cleanProp = prop.toLowerCase().replace(/[\s_-]+/g, '');
+        if (cleanRawKey === cleanProp) {
+          matchedProp = prop;
+          break;
+        }
+      }
+
+      // 2b. Known semantic aliases lookup
+      if (!matchedProp) {
+        for (const prop of declaredKeys) {
+          const aliases = COMMON_ALIASES[prop];
+          if (aliases && aliases.some((a) => a.toLowerCase() === rawKey.toLowerCase() || a.toLowerCase().replace(/[\s_-]+/g, '') === cleanRawKey)) {
+            matchedProp = prop;
+            break;
+          }
+        }
+      }
+
+      // 2c. Schema description match: check if parameter description contains this raw key
+      if (!matchedProp) {
+        for (const prop of declaredKeys) {
+          const desc = String(properties[prop]?.description || '').toLowerCase();
+          if (desc.includes(rawKey.toLowerCase())) {
+            matchedProp = prop;
+            break;
+          }
+        }
+      }
+
+      // If matched and destination is not already set
+      if (matchedProp && (resultArgs[matchedProp] === undefined || resultArgs[matchedProp] === null || resultArgs[matchedProp] === '')) {
+        resultArgs[matchedProp] = coerceType(rawVal, properties[matchedProp]);
+      }
+    }
+
+    // Step 3: Contextual extraction and substitution from user request (userContext)
+    if (userContext && typeof userContext === 'string' && userContext.trim()) {
+      const uText = userContext.trim();
+
+      for (const prop of declaredKeys) {
+        // Only attempt extraction if parameter is not yet provided or empty
+        if (resultArgs[prop] !== undefined && resultArgs[prop] !== null && resultArgs[prop] !== '') {
+          continue;
+        }
+
+        // Subpath / directory extraction
+        if (prop === 'subpath') {
+          const subpathMatch =
+            uText.match(/(?:в\s+папк[еуа]|в\s+каталог[еа]|в\s+директори[ию]|папк[аеу]|каталог[еа]?|директори[яию]|каталоге|подпапк[еа])[:\s]+["'`]?([a-zA-Z0-9_./-]+)["'`]?/i) ||
+            uText.match(/["'`]((?:docs|core|feature|src|data)[a-zA-Z0-9_./-]*)["'`]/i) ||
+            uText.match(/\b((?:docs|core|feature|src|data)\/[a-zA-Z0-9_./-]+)\b/i);
+          if (subpathMatch && subpathMatch[1]) {
+            resultArgs[prop] = subpathMatch[1].trim();
+          }
+        }
+
+        // filePath extraction
+        if (prop === 'filePath') {
+          const fpMatch =
+            uText.match(/(?:файл[еа]?|file)[:\s]+["'`]?([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)["'`]?/i) ||
+            uText.match(/\b([a-zA-Z0-9_./-]+\.(?:md|kt|kts|ts|tsx|json|txt|ya?ml))\b/i) ||
+            uText.match(/["'`]?([a-zA-Z0-9_./-]*ADR-\d+-[a-zA-Z0-9_./-]*\.md)["'`]?/i);
+          if (fpMatch && fpMatch[1]) {
+            resultArgs[prop] = fpMatch[1].trim();
+          }
+        }
+
+        // SKU extraction
+        if (prop === 'sku') {
+          const skuMatch = uText.match(/\b([A-Z0-9]+-[A-Z0-9]+(?:-[A-Z0-9]+)*)\b/);
+          if (skuMatch && skuMatch[1] && !skuMatch[1].startsWith('ORD-') && !skuMatch[1].startsWith('ADR-')) {
+            resultArgs[prop] = skuMatch[1].trim();
+          }
+        }
+
+        // order_id extraction
+        if (prop === 'order_id') {
+          const orderMatch = uText.match(/\b(ORD-\d+)\b/i) || uText.match(/(?:заказ[а-я]*|номер)\s*#?\s*([A-Za-z0-9_-]+)/i);
+          if (orderMatch && orderMatch[1]) {
+            resultArgs[prop] = orderMatch[1].trim();
+          }
+        }
+
+        // city extraction
+        if (prop === 'city') {
+          const cityMatch =
+            uText.match(/(?:в|до|город[еа]?)\s+([А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?)/) ||
+            uText.match(/\b(Москва|Санкт-Петербург|Казань|Новосибирск|Екатеринбург|Нижний Новгород|Самара|Омск|Челябинск|Ростов-на-Дону|Уфа|Красноярск|Воронеж|Пермь|Волгоград)\b/i);
+          if (cityMatch && cityMatch[1]) {
+            resultArgs[prop] = cityMatch[1].trim();
+          }
+        }
+
+        // max_price extraction
+        if (prop === 'max_price') {
+          const priceMatch = uText.match(/(?:до|не\s+дороже|не\s+выше|максимум|бюджет)\s*[:\s]*(\d+[\d\s]*)\s*(?:руб|р|\$|€)?/i);
+          if (priceMatch && priceMatch[1]) {
+            const num = Number(priceMatch[1].replace(/\s+/g, ''));
+            if (!isNaN(num) && num > 0) {
+              resultArgs[prop] = num;
+            }
+          }
+        }
+
+        // interval_seconds extraction
+        if (prop === 'interval_seconds') {
+          const secMatch = uText.match(/(?:каждые|интервал|период)\s*[:\s]*(\d+)\s*(?:сек|секунд)/i);
+          if (secMatch && secMatch[1]) {
+            const num = Number(secMatch[1]);
+            if (!isNaN(num) && num > 0) {
+              resultArgs[prop] = num;
+            }
+          }
+        }
+
+        // query extraction (if required and missing)
+        if (prop === 'query' && requiredList.includes('query')) {
+          const queryMatch =
+            uText.match(/(?:найди|поиск|ищи|найти|search)\s+(?:информацию\s+о\s+|информацию\s+про\s+|товары?\s+|по\s+)?["'`]?([^"'`.,\n]+)["'`]?/i);
+          if (queryMatch && queryMatch[1]) {
+            resultArgs[prop] = queryMatch[1].trim();
+          } else {
+            resultArgs[prop] = uText.slice(0, 100).trim();
+          }
+        }
+      }
+    }
+
+    return resultArgs;
+  }
+
+  /**
    * Executes tool with targeted routing and returns enriched McpCallMeta.
    */
   public async executeTool(
     toolName: string,
     args: Record<string, unknown> = {},
-    servers?: McpServerConfig[]
+    servers?: McpServerConfig[],
+    userContext?: string
   ): Promise<McpCallMeta> {
     const activeServers = (servers || loadMcpServers()).filter((s) => s.enabled);
 
@@ -426,11 +647,17 @@ export class McpRouter {
       }
     }
 
-    const res = await callMcpTool(targetServer, actualToolName, cleanArgs);
+    // Resolve target tool info from discovered tools
+    const targetTool = serverTools.find((t) => t.name === actualToolName);
+
+    // Adapt raw arguments: map aliases, substitute from user request, and strip hallucinated keys
+    const adaptedArgs = this.adaptToolArguments(targetTool, cleanArgs, userContext);
+
+    const res = await callMcpTool(targetServer, actualToolName, adaptedArgs);
 
     return {
       toolName: actualToolName,
-      args: cleanArgs,
+      args: adaptedArgs,
       result: res.result,
       isError: res.isError,
       serverName: targetServer.name,
@@ -463,17 +690,42 @@ export class McpRouter {
             : typeof t.inputSchema?.required === 'string'
             ? [t.inputSchema.required]
             : [];
-          const reqStr =
-            requiredList.length > 0
-              ? ` [required: ${requiredList.join(', ')}]`
-              : '';
           const descStr =
             typeof t.description === 'string'
               ? t.description
               : t.description
               ? JSON.stringify(t.description)
               : 'Нет описания';
-          lines.push(`- \`${t.name || 'unknown'}\`${reqStr}: ${descStr}`);
+          lines.push(`- \`${t.name || 'unknown'}\`: ${descStr}`);
+
+          const props = t.inputSchema?.properties;
+          if (props && typeof props === 'object' && Object.keys(props).length > 0) {
+            lines.push(`  Parameters:`);
+            for (const [propName, propDef] of Object.entries(props)) {
+              const isReq = requiredList.includes(propName);
+              const pType =
+                propDef && typeof propDef === 'object' && propDef.type
+                  ? String(propDef.type)
+                  : 'any';
+              const pDesc =
+                propDef && typeof propDef === 'object' && propDef.description
+                  ? ` - ${propDef.description}`
+                  : '';
+              const pEnum =
+                propDef && typeof propDef === 'object' && Array.isArray(propDef.enum)
+                  ? ` [enum: ${propDef.enum.join(', ')}]`
+                  : '';
+              const pDefault =
+                propDef && typeof propDef === 'object' && propDef.default !== undefined
+                  ? ` (default: ${JSON.stringify(propDef.default)})`
+                  : '';
+              lines.push(
+                `    * \`${propName}\` (${pType}, ${isReq ? 'REQUIRED' : 'optional'})${pDefault}${pEnum}${pDesc}`
+              );
+            }
+          } else {
+            lines.push(`  Parameters: none (use empty arguments {})`);
+          }
         }
       } else {
         const isMockLogistics =
@@ -495,24 +747,40 @@ export class McpRouter {
               server.name.toLowerCase().includes('склад')));
 
         if (isMockLogistics) {
-          lines.push(`- \`order_get_status\` [required: order_id]: Проверить статус и трекинг заказа`);
-          lines.push(`- \`delivery_calculate_cost\` [required: city]: Рассчитать стоимость и срок доставки курьером`);
-          lines.push(`- \`schedule_monitor\` [required: interval_seconds]: Запланировать фоновый мониторинг`);
-          lines.push(`- \`get_aggregated_summary\`: Получить агрегированную аналитическую сводку фонового мониторинга`);
+          lines.push(`- \`order_get_status\`: Проверить статус и трекинг заказа клиента`);
+          lines.push(`  Parameters:\n    * \`order_id\` (string, REQUIRED) - Номер заказа (например: ORD-7741)`);
+          lines.push(`- \`delivery_calculate_cost\`: Рассчитать стоимость и срок доставки курьером`);
+          lines.push(`  Parameters:\n    * \`city\` (string, REQUIRED) - Город назначения\n    * \`isExpress\` (boolean, optional) - Экспресс доставка`);
+          lines.push(`- \`schedule_monitor\`: Запланировать фоновый мониторинг`);
+          lines.push(`  Parameters:\n    * \`interval_seconds\` (number, REQUIRED) - Интервал опроса в секундах\n    * \`target\` (string, optional) - products, orders или all`);
+          lines.push(`- \`get_aggregated_summary\`: Получить агрегированную аналитическую сводку`);
+          lines.push(`  Parameters:\n    * \`target\` (string, optional) - products, orders или all`);
         } else if (isMockAnalytics) {
-          lines.push(`- \`search\` [required: query]: Поиск информации в каталоге для аналитического пайплайна`);
+          lines.push(`- \`search\`: Поиск информации в каталоге для аналитического пайплайна`);
+          lines.push(`  Parameters:\n    * \`query\` (string, REQUIRED) - Поисковый запрос`);
           lines.push(`- \`summarize\`: Аналитическая выжимка, расчет метрик и рекомендаций (markdown/json)`);
-          lines.push(`- \`saveToFile\` [required: content]: Сохранение отчета на диск в каталог data/reports`);
+          lines.push(`  Parameters: none (use empty arguments {})`);
+          lines.push(`- \`saveToFile\`: Сохранение отчета на диск в каталог data/reports`);
+          lines.push(`  Parameters:\n    * \`content\` (string, REQUIRED) - Содержимое файла отчета\n    * \`filename\` (string, optional) - Имя файла`);
           lines.push(`- \`get_aggregated_summary\`: Агрегированная сводка фонового мониторинга`);
+          lines.push(`  Parameters:\n    * \`target\` (string, optional) - products, orders или all`);
         } else if (isMockCatalog) {
-          lines.push(`- \`store_search_products\`: Поиск товаров в каталоге интернет-магазина (query, category, max_price)`);
-          lines.push(`- \`store_get_product\` [required: sku]: Данные о товаре по SKU (цена, характеристики, склад, остаток)`);
-          lines.push(`- \`order_get_status\` [required: order_id]: Проверить статус и трекинг заказа`);
-          lines.push(`- \`delivery_calculate_cost\` [required: city]: Рассчитать стоимость и срок доставки курьером`);
-          lines.push(`- \`schedule_monitor\` [required: interval_seconds]: Запланировать фоновый мониторинг`);
-          lines.push(`- \`get_aggregated_summary\`: Получить агрегированную аналитическую сводку фонового мониторинга`);
-          lines.push(`- \`calculate\` [required: expression]: Вычислить математическое выражение`);
+          lines.push(`- \`store_search_products\`: Поиск товаров в каталоге интернет-магазина`);
+          lines.push(`  Parameters:\n    * \`query\` (string, optional) - Поисковый запрос\n    * \`category\` (string, optional) [enum: smartphones, laptops, audio, wearables, accessories]\n    * \`max_price\` (number, optional) - Максимальная цена в рублях`);
+          lines.push(`- \`store_get_product\`: Данные о товаре по SKU (цена, характеристики, склад, остаток)`);
+          lines.push(`  Parameters:\n    * \`sku\` (string, REQUIRED) - Артикул товара (например: PHONE-15-PRO)`);
+          lines.push(`- \`order_get_status\`: Проверить статус и трекинг заказа`);
+          lines.push(`  Parameters:\n    * \`order_id\` (string, REQUIRED) - Номер заказа (например: ORD-7741)`);
+          lines.push(`- \`delivery_calculate_cost\`: Рассчитать стоимость и срок доставки курьером`);
+          lines.push(`  Parameters:\n    * \`city\` (string, REQUIRED) - Город назначения`);
+          lines.push(`- \`schedule_monitor\`: Запланировать фоновый мониторинг`);
+          lines.push(`  Parameters:\n    * \`interval_seconds\` (number, REQUIRED) - Интервал опроса в секундах`);
+          lines.push(`- \`get_aggregated_summary\`: Получить агрегированную аналитическую сводку`);
+          lines.push(`  Parameters: none (use empty arguments {})`);
+          lines.push(`- \`calculate\`: Вычислить математическое выражение`);
+          lines.push(`  Parameters:\n    * \`expression\` (string, REQUIRED) - Математическое выражение`);
           lines.push(`- \`get_system_time\`: Текущее время сервера`);
+          lines.push(`  Parameters: none (use empty arguments {})`);
         } else {
           lines.push(`- *(Инструменты еще не загружены или сервер недоступен)*`);
         }
@@ -528,9 +796,17 @@ export class McpRouter {
     lines.push(`CRITICAL RULES FOR CALLING TOOLS:`);
     lines.push(`1. The 'name' attribute in <mcp_call name="..."> MUST be the EXACT tool name from the list above (for example: name="list_project_files" or name="search_project_files").`);
     lines.push(`2. NEVER write name="mcp_call", name="tool_call" or the server name. The 'name' attribute MUST be the specific tool name: e.g. <mcp_call name="search_project_files">{"query": "SafeApiCall"}</mcp_call>.`);
-    lines.push(`3. NEVER wrap the tool name inside JSON arguments as {"name": "..."}. Arguments must only contain parameters needed by the tool.`);
-    lines.push(`4. If a tool takes no arguments, pass an empty JSON object: {}`);
-    lines.push(`5. For complex requests, execute calls sequentially across tools/servers until the goal is achieved, then formulate the final user response.`);
+    lines.push(`3. NEVER invent, hallucinate, or rename parameter keys! You MUST ONLY use the EXACT parameter names defined under each tool's "Parameters" section above.`);
+    lines.push(`   - For example: if the tool defines \`subpath\`, use \`subpath\` (DO NOT use \`directory\`, \`folder\`, \`dir\`, or \`path\`).`);
+    lines.push(`   - If the tool defines \`query\`, use \`query\` (DO NOT use \`search\` or \`keyword\`).`);
+    lines.push(`   - If the tool defines \`sku\`, use \`sku\` (DO NOT use \`id\` or \`product_id\`).`);
+    lines.push(`   - If the tool defines \`filePath\`, use \`filePath\` (DO NOT use \`file\` or \`path\`).`);
+    lines.push(`   - If the tool defines \`content\`, use \`content\` (DO NOT use \`text\` or \`body\`).`);
+    lines.push(`4. Extract the relevant values from the user request and supply them directly into the corresponding existing parameters.`);
+    lines.push(`5. NEVER pass fabricated or invented parameter names. If a parameter is optional and not needed, omit it.`);
+    lines.push(`6. NEVER wrap the tool name inside JSON arguments as {"name": "..."}. Arguments must only contain parameters needed by the tool.`);
+    lines.push(`7. If a tool takes no arguments, pass an empty JSON object: {}`);
+    lines.push(`8. For complex requests, execute calls sequentially across tools/servers until the goal is achieved, then formulate the final user response.`);
     lines.push(``);
     lines.push(`PROJECT FILES & GOAL-DRIVEN AGENT RULES:`);
     lines.push(`- When the user gives a high-level goal regarding files, code or docs, autonomously initiate the workflow: search -> read relevant files (2-3+ files) -> analyze -> create/patch files -> verify with get_file_diff.`);
