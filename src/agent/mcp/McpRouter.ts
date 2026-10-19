@@ -224,6 +224,40 @@ export class McpRouter {
         this.toolRoutes.set(toolName, server);
         return server;
       }
+
+      const isFilesServer =
+        server.id === 'mcp-files-server' ||
+        (server.url.includes(':3007') && server.name.toLowerCase().includes('file'));
+      if (
+        isFilesServer &&
+        [
+          'list_project_files',
+          'read_project_file',
+          'search_project_files',
+          'write_project_file',
+          'patch_project_file',
+          'get_file_diff',
+        ].includes(toolName)
+      ) {
+        this.toolRoutes.set(toolName, server);
+        return server;
+      }
+
+      const isGitBranchServer =
+        server.id === 'mcp-git-branch-server' ||
+        (server.url.includes(':3005') && server.name.toLowerCase().includes('branch'));
+      if (isGitBranchServer && toolName === 'get_current_git_branch') {
+        this.toolRoutes.set(toolName, server);
+        return server;
+      }
+
+      const isRagServer =
+        server.id === 'mcp-rag-server' ||
+        (server.url.includes(':3006') && server.name.toLowerCase().includes('rag'));
+      if (isRagServer && toolName === 'rag_search_structural') {
+        this.toolRoutes.set(toolName, server);
+        return server;
+      }
     }
 
     // 4. Fallback: if only 1 server is active, route tool to it
@@ -492,11 +526,16 @@ export class McpRouter {
     lines.push(`</mcp_call>`);
     lines.push(``);
     lines.push(`CRITICAL RULES FOR CALLING TOOLS:`);
-    lines.push(`1. The 'name' attribute in <mcp_call name="..."> MUST be the EXACT tool name from the list above (for example: name="list_projects" or name="store_search_products").`);
-    lines.push(`2. NEVER write name="mcp_call", name="tool_call" or the server name. The 'name' attribute MUST be the specific tool name: e.g. <mcp_call name="list_projects">{}</mcp_call>.`);
+    lines.push(`1. The 'name' attribute in <mcp_call name="..."> MUST be the EXACT tool name from the list above (for example: name="list_project_files" or name="search_project_files").`);
+    lines.push(`2. NEVER write name="mcp_call", name="tool_call" or the server name. The 'name' attribute MUST be the specific tool name: e.g. <mcp_call name="search_project_files">{"query": "SafeApiCall"}</mcp_call>.`);
     lines.push(`3. NEVER wrap the tool name inside JSON arguments as {"name": "..."}. Arguments must only contain parameters needed by the tool.`);
     lines.push(`4. If a tool takes no arguments, pass an empty JSON object: {}`);
-    lines.push(`5. For complex requests, execute calls sequentially across servers until the goal is achieved, then formulate the final user response.`);
+    lines.push(`5. For complex requests, execute calls sequentially across tools/servers until the goal is achieved, then formulate the final user response.`);
+    lines.push(``);
+    lines.push(`PROJECT FILES & GOAL-DRIVEN AGENT RULES:`);
+    lines.push(`- When the user gives a high-level goal regarding files, code or docs, autonomously initiate the workflow: search -> read relevant files (2-3+ files) -> analyze -> create/patch files -> verify with get_file_diff.`);
+    lines.push(`- Do NOT ask the user for permission to open files or search. Immediately call the required tool via <mcp_call name="...">.`);
+    lines.push(`- After modifying files, call get_file_diff to inspect your changes, then synthesize a concise and structured final response with file links and diffs.`);
 
     return lines.join('\n');
   }

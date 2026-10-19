@@ -1,0 +1,14 @@
+{
+  "name": "@local/mcp-files",
+  "version": "1.0.0",
+  "description": "Локальный MCP-сервер для операций с файлами проекта CryptoTrack (чтение, мультипоиск, анализ, запись, diff)",
+  "private": true,
+  "type": "module",
+  "main": "server.ts",
+  "scripts": {
+    "start": "tsx server.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.1"
+  }
+}

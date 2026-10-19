@@ -97,6 +97,43 @@ export const DEFAULT_MCP_SERVERS: McpServerConfig[] = [
       },
     ],
   },
+  {
+    id: 'mcp-files-server',
+    name: 'CryptoTrack Files Assistant',
+    url: 'http://localhost:3007/sse',
+    transport: 'sse',
+    headers: {},
+    headersRaw: '{\n  "Authorization": ""\n}',
+    enabled: true,
+    createdAt: 1700000000006,
+    scope: 'global',
+    tools: [
+      {
+        name: 'list_project_files',
+        description: 'Получить список файлов проекта CryptoTrack',
+      },
+      {
+        name: 'read_project_file',
+        description: 'Прочитать содержимое файла проекта CryptoTrack с диапазоном строк',
+      },
+      {
+        name: 'search_project_files',
+        description: 'Поиск по файлам проекта CryptoTrack (код, документация, gradle)',
+      },
+      {
+        name: 'write_project_file',
+        description: 'Создать или перезаписать файл проекта CryptoTrack (ADR, отчет, changelog)',
+      },
+      {
+        name: 'patch_project_file',
+        description: 'Точечно заменить фрагмент текста в файле проекта CryptoTrack',
+      },
+      {
+        name: 'get_file_diff',
+        description: 'Получить unified diff изменений в проекте CryptoTrack через Git',
+      },
+    ],
+  },
 ];
 
 export function loadGlobalMcpEnabled(): boolean {

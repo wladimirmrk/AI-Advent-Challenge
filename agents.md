@@ -80,7 +80,14 @@ AI Advent Challenge/
 │   ├── test-day19-pipeline.ts # Тесты MCP пайплайнов
 │   ├── test-day20-orchestration.ts # Тесты мульти-агентной оркестрации
 │   ├── test-streaming.ts      # Тесты потоковой передачи ответов и блока thinking
-│   └── test-undo.ts           # Тесты отката сообщений и ветвления
+│   ├── test-undo.ts           # Тесты отката сообщений и ветвления
+│   ├── test-mcp-files.ts      # Тесты MCP сервера файлов CryptoTrack (День 34)
+│   └── test-day34-file-assistant.ts # Сквозные тесты автономного ассистента файлов
+│
+├── MCP/                       # Локальные MCP-серверы для проекта CryptoTrack
+│   ├── files/                 # MCP Files сервер: чтение, поиск, запись, diff (День 34)
+│   ├── git-branch/            # MCP сервер детекции активной git-ветки
+│   └── rag/                   # MCP сервер структурного RAG поиска
 │
 ├── RAG/                       # Автономный Python-подпроект RAG для CryptoTrack (см. RAG/agents.md)
 └── week1/                     # Прототипы первой недели (архив)
@@ -167,6 +174,13 @@ npm.cmd run mcp:server
 
 # Запуск мульти-сервера инструментов
 npm.cmd run mcp:servers
+
+# Запуск MCP сервера файлов CryptoTrack (День 34)
+npm.cmd run mcp:files
+
+# Запуск MCP сервера git-ветки и RAG
+npm.cmd run mcp:git-branch
+npm.cmd run mcp:rag
 ```
 
 ---

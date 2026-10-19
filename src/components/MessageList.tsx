@@ -17,6 +17,11 @@ import {
   Wrench,
   Brain,
   RotateCcw,
+  FileText,
+  FileCode,
+  FileDiff,
+  FilePlus,
+  Search,
 } from 'lucide-react';
 
 interface InvariantCheckResult {
@@ -206,12 +211,83 @@ const StateCheckCard: React.FC<{ check: StateCheckData }> = ({ check }) => {
   );
 };
 
+const DiffViewer: React.FC<{ diffText: string }> = ({ diffText }) => {
+  const lines = diffText.split(/\r?\n/);
+  return (
+    <div
+      style={{
+        background: '#090d13',
+        border: '1px solid rgba(255, 255, 255, 0.12)',
+        borderRadius: '6px',
+        fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+        fontSize: '11px',
+        lineHeight: '1.45',
+        overflowX: 'auto',
+        padding: '6px 8px',
+        marginTop: '6px',
+        maxHeight: '360px',
+        overflowY: 'auto',
+      }}
+    >
+      {lines.map((line, idx) => {
+        let bg = 'transparent';
+        let color = '#94a3b8';
+        let fontWeight = 'normal';
+
+        if (line.startsWith('+++') || line.startsWith('---')) {
+          color = '#e2e8f0';
+          fontWeight = '600';
+        } else if (line.startsWith('+')) {
+          bg = 'rgba(34, 197, 94, 0.18)';
+          color = '#4ade80';
+        } else if (line.startsWith('-')) {
+          bg = 'rgba(239, 68, 68, 0.18)';
+          color = '#f87171';
+        } else if (line.startsWith('@@')) {
+          bg = 'rgba(56, 189, 248, 0.14)';
+          color = '#38bdf8';
+        } else if (line.startsWith('diff --git')) {
+          color = '#60a5fa';
+          fontWeight = 'bold';
+        }
+
+        return (
+          <div
+            key={idx}
+            style={{
+              background: bg,
+              color,
+              fontWeight,
+              whiteSpace: 'pre',
+              padding: '1px 4px',
+              borderRadius: '2px',
+            }}
+          >
+            {line || ' '}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+const getToolIcon = (toolName: string) => {
+  if (toolName === 'get_file_diff') return <FileDiff size={14} style={{ color: '#38bdf8' }} />;
+  if (toolName === 'write_project_file') return <FilePlus size={14} style={{ color: '#4ade80' }} />;
+  if (toolName === 'patch_project_file') return <FileCode size={14} style={{ color: '#facc15' }} />;
+  if (toolName === 'read_project_file' || toolName === 'list_project_files') return <FileText size={14} style={{ color: '#a78bfa' }} />;
+  if (toolName === 'search_project_files') return <Search size={14} style={{ color: '#fb923c' }} />;
+  if (toolName === 'get_current_git_branch') return <GitBranch size={14} style={{ color: '#34d399' }} />;
+  return <Wrench size={14} style={{ color: '#22c55e' }} />;
+};
+
 const McpToolCallCard: React.FC<{ calls: McpCallMeta[] }> = ({ calls }) => {
   const [isOpen, setIsOpen] = useState(false);
 
   if (!calls || calls.length === 0) return null;
 
   const hasErrors = calls.some((c) => c.isError);
+  const primaryTool = calls[0]?.toolName || '';
 
   return (
     <div
@@ -239,9 +315,9 @@ const McpToolCallCard: React.FC<{ calls: McpCallMeta[] }> = ({ calls }) => {
         tabIndex={0}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-          <Wrench size={14} style={{ color: hasErrors ? '#ef4444' : '#22c55e' }} />
+          {getToolIcon(primaryTool)}
           <strong style={{ color: hasErrors ? '#ef4444' : '#22c55e' }}>
-            🔧 MCP вызов: {calls.map((c) => c.toolName).join(', ')}
+            🛠️ MCP вызов: {calls.map((c) => c.toolName).join(', ')}
           </strong>
           {calls[0]?.serverName && (
             <span
@@ -277,44 +353,77 @@ const McpToolCallCard: React.FC<{ calls: McpCallMeta[] }> = ({ calls }) => {
 
       {isOpen && (
         <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(255, 255, 255, 0.1)' }}>
-          {calls.map((call, idx) => (
-            <div key={idx} style={{ marginBottom: idx < calls.length - 1 ? '10px' : '0' }}>
-              <div style={{ marginBottom: '4px', color: 'var(--text-secondary, #94a3b8)', fontWeight: 600 }}>
-                Параметры:
+          {calls.map((call, idx) => {
+            let parsedDiff: string | null = null;
+            if (call.toolName === 'get_file_diff') {
+              try {
+                const parsed = JSON.parse(call.result || '{}');
+                if (parsed.diff) parsedDiff = parsed.diff;
+              } catch {
+                if (call.result && (call.result.includes('diff --git') || call.result.includes('@@'))) {
+                  parsedDiff = call.result;
+                }
+              }
+            }
+
+            return (
+              <div key={idx} style={{ marginBottom: idx < calls.length - 1 ? '10px' : '0' }}>
+                <div style={{ marginBottom: '4px', color: 'var(--text-secondary, #94a3b8)', fontWeight: 600 }}>
+                  Параметры:
+                </div>
+                <pre
+                  style={{
+                    background: 'rgba(0, 0, 0, 0.35)',
+                    padding: '6px 8px',
+                    borderRadius: '4px',
+                    overflowX: 'auto',
+                    fontSize: '11px',
+                    margin: '0 0 6px 0',
+                    color: '#e2e8f0',
+                  }}
+                >
+                  {JSON.stringify(call.args, null, 2)}
+                </pre>
+                <div style={{ marginBottom: '4px', color: 'var(--text-secondary, #94a3b8)', fontWeight: 600 }}>
+                  Ответ сервера MCP:
+                </div>
+                <pre
+                  style={{
+                    background: 'rgba(0, 0, 0, 0.35)',
+                    padding: '6px 8px',
+                    borderRadius: '4px',
+                    overflowX: 'auto',
+                    fontSize: '11px',
+                    margin: '0',
+                    color: call.isError ? '#fca5a5' : '#86efac',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                  }}
+                >
+                  {call.result}
+                </pre>
+
+                {parsedDiff && (
+                  <div style={{ marginTop: '8px' }}>
+                    <div
+                      style={{
+                        marginBottom: '4px',
+                        color: '#38bdf8',
+                        fontWeight: 600,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                      }}
+                    >
+                      <FileDiff size={13} />
+                      Unified Git Diff:
+                    </div>
+                    <DiffViewer diffText={parsedDiff} />
+                  </div>
+                )}
               </div>
-              <pre
-                style={{
-                  background: 'rgba(0, 0, 0, 0.35)',
-                  padding: '6px 8px',
-                  borderRadius: '4px',
-                  overflowX: 'auto',
-                  fontSize: '11px',
-                  margin: '0 0 6px 0',
-                  color: '#e2e8f0',
-                }}
-              >
-                {JSON.stringify(call.args, null, 2)}
-              </pre>
-              <div style={{ marginBottom: '4px', color: 'var(--text-secondary, #94a3b8)', fontWeight: 600 }}>
-                Ответ сервера MCP:
-              </div>
-              <pre
-                style={{
-                  background: 'rgba(0, 0, 0, 0.35)',
-                  padding: '6px 8px',
-                  borderRadius: '4px',
-                  overflowX: 'auto',
-                  fontSize: '11px',
-                  margin: '0',
-                  color: call.isError ? '#fca5a5' : '#86efac',
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                }}
-              >
-                {call.result}
-              </pre>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -574,6 +683,42 @@ export const MessageList: React.FC<MessageListProps> = ({
               >
                 <Sparkles size={14} />
                 <span>"/help Как устроен data-слой и Room Database?"</span>
+              </button>
+              <button
+                type="button"
+                className="suggestion-chip"
+                onClick={() =>
+                  onSuggestionClick?.(
+                    'Найди все места, где используется SafeApiCall в проекте CryptoTrack, проанализируй обработку ошибок и подготовь архитектурный отчет'
+                  )
+                }
+              >
+                <Search size={14} style={{ color: '#fb923c' }} />
+                <span>"🔍 Найти использование SafeApiCall и подготовить отчет"</span>
+              </button>
+              <button
+                type="button"
+                className="suggestion-chip"
+                onClick={() =>
+                  onSuggestionClick?.(
+                    'Изучи существующие ADR в docs/decisions и создай новый ADR-019 о внедрении фонового обновления курсов криптовалют в CryptoTrack'
+                  )
+                }
+              >
+                <FilePlus size={14} style={{ color: '#4ade80' }} />
+                <span>"📝 Создать ADR-019 (фоновое обновление курсов)"</span>
+              </button>
+              <button
+                type="button"
+                className="suggestion-chip"
+                onClick={() =>
+                  onSuggestionClick?.(
+                    'Покажи git diff всех сделанных изменений в CryptoTrack и подготовь список изменений'
+                  )
+                }
+              >
+                <FileDiff size={14} style={{ color: '#38bdf8' }} />
+                <span>"📊 Показать git diff изменений в CryptoTrack"</span>
               </button>
               <button
                 type="button"
