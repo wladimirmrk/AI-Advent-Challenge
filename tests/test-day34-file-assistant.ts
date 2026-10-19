@@ -301,10 +301,123 @@ Use Android Jetpack WorkManager in \`:core:sync\` to schedule periodic backgroun
     assert.ok(adrText.includes('Periodic Background Price Synchronization'));
     console.log(`✓ Verified ADR-019 generated on disk: "${generatedAdrPath}"`);
 
+    // =========================================================================
+    // Scenario 3: Exact User Prompt with Intermediate Conversational Distraction
+    // & Multiline JSON write_project_file & Autonomous Goal Enforcer
+    // =========================================================================
+    console.log('\n--- Scenario 3: Autonomous Full Chain with User Goal Enforcer ---');
+    const exactUserPrompt =
+      'Изучи существующие ADR в папке docs/decisions и создай новый файл docs/decisions/ADR-019-background-sync.md с решением о периодической синхронизации цен в фоне, а затем покажи git diff.';
+    const generatedSyncAdrPath = path.join(
+      projectRoot,
+      'docs/decisions/ADR-019-background-sync.md'
+    );
+
+    turn = 0;
+    (agent as any).callLLM = async (messages: any[]) => {
+      turn++;
+
+      // Turn 1: Model lists existing ADR files
+      if (turn === 1) {
+        return {
+          content: `<mcp_call name="list_project_files">{"pattern": "ADR"}</mcp_call>`,
+          promptTokens: 100,
+          completionTokens: 30,
+          totalTokens: 130,
+        };
+      }
+
+      // Turn 2: Model attempts to prematurely reply with plain text instead of writing the file!
+      if (turn === 2) {
+        return {
+          content: `Я изучил папку docs/decisions и нашел список архитектурных решений: ADR-001, ADR-002, ADR-005. Теперь можно создавать документ.`,
+          promptTokens: 200,
+          completionTokens: 40,
+          totalTokens: 240,
+        };
+      }
+
+      // Turn 3: Goal Enforcer nudged the model! Now model calls write_project_file with raw unescaped newlines in JSON
+      if (turn === 3) {
+        const rawBodyWithUnescapedNewlines = `{"filePath": "docs/decisions/ADR-019-background-sync.md", "content": "# ADR-019: Periodic Background Sync\\n\\n## Context\\nNeed background sync.\\n\\n## Decision\\nUse WorkManager.\\n"}`;
+        return {
+          content: `<mcp_call name="write_project_file">${rawBodyWithUnescapedNewlines}</mcp_call>`,
+          promptTokens: 350,
+          completionTokens: 80,
+          totalTokens: 430,
+        };
+      }
+
+      // Turn 4: Model attempts to prematurely stop before calling git diff!
+      if (turn === 4) {
+        return {
+          content: `Файл ADR-019 успешно записан на диск.`,
+          promptTokens: 450,
+          completionTokens: 20,
+          totalTokens: 470,
+        };
+      }
+
+      // Turn 5: Goal Enforcer nudged for diff! Model calls get_file_diff
+      if (turn === 5) {
+        return {
+          content: `<mcp_call name="get_file_diff">{"filePath": "docs/decisions/ADR-019-background-sync.md"}</mcp_call>`,
+          promptTokens: 500,
+          completionTokens: 30,
+          totalTokens: 530,
+        };
+      }
+
+      // Turn 6: Final synthesis with complete overview and diff
+      return {
+        content: `Задача выполнена полностью!\n\n1. Изучены существующие ADR в docs/decisions.\n2. Создан новый файл [docs/decisions/ADR-019-background-sync.md] с архитектурным решением о периодической синхронизации цен через WorkManager.\n3. Получен unified git diff:\n\`\`\`diff\n+ # ADR-019: Periodic Background Sync\n+ ## Context\n+ Need background sync.\n\`\`\``,
+        promptTokens: 600,
+        completionTokens: 90,
+        totalTokens: 690,
+      };
+    };
+
+    const chainResponse = await agent.sendMessage(exactUserPrompt);
+
+    // Verify file creation on disk
+    assert.ok(
+      fs.existsSync(generatedSyncAdrPath),
+      'docs/decisions/ADR-019-background-sync.md must exist on disk'
+    );
+    const syncAdrContent = fs.readFileSync(generatedSyncAdrPath, 'utf8');
+    assert.ok(syncAdrContent.includes('Periodic Background Sync'));
+    console.log(`✓ Verified ADR-019-background-sync.md on disk: "${generatedSyncAdrPath}"`);
+
+    // Verify response
+    assert.ok(
+      chainResponse.includes('ADR-019-background-sync.md'),
+      'Synthesis response must reference created file'
+    );
+    assert.ok(
+      chainResponse.includes('diff'),
+      'Synthesis response must include git diff'
+    );
+    assert.ok(
+      !chainResponse.includes('Все этапы цепочки успешно выполнены внешними MCP-серверами.'),
+      'Must NOT fall back to empty placeholder text'
+    );
+    console.log('✓ Verified synthesized final response with diff and file details');
+
+    const lastStateMsg = agent.getState().messages[agent.getState().messages.length - 1];
+    const executedToolNames = lastStateMsg.mcpCalls?.map((c) => c.toolName) || [];
+    console.log(`✓ Executed tool sequence: ${executedToolNames.join(' -> ')}`);
+    assert.ok(executedToolNames.includes('list_project_files'));
+    assert.ok(executedToolNames.includes('write_project_file'));
+    assert.ok(executedToolNames.includes('get_file_diff'));
+
     console.log('\n🎉 ALL DAY 34 FILE ASSISTANT TESTS PASSED SUCCESSFULLY! 🎉\n');
   } finally {
     // Clean up created files in CryptoTrack
-    for (const f of [generatedReportPath, generatedAdrPath]) {
+    const generatedSyncAdrPath = path.join(
+      projectRoot,
+      'docs/decisions/ADR-019-background-sync.md'
+    );
+    for (const f of [generatedReportPath, generatedAdrPath, generatedSyncAdrPath]) {
       if (fs.existsSync(f)) {
         try {
           fs.unlinkSync(f);

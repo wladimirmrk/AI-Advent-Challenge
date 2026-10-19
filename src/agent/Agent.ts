@@ -1340,7 +1340,35 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
       const trimmed = rawStr.trim();
       if (!trimmed) return {};
 
-      // 1. Try JSON
+      // Helper to repair unescaped control characters in JSON strings (e.g. unescaped newlines/tabs in multiline file content)
+      const repairJsonControlChars = (str: string): string => {
+        let inString = false;
+        let isEscaped = false;
+        let result = '';
+        for (let i = 0; i < str.length; i++) {
+          const char = str[i];
+          if (char === '"' && !isEscaped) {
+            inString = !inString;
+            result += char;
+          } else if (inString) {
+            if (char === '\n') {
+              result += '\\n';
+            } else if (char === '\r') {
+              result += '\\r';
+            } else if (char === '\t') {
+              result += '\\t';
+            } else {
+              result += char;
+            }
+          } else {
+            result += char;
+          }
+          isEscaped = char === '\\' && !isEscaped;
+        }
+        return result;
+      };
+
+      // 1. Try JSON directly
       try {
         const cleaned = trimmed
           .replace(/^```json\s*/i, '')
@@ -1348,15 +1376,36 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
           .replace(/```$/i, '')
           .trim();
         if ((cleaned.startsWith('{') && cleaned.endsWith('}')) || (cleaned.startsWith('[') && cleaned.endsWith(']'))) {
-          const parsed = JSON.parse(cleaned);
-          if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-            return parsed;
+          try {
+            const parsed = JSON.parse(cleaned);
+            if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+              return parsed;
+            }
+          } catch {
+            const repaired = repairJsonControlChars(cleaned);
+            const parsedRepaired = JSON.parse(repaired);
+            if (typeof parsedRepaired === 'object' && parsedRepaired !== null && !Array.isArray(parsedRepaired)) {
+              return parsedRepaired;
+            }
           }
         }
       } catch {}
 
-      // 2. Try pythonic keyword arguments: key=value, key='value', key="value"
+      // 2. Fallback regex extraction for file tools (filePath and content/body)
       const args: Record<string, unknown> = {};
+      const fpMatch = trimmed.match(/"(?:filePath|path|file)"\s*:\s*"([^"]+)"/i);
+      if (fpMatch) {
+        args.filePath = fpMatch[1];
+      }
+      const contentMatch = trimmed.match(/"(?:content|text|body)"\s*:\s*"([\s\S]*?)"\s*(?:,\s*"[a-zA-Z0-9_]+"|\s*})/i);
+      if (contentMatch) {
+        args.content = contentMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+      }
+      if (args.filePath && args.content !== undefined) {
+        return args;
+      }
+
+      // 3. Try pythonic keyword arguments: key=value, key='value', key="value"
       const kvRegex = /([a-zA-Z0-9_]+)\s*=\s*(?:'([^']*)'|"([^"]*)"|([a-zA-Z0-9_.-]+))/g;
       let match;
       while ((match = kvRegex.exec(trimmed)) !== null) {
@@ -1459,6 +1508,20 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
         resolvedArgs = { ...(nested as Record<string, unknown>) };
       }
 
+      // Parameter aliases for file operations
+      if (resolvedArgs.path && !resolvedArgs.filePath) {
+        resolvedArgs.filePath = resolvedArgs.path;
+      }
+      if (resolvedArgs.file && !resolvedArgs.filePath) {
+        resolvedArgs.filePath = resolvedArgs.file;
+      }
+      if (resolvedArgs.text !== undefined && resolvedArgs.content === undefined) {
+        resolvedArgs.content = resolvedArgs.text;
+      }
+      if (resolvedArgs.body !== undefined && resolvedArgs.content === undefined) {
+        resolvedArgs.content = resolvedArgs.body;
+      }
+
       return { name: resolvedName, args: resolvedArgs };
     };
 
@@ -1475,6 +1538,17 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
 
       let name = (toolAttrMatch ? toolAttrMatch[1] : nameAttrMatch ? nameAttrMatch[1] : '').trim();
       let args = parseArgsHelper(rawBody);
+
+      // If body was empty or didn't yield args, attempt to parse args from tag attributes
+      if (Object.keys(args).length === 0 && rawAttrs) {
+        const attrArgs = parseArgsHelper(rawAttrs);
+        delete attrArgs.name;
+        delete attrArgs.tool;
+        delete attrArgs.tool_name;
+        if (Object.keys(attrArgs).length > 0) {
+          args = attrArgs;
+        }
+      }
 
       // If the body contains a function call syntax like list_projects() or [list_projects()]
       const bodyFuncMatch = rawBody.match(/\[?\s*([a-zA-Z0-9_]+)\s*\(([\s\S]*?)\)\s*\]?/);
@@ -1678,6 +1752,65 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
           );
         } catch {
           lines.push(`- 📚 **RAG Поиск (Structural):** ${call.result || 'Поиск выполнен'}`);
+        }
+      } else if (call.toolName === 'list_project_files') {
+        try {
+          const data = JSON.parse(call.result || '{}');
+          const count = data.count ?? (data.files ? data.files.length : 0);
+          const sample = (data.files || []).slice(0, 5).join(', ');
+          lines.push(
+            `- 📁 **Файлы проекта:** Найдено файлов: **${count}**${data.pattern ? ` (фильтр: "${data.pattern}")` : ''}${sample ? ` [${sample}...]` : ''}.`
+          );
+        } catch {
+          lines.push(`- 📁 **Файлы проекта:** Список файлов успешно получен.`);
+        }
+      } else if (call.toolName === 'read_project_file') {
+        try {
+          const data = JSON.parse(call.result || '{}');
+          lines.push(
+            `- 📖 **Чтение файла:** Прочитан файл \`${data.filePath || 'файл'}\` (${data.totalLines || 0} строк, диапазон: ${data.startLine || 1}-${data.endLine || data.totalLines || 1}).`
+          );
+        } catch {
+          lines.push(`- 📖 **Чтение файла:** Содержимое файла успешно прочитано.`);
+        }
+      } else if (call.toolName === 'search_project_files') {
+        try {
+          const data = JSON.parse(call.result || '{}');
+          lines.push(
+            `- 🔍 **Поиск по проекту:** Найдено совпадений: **${data.totalMatches ?? (data.matches?.length || 0)}** в **${data.filesCount ?? 0}** файлах (запрос: "${data.query || ''}").`
+          );
+        } catch {
+          lines.push(`- 🔍 **Поиск по проекту:** Поиск по файлам завершен.`);
+        }
+      } else if (call.toolName === 'write_project_file') {
+        try {
+          const data = JSON.parse(call.result || '{}');
+          lines.push(
+            `- ✍️ **Запись файла:** Файл \`${data.filePath}\` успешно ${data.created ? 'создан' : 'обновлен'} (${data.bytesWritten || 0} байт).`
+          );
+        } catch {
+          lines.push(`- ✍️ **Запись файла:** Файл успешно записан на диск.`);
+        }
+      } else if (call.toolName === 'patch_project_file') {
+        try {
+          const data = JSON.parse(call.result || '{}');
+          lines.push(
+            `- 🩹 **Патч файла:** Файл \`${data.filePath}\` успешно точечно обновлен.`
+          );
+        } catch {
+          lines.push(`- 🩹 **Патч файла:** Изменения успешно применены.`);
+        }
+      } else if (call.toolName === 'get_file_diff') {
+        try {
+          const data = JSON.parse(call.result || '{}');
+          lines.push(
+            `- 🔄 **Git Diff:** Получен diff изменений (${data.filePath || 'репозиторий'}).`
+          );
+          if (data.diff) {
+            lines.push(``, `\`\`\`diff`, data.diff, `\`\`\``, ``);
+          }
+        } catch {
+          lines.push(`- 🔄 **Git Diff:** ${call.result || 'Diff получен'}`);
         }
       }
     }
@@ -3671,12 +3804,42 @@ Do NOT use markdown code fences. Pure JSON only.`,
           }
         }
 
+        // Check if user's goal involves multi-step file operations
+        const originalUserGoal = trimmedInput;
+        const wantsFileCreation =
+          /(создай|напиши|запиши|добавь|сгенерируй|write|create).*(файл|adr|документ|\.md|\.kt|\.ts|\.json)/i.test(originalUserGoal) ||
+          /ADR-\d+/i.test(originalUserGoal);
+        const wantsDiff = /(дифф|diff|покажи diff|git diff)/i.test(originalUserGoal);
+        const hasWrittenFile = executedCalls.some(
+          (c) => (c.toolName === 'write_project_file' || c.toolName === 'patch_project_file') && !c.isError
+        );
+        const hasGotDiff = executedCalls.some(
+          (c) => c.toolName === 'get_file_diff' && !c.isError
+        );
+
         // Send results back to LLM to formulate synthesized user-facing response or next pipeline step
         let promptInstruction = '';
         if (hasCompletedSaveToFile) {
           promptInstruction = `[ОТЧЕТ УСПЕШНО СОХРАНЕН НА ДИСК]: Файл отчета успешно записан. Пайплайн завершен!\nВНИМАНИЕ: Больше НЕ вызывай инструменты (<mcp_call> строго запрещены).\nПожалуйста, сформируй подробный, красивый и полезный итоговый ответ для пользователя на русском языке: опиши подобранный товар/отчет, его характеристики и подтверди сохранение файла.`;
+        } else if (wantsFileCreation && !hasWrittenFile) {
+          promptInstruction = `[РЕЗУЛЬТАТЫ ВЫПОЛНЕНИЯ MCP-ИНСТРУМЕНТОВ]:\n${toolResultsText}\n\n` +
+            `ЦЕЛЬ ПОЛЬЗОВАТЕЛЯ: "${originalUserGoal}"\n` +
+            `ВАЖНОЕ УКАЗАНИЕ: Ты выполнил только предварительные шаги. Пользователь явно просил СОЗДАТЬ/ИЗМЕНИТЬ файл проекта!\n` +
+            `НЕ останавливайся и НЕ отвечай просто текстом прямо сейчас.\n` +
+            `Если ты уже изучил файлы проекта (или нашел существующие ADR), СЛЕДУЮЩИМ ШАГОМ вызови <mcp_call name="write_project_file"> с полным содержимым файла.\n` +
+            `Если нужно предварительно изучить конкретный файл-образец, вызови <mcp_call name="read_project_file">.\n` +
+            `Формат создания файла:\n` +
+            `<mcp_call name="write_project_file">{"filePath": "относительный_путь", "content": "полный_текст_файла"}</mcp_call>`;
+        } else if (wantsDiff && !hasGotDiff) {
+          promptInstruction = `[РЕЗУЛЬТАТЫ ВЫПОЛНЕНИЯ MCP-ИНСТРУМЕНТОВ]:\n${toolResultsText}\n\n` +
+            `ЦЕЛЬ ПОЛЬЗОВАТЕЛЯ: "${originalUserGoal}"\n` +
+            `ВАЖНОЕ УКАЗАНИЕ: Файл записан на диск, но пользователь также просил ПОКАЗАТЬ GIT DIFF!\n` +
+            `СЛЕДУЮЩИМ ШАГОМ вызови инструмент <mcp_call name="get_file_diff">{"filePath": "..."}</mcp_call>, чтобы получить сделанные изменения и показать их пользователю. Не завершай работу, пока diff не получен!`;
         } else {
-          promptInstruction = `[MCP TOOLS EXECUTION RESULTS]:\n${toolResultsText}\n\nПожалуйста, сформируй понятный, полезный и структурированный ответ для пользователя на естественном языке на основе полученных данных из MCP-инструментов.\nЕсли для продолжения или завершения задачи требуются следующие шаги (например, чтение других файлов, поиск, создание/патч файла, получение git diff или следующий инструмент), выведи <mcp_call name="...">...</mcp_call>.\nНЕ выводи повторно технические теги вызова (вроде <|tool_call_start|> или <mcp_call>), если все действия выполнены — отвечай прямо по сути для пользователя, упомянув проверенные/измененные файлы и результаты.`;
+          promptInstruction = `[MCP TOOLS EXECUTION RESULTS]:\n${toolResultsText}\n\n` +
+            `Исходный запрос пользователя: "${originalUserGoal}"\n` +
+            `Если для продолжения или завершения задачи требуются следующие шаги (например, чтение других файлов, поиск, создание/патч файла, получение git diff или следующий инструмент), выведи <mcp_call name="...">...</mcp_call>.\n` +
+            `Если ВСЕ задачи пользователя выполнены (файлы прочитаны, созданы/изменены, diff получен при необходимости) — сформируй понятный, полезный и структурированный итоговый ответ для пользователя на естественном языке, подробно описав выполненные действия и приведя результат.`;
         }
 
         const synthesisPrompt = [
@@ -3738,6 +3901,61 @@ Do NOT use markdown code fences. Pure JSON only.`,
 
           const nextCalls = this.parseMcpCalls(currentContent);
           if (nextCalls.length === 0) {
+            // Autonomous Goal Enforcer: check if required goals are still unfulfilled
+            if (wantsFileCreation && !hasWrittenFile && turnCount < MAX_MCP_TURNS - 1) {
+              console.log('[Agent] Goal Enforcer: file creation requested but not yet executed. Nudging model...');
+              turnCount++;
+              const nudgePrompt = [
+                ...intermediateHistory,
+                { role: 'assistant', content: currentContent },
+                {
+                  role: 'user',
+                  content: `[НАПОМИНАНИЕ О ЦЕЛИ ЗАДАЧИ]: Ты еще не создал требуемый файл! Запрос пользователя: "${originalUserGoal}".\n` +
+                    `Пожалуйста, немедленно сформируй полное содержание файла и вызови инструмент write_project_file:\n` +
+                    `<mcp_call name="write_project_file">{"filePath": "...", "content": "..."}</mcp_call>`,
+                },
+              ];
+              const nudgeRes = await this.callLLM(
+                nudgePrompt,
+                undefined,
+                undefined,
+                this.activeAbortController.signal
+              );
+              totalCompletionTokens += nudgeRes.completionTokens;
+              totalTokens += nudgeRes.completionTokens;
+              currentContent = nudgeRes.content;
+              intermediateHistory = nudgePrompt;
+              const nudgeCalls = this.parseMcpCalls(currentContent);
+              if (nudgeCalls.length > 0) {
+                continue; // Continue loop to execute write_project_file!
+              }
+            } else if (wantsDiff && !hasGotDiff && hasWrittenFile && turnCount < MAX_MCP_TURNS - 1) {
+              console.log('[Agent] Goal Enforcer: git diff requested but not yet retrieved. Nudging model...');
+              turnCount++;
+              const nudgePrompt = [
+                ...intermediateHistory,
+                { role: 'assistant', content: currentContent },
+                {
+                  role: 'user',
+                  content: `[НАПОМИНАНИЕ О ЦЕЛИ ЗАДАЧИ]: Файл записан, но пользователь явно просил показать GIT DIFF! Пожалуйста, вызови:\n` +
+                    `<mcp_call name="get_file_diff">{"filePath": "..."}</mcp_call>`,
+                },
+              ];
+              const nudgeRes = await this.callLLM(
+                nudgePrompt,
+                undefined,
+                undefined,
+                this.activeAbortController.signal
+              );
+              totalCompletionTokens += nudgeRes.completionTokens;
+              totalTokens += nudgeRes.completionTokens;
+              currentContent = nudgeRes.content;
+              intermediateHistory = nudgePrompt;
+              const nudgeCalls = this.parseMcpCalls(currentContent);
+              if (nudgeCalls.length > 0) {
+                continue; // Continue loop to execute get_file_diff!
+              }
+            }
             break;
           }
         } catch (synthErr) {
@@ -3756,9 +3974,10 @@ Do NOT use markdown code fences. Pure JSON only.`,
             ...intermediateHistory,
             {
               role: 'user',
-              content: `[ЗАДАЧА ЗАВЕРШЕНА]: Все операции на MCP-серверах успешно выполнены.\n` +
+              content: `[ЗАДАЧА ЗАВЕРШЕНА]: Все необходимые операции на MCP-серверах успешно выполнены.\n` +
                 `СТРОГО ЗАПРЕЩЕНО вызывать инструменты (<mcp_call> использовать нельзя!).\n` +
-                `Напиши развернутый и понятный итоговый ответ для пользователя на русском языке: расскажи о подобранном товаре, его характеристиках, наличии, рассчитанной доставке и подтверди сохранение отчета в файл.`,
+                `Сформируй развернутый, структурированный и понятный итоговый ответ для пользователя на русском языке по его запросу: "${trimmedInput}". ` +
+                `Подробно расскажи о проделанной работе, изученных и созданных/измененных файлах, принятых архитектурных решениях и продемонстрируй полученный git diff или итоговый результат.`,
             },
           ];
           const forceRes = await this.callLLM(

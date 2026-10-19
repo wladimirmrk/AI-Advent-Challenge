@@ -324,7 +324,7 @@ export function createFilesMcpServer(projectRoot: string = DEFAULT_PROJECT_PATH)
     // 2. read_project_file
     if (name === 'read_project_file') {
       try {
-        const rawFilePath = String(args?.filePath || '').trim();
+        const rawFilePath = String(args?.filePath || args?.path || args?.file || '').trim();
         if (!rawFilePath) {
           return {
             content: [{ type: 'text', text: 'Ошибка: параметр "filePath" обязателен.' }],
@@ -479,8 +479,17 @@ export function createFilesMcpServer(projectRoot: string = DEFAULT_PROJECT_PATH)
     // 4. write_project_file
     if (name === 'write_project_file') {
       try {
-        const rawFilePath = String(args?.filePath || '').trim();
-        const content = typeof args?.content === 'string' ? args.content : '';
+        const rawFilePath = String(args?.filePath || args?.path || args?.file || '').trim();
+        const content =
+          typeof args?.content === 'string'
+            ? args.content
+            : typeof args?.text === 'string'
+            ? args.text
+            : typeof args?.body === 'string'
+            ? args.body
+            : args?.content !== undefined
+            ? String(args.content)
+            : '';
         const overwrite = args?.overwrite !== false;
 
         if (!rawFilePath) {
@@ -544,7 +553,7 @@ export function createFilesMcpServer(projectRoot: string = DEFAULT_PROJECT_PATH)
     // 5. patch_project_file
     if (name === 'patch_project_file') {
       try {
-        const rawFilePath = String(args?.filePath || '').trim();
+        const rawFilePath = String(args?.filePath || args?.path || args?.file || '').trim();
         const targetContent = typeof args?.targetContent === 'string' ? args.targetContent : '';
         const replacementContent =
           typeof args?.replacementContent === 'string' ? args.replacementContent : '';
@@ -615,16 +624,20 @@ export function createFilesMcpServer(projectRoot: string = DEFAULT_PROJECT_PATH)
     // 6. get_file_diff
     if (name === 'get_file_diff') {
       try {
-        const rawFilePath = args?.filePath ? String(args.filePath).trim() : '';
+        const rawFilePath = (args?.filePath || args?.path || args?.file)
+          ? String(args.filePath || args.path || args.file).trim()
+          : '';
         const staged = Boolean(args?.staged);
 
         const gitArgs = ['-C', projectRoot, 'diff'];
         if (staged) gitArgs.push('--cached');
 
+        let resolvedPath = '';
+        let relPath = '';
         if (rawFilePath) {
-          const resolved = resolveSafePath(projectRoot, rawFilePath);
-          const rel = path.relative(projectRoot, resolved).replace(/\\/g, '/');
-          gitArgs.push('--', rel);
+          resolvedPath = resolveSafePath(projectRoot, rawFilePath);
+          relPath = path.relative(projectRoot, resolvedPath).replace(/\\/g, '/');
+          gitArgs.push('--', relPath);
         }
 
         const { stdout: diffStdout } = await execFileAsync('git', gitArgs, {
@@ -645,7 +658,23 @@ export function createFilesMcpServer(projectRoot: string = DEFAULT_PROJECT_PATH)
           .filter(Boolean);
 
         const changedFiles = statusLines.map((l) => l.substring(3).trim());
-        const hasChanges = diffStdout.trim().length > 0 || statusLines.length > 0;
+        let effectiveDiff = diffStdout.trim();
+
+        // If standard git diff is empty for a specific file, but the file exists on disk (e.g. untracked new file)
+        if (!effectiveDiff && rawFilePath && resolvedPath && fs.existsSync(resolvedPath)) {
+          const fileContent = fs.readFileSync(resolvedPath, 'utf8');
+          const fileLines = fileContent.split(/\r?\n/);
+          effectiveDiff = [
+            `diff --git a/${relPath} b/${relPath}`,
+            `new file mode 100644`,
+            `--- /dev/null`,
+            `+++ b/${relPath}`,
+            `@@ -0,0 +1,${fileLines.length} @@`,
+            ...fileLines.map((l) => `+${l}`),
+          ].join('\n');
+        }
+
+        const hasChanges = effectiveDiff.length > 0 || statusLines.length > 0;
 
         return {
           content: [
@@ -655,9 +684,14 @@ export function createFilesMcpServer(projectRoot: string = DEFAULT_PROJECT_PATH)
                 {
                   success: true,
                   hasChanges,
+                  filePath: relPath || rawFilePath || undefined,
                   changedFiles,
                   staged,
-                  diff: diffStdout.trim() || (statusLines.length > 0 ? `Untracked / staged files:\n${statusStdout.trim()}` : 'No changes detected (working tree clean).'),
+                  diff:
+                    effectiveDiff ||
+                    (statusLines.length > 0
+                      ? `Untracked / staged files:\n${statusStdout.trim()}`
+                      : 'No changes detected (working tree clean).'),
                 },
                 null,
                 2
