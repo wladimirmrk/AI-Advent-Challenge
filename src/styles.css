@@ -7277,3 +7277,546 @@ input:checked + .slider:before {
   border: 1px dashed var(--border-color, rgba(255, 255, 255, 0.1));
   border-radius: 8px;
 }
+
+/* ==========================================================================
+   Stitch to Compose Feature Styles
+   ========================================================================== */
+
+.stitch-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.18), rgba(168, 85, 247, 0.18));
+  border: 1px solid rgba(129, 140, 248, 0.4);
+  color: #c7d2fe;
+  transition: all 0.2s ease;
+}
+
+.stitch-nav-btn:hover {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.3), rgba(168, 85, 247, 0.3));
+  border-color: rgba(165, 180, 252, 0.6);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.stitch-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.stitch-modal-container {
+  background: #18191e;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  width: 100%;
+  max-width: 960px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.6);
+  color: #f1f5f9;
+  overflow: hidden;
+}
+
+.stitch-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.stitch-header-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(99, 102, 241, 0.15);
+  color: #818cf8;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+}
+
+.stitch-title {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.stitch-subtitle {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: #94a3b8;
+}
+
+.stitch-close-btn {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 8px;
+  transition: all 0.15s ease;
+}
+
+.stitch-close-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.stitch-modal-body {
+  padding: 20px 24px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.stitch-form-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.stitch-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stitch-field-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.stitch-field-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #cbd5e1;
+}
+
+.stitch-btn-secondary {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #94a3b8;
+  font-size: 11.5px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.stitch-btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #f1f5f9;
+}
+
+.stitch-textarea {
+  width: 100%;
+  background: #111216;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  color: #e2e8f0;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 12.5px;
+  padding: 12px;
+  resize: vertical;
+  line-height: 1.45;
+  box-sizing: border-box;
+}
+
+.stitch-textarea:focus {
+  outline: none;
+  border-color: #6366f1;
+}
+
+.stitch-project-input-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.stitch-text-input {
+  flex: 1;
+  background: #111216;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  color: #e2e8f0;
+  font-size: 13px;
+  padding: 10px 14px;
+}
+
+.stitch-text-input:focus {
+  outline: none;
+  border-color: #6366f1;
+}
+
+.stitch-btn-generate {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #4f46e5, #7c3aed);
+  color: #ffffff;
+  font-weight: 600;
+  font-size: 13.5px;
+  border: none;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s ease;
+}
+
+.stitch-btn-generate:hover:not(:disabled) {
+  opacity: 0.92;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);
+}
+
+.stitch-btn-generate:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.stitch-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: stitch-spin 0.8s linear infinite;
+}
+
+@keyframes stitch-spin {
+  to { transform: rotate(360deg); }
+}
+
+.stitch-error-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+  font-size: 13px;
+}
+
+.stitch-results-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 6px;
+}
+
+.stitch-summary-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  background: #111216;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 10px 16px;
+  border-radius: 10px;
+}
+
+.stitch-summary-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.summary-label {
+  color: #94a3b8;
+}
+
+.summary-val {
+  font-weight: 600;
+  color: #f1f5f9;
+}
+
+.summary-val.accent-green {
+  color: #34d399;
+}
+
+.stitch-accordion {
+  background: #111216;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.stitch-accordion-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: transparent;
+  border: none;
+  color: #e2e8f0;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.stitch-accordion-header:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.accordion-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.accordion-title {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.accordion-badge {
+  font-size: 11px;
+  color: #94a3b8;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+
+.stitch-accordion-content {
+  padding: 0 16px 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.stitch-tokens-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+
+.token-pill {
+  display: inline-block;
+  margin-right: 6px;
+  margin-bottom: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #e2e8f0;
+}
+
+.stitch-code-block {
+  margin: 0;
+  background: #090a0d;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 12px;
+  color: #e2e8f0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  overflow-x: auto;
+  line-height: 1.45;
+}
+
+.stitch-code-block.json-view {
+  max-height: 240px;
+}
+
+.stitch-code-block.small {
+  max-height: 140px;
+}
+
+.stitch-rag-query-box {
+  margin: 12px 0 10px;
+  font-size: 12.5px;
+  color: #cbd5e1;
+  background: rgba(99, 102, 241, 0.08);
+  padding: 8px 12px;
+  border-radius: 6px;
+  border-left: 3px solid #6366f1;
+}
+
+.stitch-chunks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.stitch-chunk-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.chunk-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.chunk-symbol {
+  font-weight: 700;
+  color: #60a5fa;
+}
+
+.chunk-file {
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.chunk-score {
+  margin-left: auto;
+  font-size: 11px;
+  color: #34d399;
+}
+
+.stitch-plan-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+  font-size: 12.5px;
+}
+
+.stitch-plan-table th,
+.stitch-plan-table td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.stitch-plan-table th {
+  color: #94a3b8;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.status-badge.reused {
+  background: rgba(52, 211, 153, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(52, 211, 153, 0.3);
+}
+
+.status-badge.new {
+  background: rgba(96, 165, 250, 0.15);
+  color: #60a5fa;
+  border: 1px solid rgba(96, 165, 250, 0.3);
+}
+
+.reason-col {
+  color: #94a3b8;
+  font-size: 11.5px;
+}
+
+.stitch-output-card {
+  background: #111216;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+.stitch-output-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.output-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.output-check-icon {
+  color: #34d399;
+}
+
+.output-filename {
+  font-size: 14px;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.stitch-btn-copy {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #f1f5f9;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.stitch-btn-copy:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.reused-badges-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+
+.reused-label {
+  color: #94a3b8;
+}
+
+.reused-pill {
+  background: rgba(52, 211, 153, 0.15);
+  border: 1px solid rgba(52, 211, 153, 0.35);
+  color: #34d399;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 11.5px;
+}
+
+.stitch-code-block.full-kotlin {
+  max-height: 480px;
+  font-size: 12.5px;
+}
+

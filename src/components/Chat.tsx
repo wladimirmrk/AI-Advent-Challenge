@@ -15,7 +15,8 @@ import { McpModal } from './McpModal';
 import { ModelParamsModal } from './ModelParamsModal';
 import { ErrorBoundary } from './ErrorBoundary';
 import { chatManagerInstance } from '../agent/ChatManager';
-import { Bot, Settings as SettingsIcon, Cpu, User, SlidersHorizontal } from 'lucide-react';
+import { Bot, Settings as SettingsIcon, Cpu, User, SlidersHorizontal, Sparkles } from 'lucide-react';
+import { StitchToComposeModal } from '../features/stitch-to-compose';
 
 interface ChatProps {
   agent?: Agent;
@@ -28,6 +29,7 @@ export const Chat: React.FC<ChatProps> = ({
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isModelParamsOpen, setIsModelParamsOpen] = useState(false);
   const [isMcpModalOpen, setIsMcpModalOpen] = useState(false);
+  const [isStitchModalOpen, setIsStitchModalOpen] = useState(false);
   const [isFactsDrawerOpen, setIsFactsDrawerOpen] = useState(false);
   const [isMemoryHubOpen, setIsMemoryHubOpen] = useState(false);
   const [memoryHubTab, setMemoryHubTab] = useState<'working' | 'short_term' | 'long_term' | 'invariants'>('invariants');
@@ -288,8 +290,19 @@ export const Chat: React.FC<ChatProps> = ({
               setIsMemoryHubOpen(!isMemoryHubOpen);
             }}
             onOpenMcp={() => setIsMcpModalOpen(true)}
+            onOpenStitch={() => setIsStitchModalOpen(true)}
             onClearHistory={handleClearHistory}
           />
+
+          <button
+            type="button"
+            className="stitch-nav-btn"
+            onClick={() => setIsStitchModalOpen(true)}
+            title="Google Stitch HTML → Jetpack Compose UI"
+          >
+            <Sparkles size={14} />
+            <span>Design → Compose</span>
+          </button>
 
           <button
             type="button"
@@ -425,6 +438,15 @@ export const Chat: React.FC<ChatProps> = ({
             chatManagerInstance.getChats().find((c) => c.id === agent.getChatId())?.title ||
             'Текущий диалог'
           }
+          agent={agent}
+        />
+      </ErrorBoundary>
+
+      {/* Stitch to Compose Modal */}
+      <ErrorBoundary fallbackTitle="Ошибка при открытии генератора Compose UI">
+        <StitchToComposeModal
+          isOpen={isStitchModalOpen}
+          onClose={() => setIsStitchModalOpen(false)}
           agent={agent}
         />
       </ErrorBoundary>

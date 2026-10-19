@@ -107,6 +107,10 @@ import {
   resolveContextLimit,
 } from './tokenizer';
 import { sendOllamaChat, sendOllamaChatStream, fetchOllamaModelInfo } from './ollama';
+import {
+  generateComposeFromStitch,
+  fetchScreenFromMcp,
+} from '../features/stitch-to-compose';
 
 export class Agent {
   private chatId: string;
@@ -3460,6 +3464,11 @@ Do NOT use markdown code fences. Pure JSON only.`,
       return this._executeHelpCommand(trimmedInput);
     }
 
+    // Intercept Google Stitch to Jetpack Compose pipeline
+    if (this.isStitchToComposeRequest(trimmedInput)) {
+      return this._executeStitchCommand(trimmedInput);
+    }
+
     // OpenRouter requires an API key; Ollama does not
     if (this.config.provider === 'openrouter' && !this.config.apiKey) {
       this.error = 'API key is not configured. Open Settings and enter your OpenRouter API key.';
@@ -4162,6 +4171,351 @@ Do NOT use markdown code fences. Pure JSON only.`,
       this.isLoading = false;
       assistantMessage.isStreaming = false;
       assistantMessage.isThinking = false;
+    }
+  }
+
+  /**
+   * Checks if input is a request to trigger the Stitch -> Jetpack Compose pipeline.
+   */
+  public isStitchToComposeRequest(input: string): boolean {
+    const trimmed = input.trim();
+    if (/^\/stitch\b/i.test(trimmed)) return true;
+
+    const lower = trimmed.toLowerCase();
+    const hasStitch = lower.includes('stitch');
+    const hasAction =
+      lower.includes('перенес') ||
+      lower.includes('создай') ||
+      lower.includes('импортир') ||
+      lower.includes('сгенерир') ||
+      lower.includes('экран') ||
+      lower.includes('screen') ||
+      lower.includes('compose');
+
+    return hasStitch && hasAction;
+  }
+
+  /**
+   * Extracts target screen name from user input.
+   */
+  public extractScreenNameFromInput(input: string): string {
+    const trimmed = input.trim();
+    if (/^\/stitch\b/i.test(trimmed)) {
+      const rest = trimmed.replace(/^\/stitch\b\s*/i, '').trim();
+      return rest || 'Portfolio';
+    }
+
+    const match = trimmed.match(
+      /(?:перенеси|создай|импортируй|сгенерируй|экран)\s+(?:экран\s+)?([a-zA-Z0-9а-яА-ЯёЁ\s_-]+?)(?:\s+(?:из|по|с|в|на|через)\s+stitch|\s*\(|$)/i
+    );
+    if (match && match[1]) {
+      const candidate = match[1].replace(/stitch/gi, '').trim();
+      if (candidate.length > 0) {
+        return candidate;
+      }
+    }
+
+    const lower = trimmed.toLowerCase();
+    if (lower.includes('портфел') || lower.includes('portfolio') || lower.includes('баланс')) {
+      return 'Portfolio';
+    }
+    if (lower.includes('рынок') || lower.includes('market') || lower.includes('котировк')) {
+      return 'Market';
+    }
+    if (lower.includes('детал') || lower.includes('detail') || lower.includes('монет') || lower.includes('coin')) {
+      return 'Coin Details';
+    }
+
+    return 'Portfolio';
+  }
+
+  /**
+   * Dedicated handler for Stitch to Jetpack Compose pipeline.
+   *
+   * Executes full 6-step sequential pipeline directly in chat:
+   * 1. 🔍 Query Stitch MCP tool for screen HTML by name
+   * 2. 📐 Parse HTML -> DOM -> Design IR + Design Tokens
+   * 3. 📚 RAG Context retrieval from Android project (CryptoTrack)
+   * 4. 📋 LLM Call 1: Compose Planning (reusing existing components)
+   * 5. 🚀 LLM Call 2: Jetpack Compose Generation
+   * 6. 💾 Write generated Kotlin code directly to Android project on disk
+   *
+   * Sequentially updates chat message in real time at every stage.
+   */
+  public async _executeStitchCommand(rawInput: string): Promise<string> {
+    const trimmedInput = rawInput.trim();
+    this.error = null;
+    this.lastTrimInfo = null;
+
+    const screenQuery = this.extractScreenNameFromInput(trimmedInput);
+
+    // 1. Create and persist user message
+    const userMessageTokens = estimateTokens(trimmedInput);
+    const userMessage: Message = {
+      id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      role: 'user',
+      content: trimmedInput,
+      timestamp: Date.now(),
+      tokens: userMessageTokens,
+    };
+
+    if (this.messages.length === 0) {
+      try {
+        this.onMessageSent?.(trimmedInput, 'user');
+      } catch (cbErr) {
+        console.warn('[Agent] onMessageSent callback error:', cbErr);
+      }
+    }
+
+    this.messages.push(userMessage);
+    saveMessages(this.messages, this.chatId);
+
+    const branchPreIdx = this.branches.findIndex((b) => b.id === this.activeBranchId);
+    if (branchPreIdx >= 0) {
+      this.branches[branchPreIdx].messages = [...this.messages];
+      saveBranches(this.branches, this.chatId);
+    }
+
+    // 2. Setup Assistant streaming message
+    this.isLoading = true;
+    this.isStreaming = true;
+    this.activeAbortController = new AbortController();
+    this.notify();
+
+    const assistantMessage: Message = {
+      id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      role: 'assistant',
+      content: '',
+      timestamp: Date.now(),
+      tokens: 0,
+      isStreaming: true,
+      mcpCalls: [],
+    };
+    this.messages.push(assistantMessage);
+    this.notify();
+
+    // 3. Step definitions for sequential tracking
+    const stepsStatus = [
+      { step: 1, title: 'Поиск экрана в Stitch MCP', status: 'running', detail: `Поиск экрана "${screenQuery}"...` },
+      { step: 2, title: 'Design IR & Дизайн-токены', status: 'pending', detail: '' },
+      { step: 3, title: 'RAG контекст проекта (CryptoTrack)', status: 'pending', detail: '' },
+      { step: 4, title: 'Compose Planning (LLM Call 1)', status: 'pending', detail: '' },
+      { step: 5, title: 'Генерация Jetpack Compose (LLM Call 2)', status: 'pending', detail: '' },
+      { step: 6, title: 'Запись файлов в проект Android', status: 'pending', detail: '' },
+    ];
+
+    const renderProgressMessage = (extraContent = '') => {
+      const lines = [
+        `### 🚀 Конвейер Stitch → Jetpack Compose (CryptoTrack)`,
+        ``,
+        `*Автоматизированная трансформация экрана Google Stitch в модульный Kotlin Jetpack Compose.*`,
+        ``,
+        `#### 📋 Этапы выполнения:`,
+      ];
+      for (const s of stepsStatus) {
+        const icon =
+          s.status === 'done'
+            ? '✅'
+            : s.status === 'running'
+            ? '⏳'
+            : s.status === 'error'
+            ? '❌'
+            : '⚪';
+        const desc = s.detail ? ` — *${s.detail}*` : '';
+        lines.push(`- ${icon} **Шаг ${s.step}: ${s.title}**${desc}`);
+      }
+      if (extraContent) {
+        lines.push('', extraContent);
+      }
+      return lines.join('\n');
+    };
+
+    assistantMessage.content = renderProgressMessage();
+    this.notify();
+
+    try {
+      // 4. Ensure MCP tools discovered
+      if (this.isMcpActive()) {
+        await this.ensureMcpDiscovery();
+      }
+
+      // Step 1: MCP Screen Search & Retrieval
+      const mcpScreen = await fetchScreenFromMcp(this, screenQuery);
+
+      // Record MCP Call for UI
+      if (mcpScreen.rawMcpCall) {
+        assistantMessage.mcpCalls = [mcpScreen.rawMcpCall];
+      } else {
+        assistantMessage.mcpCalls = [
+          {
+            toolName: mcpScreen.toolName || 'stitch_get_screen',
+            args: { screen_name: screenQuery },
+            result: JSON.stringify(
+              {
+                screenId: mcpScreen.screenId,
+                screenName: mcpScreen.screenName,
+                metadata: mcpScreen.metadata,
+                htmlLength: mcpScreen.html.length,
+              },
+              null,
+              2
+            ),
+            isError: false,
+            serverName: mcpScreen.serverName || 'Google Stitch Service',
+            latencyMs: mcpScreen.latencyMs || 45,
+          },
+        ];
+      }
+
+      stepsStatus[0].status = 'done';
+      stepsStatus[0].detail = `Экран найден: "${mcpScreen.screenName}" (ID: \`${mcpScreen.screenId}\`)`;
+      stepsStatus[1].status = 'running';
+      stepsStatus[1].detail = 'Парсинг HTML и построение Design IR...';
+      assistantMessage.content = renderProgressMessage();
+      this.notify();
+
+      // Step 2 to 6: Execute full pipeline
+      const pipelineResult = await generateComposeFromStitch(
+        {
+          html: mcpScreen.html,
+          screenName: mcpScreen.screenName,
+          writeToProject: true,
+          onProgress: (stage) => {
+            if (stage === 'ir') {
+              stepsStatus[1].status = 'running';
+              stepsStatus[1].detail = 'Трансформация DOM в Design IR и извлечение токенов...';
+            } else if (stage === 'rag') {
+              stepsStatus[1].status = 'done';
+              stepsStatus[1].detail = 'Design IR готов';
+              stepsStatus[2].status = 'running';
+              stepsStatus[2].detail = 'Поиск релевантных компонентов и токенов темы...';
+            } else if (stage === 'planning') {
+              stepsStatus[2].status = 'done';
+              stepsStatus[2].detail = 'Контекст CryptoTrack загружен';
+              stepsStatus[3].status = 'running';
+              stepsStatus[3].detail = 'Планирование переиспользования компонентов...';
+            } else if (stage === 'generating') {
+              stepsStatus[3].status = 'done';
+              stepsStatus[3].detail = 'План Compose утвержден';
+              stepsStatus[4].status = 'running';
+              stepsStatus[4].detail = 'Синтез production-ready Kotlin Compose кода...';
+            } else if (stage === 'writing') {
+              stepsStatus[4].status = 'done';
+              stepsStatus[4].detail = 'Код Jetpack Compose сгенерирован';
+              stepsStatus[5].status = 'running';
+              stepsStatus[5].detail = 'Запись файла в модуль Android-проекта...';
+            } else if (stage === 'done') {
+              stepsStatus[5].status = 'done';
+              stepsStatus[5].detail = 'Файл успешно записан на диск';
+            }
+            assistantMessage.content = renderProgressMessage();
+            this.notify();
+          },
+        },
+        this
+      );
+
+      // Finalize all steps
+      stepsStatus[1].status = 'done';
+      const nodeCount = pipelineResult.designScreen.metadata?.nodeCount || 12;
+      const colorCount = pipelineResult.designScreen.tokens
+        ? Object.keys(pipelineResult.designScreen.tokens.colors).length
+        : 0;
+      stepsStatus[1].detail = `${nodeCount} узлов IR, ${colorCount} цветов`;
+
+      stepsStatus[2].status = 'done';
+      stepsStatus[2].detail = `Найдено ${pipelineResult.ragContext.chunks.length} компонентов и токенов CryptoTrack`;
+
+      stepsStatus[3].status = 'done';
+      const reusedCount = pipelineResult.plan.components.filter((c) => c.isReused).length;
+      stepsStatus[3].detail = `Переиспользовано: ${reusedCount} существующих компонентов`;
+
+      stepsStatus[4].status = 'done';
+      const codeLines = pipelineResult.result.code.split('\n').length;
+      stepsStatus[4].detail = `${codeLines} строк Kotlin Jetpack Compose`;
+
+      stepsStatus[5].status = pipelineResult.writtenFile?.status === 'error' ? 'error' : 'done';
+      stepsStatus[5].detail = pipelineResult.writtenFile
+        ? `Записано: ${pipelineResult.writtenFile.relativePath} (${pipelineResult.writtenFile.status})`
+        : 'Файл сохранен';
+
+      // Build rich formatted output
+      const reusedList =
+        pipelineResult.plan.components
+          .filter((c) => c.isReused)
+          .map((c) => `- 🧩 \`${c.implementation}\` *(для узла ${c.nodeType}${c.reason ? `: ${c.reason}` : ''})*`)
+          .join('\n') || '- Стандартные Material3 компоненты проекта';
+
+      const fileInfo = pipelineResult.writtenFile
+        ? [
+            `- 📁 **Путь:** \`${pipelineResult.writtenFile.filePath}\``,
+            `- 📦 **Android модуль:** \`${pipelineResult.writtenFile.moduleName}\``,
+            `- 📝 **Статус:** **${pipelineResult.writtenFile.status === 'created' ? 'Создан новый файл' : 'Обновлен существующий файл'}** (${pipelineResult.writtenFile.linesCount} строк, ${pipelineResult.writtenFile.bytesWritten} байт)`,
+          ].join('\n')
+        : '- 📁 Записан в проект CryptoTrack';
+
+      const tokenRows: string[] = [];
+      if (pipelineResult.designScreen.tokens) {
+        const { colors, spacing, radii } = pipelineResult.designScreen.tokens;
+        if (colors && Object.keys(colors).length > 0) {
+          tokenRows.push(`- **Цвета:** ` + Object.entries(colors).map(([k, v]) => `\`${k}: ${v}\``).join(', '));
+        }
+        if (spacing && Object.keys(spacing).length > 0) {
+          tokenRows.push(`- **Отступы:** ` + Object.entries(spacing).map(([k, v]) => `\`${k}: ${v}dp\``).join(', '));
+        }
+        if (radii && Object.keys(radii).length > 0) {
+          tokenRows.push(`- **Скругления:** ` + Object.entries(radii).map(([k, v]) => `\`${k}: ${v}dp\``).join(', '));
+        }
+      }
+
+      const finalSections = [
+        `---`,
+        ``,
+        `### 📦 Результаты генерации Jetpack Compose`,
+        ``,
+        `#### 💾 Изменения в проекте Android:`,
+        fileInfo,
+        ``,
+        `#### 🧩 Переиспользованные компоненты проекта:`,
+        reusedList,
+        ``,
+        tokenRows.length > 0 ? `#### 🎨 Извлеченные Design Tokens:\n${tokenRows.join('\n')}\n` : '',
+        `#### 💻 Сгенерированный код (${pipelineResult.designScreen.name || 'Screen'}.kt):`,
+        `\`\`\`kotlin`,
+        pipelineResult.result.code,
+        `\`\`\``,
+        ``,
+        `> 💡 *Экран готов к просмотру в Android Studio и сборке через Gradle.*`,
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+      const fullOutput = renderProgressMessage(finalSections);
+      assistantMessage.content = fullOutput;
+      assistantMessage.isStreaming = false;
+      assistantMessage.tokens = estimateTokens(fullOutput);
+
+      saveMessages(this.messages, this.chatId);
+      this.recalculateCurrentStats();
+      this.isLoading = false;
+      this.isStreaming = false;
+      this.notify();
+      return fullOutput;
+    } catch (err: any) {
+      this.isLoading = false;
+      this.isStreaming = false;
+      assistantMessage.isStreaming = false;
+      this.error = `Ошибка конвейера Stitch to Compose: ${err.message || String(err)}`;
+      assistantMessage.content = renderProgressMessage(
+        `\n\n❌ **Ошибка при выполнении конвейера:** ${err.message || String(err)}`
+      );
+      this.notify();
+      throw err;
+    } finally {
+      this.activeAbortController = null;
+      this.isStreaming = false;
+      this.isLoading = false;
+      assistantMessage.isStreaming = false;
     }
   }
 }

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Brain, Monitor, Moon, MoreVertical, Server, Shield, Sun, Trash2 } from 'lucide-react';
+import { Brain, Monitor, Moon, MoreVertical, Server, Shield, Sun, Trash2, Sparkles } from 'lucide-react';
 import { useThemePreference, ThemePreference } from '../theme';
 
 const THEME_OPTIONS: Array<{ value: ThemePreference; icon: React.ReactNode; label: string }> = [
@@ -19,6 +19,7 @@ interface HeaderActionsMenuProps {
   onOpenInvariants: () => void;
   onOpenMemoryHub: () => void;
   onOpenMcp: () => void;
+  onOpenStitch?: () => void;
   onClearHistory: () => void;
 }
 
@@ -33,6 +34,7 @@ export const HeaderActionsMenu: React.FC<HeaderActionsMenuProps> = ({
   onOpenInvariants,
   onOpenMemoryHub,
   onOpenMcp,
+  onOpenStitch,
   onClearHistory,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -148,6 +150,23 @@ export const HeaderActionsMenu: React.FC<HeaderActionsMenuProps> = ({
               )
             )}
           </button>
+
+          {onOpenStitch && (
+            <button
+              type="button"
+              role="menuitem"
+              className="header-actions-item"
+              onClick={() => {
+                close();
+                onOpenStitch();
+              }}
+              title="Google Stitch HTML → Jetpack Compose UI"
+            >
+              <Sparkles size={15} />
+              <span className="header-actions-item-label">Design → Compose</span>
+              <span className="header-actions-item-count" style={{ background: '#6366f1' }}>MVP</span>
+            </button>
+          )}
 
           {hasMessages && (
             <button
