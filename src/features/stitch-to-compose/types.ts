@@ -152,9 +152,36 @@ export interface ProjectFileWriteResult {
   error?: string;
 }
 
+/**
+ * Hardcoded default Google Stitch Project ID for CryptoTrack
+ */
+export const DEFAULT_STITCH_PROJECT_ID = '5377012504763227664';
+
+export interface StitchScreenPipelineInput {
+  projectId?: string;
+  screenName: string;
+  agent: any; // Agent instance
+}
+
+export interface StitchScreenPipelineResult {
+  projectId: string;
+  screenId: string;
+  screenName: string;
+  screenData: unknown;
+  html?: string;
+  metadata?: Record<string, unknown>;
+  toolName?: string;
+  serverName?: string;
+  fromMcp: boolean;
+  latencyMs?: number;
+  rawMcpCalls?: any[];
+}
+
 export interface StitchToComposeOptions {
   html: string;
   screenName?: string;
+  screenId?: string;
+  screenData?: unknown;
   projectId?: string;
   projectPath?: string;
   topK?: number;
@@ -191,3 +218,4 @@ export interface StitchToComposePipelineResult {
     total: number;
   };
 }
+

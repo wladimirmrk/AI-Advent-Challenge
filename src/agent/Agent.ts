@@ -110,6 +110,7 @@ import { sendOllamaChat, sendOllamaChatStream, fetchOllamaModelInfo } from './ol
 import {
   generateComposeFromStitch,
   fetchScreenFromMcp,
+  DEFAULT_STITCH_PROJECT_ID,
 } from '../features/stitch-to-compose';
 
 export class Agent {
@@ -4216,11 +4217,14 @@ Do NOT use markdown code fences. Pure JSON only.`,
     }
 
     const lower = trimmed.toLowerCase();
+    if (lower.includes('market') && (lower.includes('home') || lower.includes('главн'))) {
+      return 'Market Home';
+    }
     if (lower.includes('портфел') || lower.includes('portfolio') || lower.includes('баланс')) {
       return 'Portfolio';
     }
     if (lower.includes('рынок') || lower.includes('market') || lower.includes('котировк')) {
-      return 'Market';
+      return 'Market Overview';
     }
     if (lower.includes('детал') || lower.includes('detail') || lower.includes('монет') || lower.includes('coin')) {
       return 'Coin Details';
@@ -4296,7 +4300,7 @@ Do NOT use markdown code fences. Pure JSON only.`,
 
     // 3. Step definitions for sequential tracking
     const stepsStatus = [
-      { step: 1, title: 'Поиск экрана в Stitch MCP', status: 'running', detail: `Поиск экрана "${screenQuery}"...` },
+      { step: 1, title: 'Получение экрана из Stitch MCP (list_screens)', status: 'running', detail: `Поиск экрана "${screenQuery}"...` },
       { step: 2, title: 'Design IR & Дизайн-токены', status: 'pending', detail: '' },
       { step: 3, title: 'RAG контекст проекта (CryptoTrack)', status: 'pending', detail: '' },
       { step: 4, title: 'Compose Planning (LLM Call 1)', status: 'pending', detail: '' },
@@ -4339,19 +4343,22 @@ Do NOT use markdown code fences. Pure JSON only.`,
         await this.ensureMcpDiscovery();
       }
 
-      // Step 1: MCP Screen Search & Retrieval
-      const mcpScreen = await fetchScreenFromMcp(this, screenQuery);
+      // Step 1: MCP Screen Search & Retrieval via list_screens
+      const mcpScreen = await fetchScreenFromMcp(this, screenQuery, DEFAULT_STITCH_PROJECT_ID);
 
-      // Record MCP Call for UI
-      if (mcpScreen.rawMcpCall) {
+      // Record MCP Calls for UI
+      if (mcpScreen.rawMcpCalls && mcpScreen.rawMcpCalls.length > 0) {
+        assistantMessage.mcpCalls = [...mcpScreen.rawMcpCalls];
+      } else if (mcpScreen.rawMcpCall) {
         assistantMessage.mcpCalls = [mcpScreen.rawMcpCall];
       } else {
         assistantMessage.mcpCalls = [
           {
-            toolName: mcpScreen.toolName || 'stitch_get_screen',
-            args: { screen_name: screenQuery },
+            toolName: mcpScreen.toolName || 'list_screens',
+            args: { projectId: DEFAULT_STITCH_PROJECT_ID },
             result: JSON.stringify(
               {
+                projectId: DEFAULT_STITCH_PROJECT_ID,
                 screenId: mcpScreen.screenId,
                 screenName: mcpScreen.screenName,
                 metadata: mcpScreen.metadata,
@@ -4368,7 +4375,7 @@ Do NOT use markdown code fences. Pure JSON only.`,
       }
 
       stepsStatus[0].status = 'done';
-      stepsStatus[0].detail = `Экран найден: "${mcpScreen.screenName}" (ID: \`${mcpScreen.screenId}\`)`;
+      stepsStatus[0].detail = `Экран найден: "${mcpScreen.screenName}" (ID: \`${mcpScreen.screenId}\`, HTML получен по downloadUrl)`;
       stepsStatus[1].status = 'running';
       stepsStatus[1].detail = 'Парсинг HTML и построение Design IR...';
       assistantMessage.content = renderProgressMessage();
@@ -4379,6 +4386,9 @@ Do NOT use markdown code fences. Pure JSON only.`,
         {
           html: mcpScreen.html,
           screenName: mcpScreen.screenName,
+          screenId: mcpScreen.screenId,
+          projectId: DEFAULT_STITCH_PROJECT_ID,
+          screenData: mcpScreen.screenData,
           writeToProject: true,
           onProgress: (stage) => {
             if (stage === 'ir') {
