@@ -17,10 +17,16 @@ class AppConfig:
     ollama_model: str = os.getenv("OLLAMA_MODEL", "nomic-embed-text")
     vector_dim: int = 768
 
+    allowed_extensions: set = field(
+        default_factory=lambda: {".kt", ".kts", ".xml", ".md"}
+    )
+
     ignore_patterns: list = field(
         default_factory=lambda: [
             "docs/decisions/**",
             "**/docs/decisions/**",
+            "docs/archive/**",
+            "**/docs/archive/**",
             "**/.git/**",
             "**/build/**",
             "**/.gradle/**",

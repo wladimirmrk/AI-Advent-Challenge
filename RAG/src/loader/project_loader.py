@@ -21,8 +21,7 @@ class Document:
 
 
 class ProjectLoader:
-    # Strictly code and Android XML files only (Markdown excluded)
-    DEFAULT_EXTENSIONS = {".kt", ".kts", ".xml"}
+    DEFAULT_EXTENSIONS = {".kt", ".kts", ".xml", ".md"}
     DEFAULT_IGNORE_DIRS = {
         ".git", ".gradle", "build", ".kotlin", ".idea", ".zcode",
         "__pycache__", "gradle/wrapper", "bin", "obj", ".vs"
@@ -30,6 +29,8 @@ class ProjectLoader:
     DEFAULT_IGNORE_PATTERNS = [
         "**/.git/**",
         "**/build/**",
+        "**/docs/decisions/**",
+        "**/docs/archive/**",
         "**/.gradle/**",
         "**/.kotlin/**",
         "**/.idea/**",
@@ -81,6 +82,8 @@ class ProjectLoader:
             return "kotlin"
         elif ext == ".xml":
             return "config"
+        elif ext == ".md":
+            return "markdown"
         return "code"
 
     def load_documents(self, max_docs: Optional[int] = None) -> List[Document]:

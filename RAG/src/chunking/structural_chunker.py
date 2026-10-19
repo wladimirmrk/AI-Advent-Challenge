@@ -19,6 +19,8 @@ class StructuralChunker(BaseChunker):
             return self._chunk_kotlin(doc)
         elif doc.file_type == 'config':
             return self._chunk_config(doc)
+        elif doc.file_type == 'markdown':
+            return self._chunk_markdown(doc)
         else:
             return self._chunk_fallback(doc)
 
@@ -259,3 +261,137 @@ class StructuralChunker(BaseChunker):
         return self._split_oversized_lines(
             doc.content.splitlines(), f'File: {Path(doc.file_path).name}', doc, 1, 0, ''
         )
+
+    def _chunk_markdown(self, doc: Document) -> list:
+        lines = doc.content.splitlines()
+        chunks = []
+        slug = self._slug(doc.relative_path)
+        file_name = Path(doc.file_path).name
+
+        header_re = re.compile(r'^(#{1,6})\s+(.+)$')
+
+        blocks = []
+        cur_lines = []
+        cur_header = file_name
+        cur_start_line = 1
+        headers_stack = []  # list of (level, text)
+        in_code_block = False
+
+        for idx, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                in_code_block = not in_code_block
+
+            m = header_re.match(stripped) if not in_code_block else None
+            if m:
+                level = len(m.group(1))
+                htext = m.group(2).strip()
+
+                # Flush current block if it has content
+                if any(l.strip() for l in cur_lines):
+                    blocks.append((cur_header, cur_lines, cur_start_line, idx - 1))
+                    cur_lines = []
+
+                # Update header hierarchy
+                while headers_stack and headers_stack[-1][0] >= level:
+                    headers_stack.pop()
+                headers_stack.append((level, htext))
+
+                cur_header = " > ".join([file_name] + [h[1] for h in headers_stack])
+                cur_start_line = idx
+                cur_lines.append(line)
+            else:
+                cur_lines.append(line)
+
+        if any(l.strip() for l in cur_lines):
+            blocks.append((cur_header, cur_lines, cur_start_line, len(lines)))
+
+        for blk_section, blk_lines, s_line, e_line in blocks:
+            text = '\n'.join(blk_lines).strip()
+            if not text:
+                continue
+            if len(text) <= self.max_chunk_size:
+                chunks.append(
+                    Chunk(
+                        chunk_id=f'struct_{slug}_{len(chunks):04d}',
+                        content=text,
+                        source=doc.relative_path,
+                        title=file_name,
+                        section=blk_section,
+                        chunk_index=len(chunks),
+                        strategy=self.strategy_name,
+                        metadata={
+                            'start_line': s_line,
+                            'end_line': e_line,
+                            'section': blk_section,
+                            'file_type': 'markdown',
+                            'language': 'md',
+                        }
+                    )
+                )
+            else:
+                sub_chunks = self._split_oversized_markdown(
+                    blk_lines, blk_section, doc, s_line, len(chunks)
+                )
+                chunks.extend(sub_chunks)
+
+        return chunks
+
+    def _split_oversized_markdown(self, lines, section_name, doc, base_line, start_idx):
+        chunks = []
+        slug = self._slug(doc.relative_path)
+        file_name = Path(doc.file_path).name
+        cur_lines = []
+        cur_start = base_line
+
+        for idx, line in enumerate(lines):
+            line_no = base_line + idx
+            test_text = '\n'.join(cur_lines + [line])
+            if len(test_text) > self.max_chunk_size and cur_lines:
+                text = '\n'.join(cur_lines).strip()
+                chunks.append(
+                    Chunk(
+                        chunk_id=f'struct_{slug}_{start_idx + len(chunks):04d}',
+                        content=text,
+                        source=doc.relative_path,
+                        title=file_name,
+                        section=f'{section_name} (Part {len(chunks)+1})',
+                        chunk_index=start_idx + len(chunks),
+                        strategy=self.strategy_name,
+                        metadata={
+                            'start_line': cur_start,
+                            'end_line': line_no - 1,
+                            'section': section_name,
+                            'file_type': 'markdown',
+                            'language': 'md',
+                        }
+                    )
+                )
+                cur_lines = [line]
+                cur_start = line_no
+            else:
+                cur_lines.append(line)
+
+        if cur_lines:
+            text = '\n'.join(cur_lines).strip()
+            if text:
+                chunks.append(
+                    Chunk(
+                        chunk_id=f'struct_{slug}_{start_idx + len(chunks):04d}',
+                        content=text,
+                        source=doc.relative_path,
+                        title=file_name,
+                        section=f'{section_name} (Part {len(chunks)+1})' if chunks else section_name,
+                        chunk_index=start_idx + len(chunks),
+                        strategy=self.strategy_name,
+                        metadata={
+                            'start_line': cur_start,
+                            'end_line': base_line + len(lines) - 1,
+                            'section': section_name,
+                            'file_type': 'markdown',
+                            'language': 'md',
+                        }
+                    )
+                )
+        return chunks
+
