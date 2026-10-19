@@ -93,12 +93,37 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             onKeyDown={handleKeyDown}
             placeholder={
               hasApiKey
-                ? 'Type your message... (Enter to send, Shift+Enter for new line)'
+                ? 'Введите сообщение или /help <вопрос>... (Enter — отправить)'
                 : 'Configure your API key in Settings to begin chatting...'
             }
             disabled={disabled || !hasApiKey}
             className="message-textarea"
           />
+
+          {input.trim() === '/' && (
+            <div
+              className="command-hint-pill"
+              style={{
+                padding: '6px 12px',
+                margin: '2px 8px 6px',
+                fontSize: '12px',
+                background: 'rgba(56, 189, 248, 0.1)',
+                border: '1px solid rgba(56, 189, 248, 0.3)',
+                borderRadius: '6px',
+                color: '#38bdf8',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}
+              onClick={() => {
+                setInput('/help ');
+                if (textareaRef.current) textareaRef.current.focus();
+              }}
+            >
+              <span>💡 Нажмите для вставки <strong>/help</strong> — справка по проекту CryptoTrack (Git Branch + RAG Structural)</span>
+            </div>
+          )}
 
           <div className="input-footer">
             <div className="input-stats-hint">

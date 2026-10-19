@@ -562,6 +562,22 @@ export const MessageList: React.FC<MessageListProps> = ({
               <button
                 type="button"
                 className="suggestion-chip"
+                onClick={() => onSuggestionClick?.('/help')}
+              >
+                <Sparkles size={14} />
+                <span>"/help" (Справка по проекту CryptoTrack)</span>
+              </button>
+              <button
+                type="button"
+                className="suggestion-chip"
+                onClick={() => onSuggestionClick?.('/help Как устроен data-слой и Room Database?')}
+              >
+                <Sparkles size={14} />
+                <span>"/help Как устроен data-слой и Room Database?"</span>
+              </button>
+              <button
+                type="button"
+                className="suggestion-chip"
                 onClick={() => onSuggestionClick?.('Расскажи коротко, что такое LLM-агент?')}
               >
                 <Sparkles size={14} />

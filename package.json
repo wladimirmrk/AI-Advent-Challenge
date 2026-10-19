@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "tsx tests/test-agent.ts && tsx tests/test-memory.ts && tsx tests/test-multichat.ts && tsx tests/test-personalization.ts && tsx tests/test-fsm.ts && tsx tests/test-invariants.ts && tsx tests/test-day15-transitions.ts && tsx tests/test-mcp.ts && tsx tests/test-day17-mcp-tool.ts && tsx tests/test-day18-scheduler.ts && tsx tests/test-day19-pipeline.ts && tsx tests/test-day20-orchestration.ts && tsx tests/test-streaming.ts && tsx tests/test-undo.ts && tsx tests/test-mcp-scopes.ts && tsx tests/test-mcp-git-branch.ts",
+    "test": "tsx tests/test-agent.ts && tsx tests/test-memory.ts && tsx tests/test-multichat.ts && tsx tests/test-personalization.ts && tsx tests/test-fsm.ts && tsx tests/test-invariants.ts && tsx tests/test-day15-transitions.ts && tsx tests/test-mcp.ts && tsx tests/test-day17-mcp-tool.ts && tsx tests/test-day18-scheduler.ts && tsx tests/test-day19-pipeline.ts && tsx tests/test-day20-orchestration.ts && tsx tests/test-streaming.ts && tsx tests/test-undo.ts && tsx tests/test-mcp-scopes.ts && tsx tests/test-mcp-git-branch.ts && tsx tests/test-mcp-rag.ts && tsx tests/test-agent-help-command.ts",
     "test:agent": "tsx tests/test-agent.ts",
     "test:memory": "tsx tests/test-memory.ts",
     "test:multichat": "tsx tests/test-multichat.ts",
@@ -18,6 +18,8 @@
     "test:mcp": "tsx tests/test-mcp.ts",
     "test:mcp:scopes": "tsx tests/test-mcp-scopes.ts",
     "test:mcp:git-branch": "tsx tests/test-mcp-git-branch.ts",
+    "test:mcp:rag": "tsx tests/test-mcp-rag.ts",
+    "test:help": "tsx tests/test-agent-help-command.ts",
     "test:day17": "tsx tests/test-day17-mcp-tool.ts",
     "test:day18": "tsx tests/test-day18-scheduler.ts",
     "test:day19": "tsx tests/test-day19-pipeline.ts",
@@ -26,7 +28,8 @@
     "test:undo": "tsx tests/test-undo.ts",
     "mcp:server": "tsx scripts/mcp-server.ts",
     "mcp:servers": "tsx scripts/mcp-multi-server.ts",
-    "mcp:git-branch": "tsx MCP/git-branch/server.ts"
+    "mcp:git-branch": "tsx MCP/git-branch/server.ts",
+    "mcp:rag": "tsx MCP/rag/server.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.1",

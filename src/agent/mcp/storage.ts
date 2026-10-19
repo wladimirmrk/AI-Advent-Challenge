@@ -80,6 +80,23 @@ export const DEFAULT_MCP_SERVERS: McpServerConfig[] = [
       },
     ],
   },
+  {
+    id: 'mcp-rag-server',
+    name: 'CryptoTrack RAG (Structural)',
+    url: 'http://localhost:3006/sse',
+    transport: 'sse',
+    headers: {},
+    headersRaw: '{\n  "Authorization": ""\n}',
+    enabled: true,
+    createdAt: 1700000000005,
+    scope: 'global',
+    tools: [
+      {
+        name: 'rag_search_structural',
+        description: 'Поиск по кодовой базе и документации CryptoTrack через структурный RAG индекс (AST, классы, функции, Markdown)',
+      },
+    ],
+  },
 ];
 
 export function loadGlobalMcpEnabled(): boolean {

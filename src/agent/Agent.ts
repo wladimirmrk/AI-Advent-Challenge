@@ -1661,6 +1661,24 @@ Do NOT wrap output in markdown fences, return pure JSON array.`,
         } catch {}
       } else if (call.toolName === 'summarize') {
         lines.push(`- 📊 **Аналитика:** Сформирована сравнительная аналитическая сводка с расчетом метрик.`);
+      } else if (call.toolName === 'get_current_git_branch') {
+        try {
+          const data = JSON.parse(call.result || '{}');
+          lines.push(
+            `- 🌿 **Git Ветка (CryptoTrack):** Активная ветка: **${data.branch || 'main'}** (состояние: ${data.isDetached ? 'detached HEAD' : 'clean'}).`
+          );
+        } catch {
+          lines.push(`- 🌿 **Git Ветка (CryptoTrack):** ${call.result || 'Ветка определена'}`);
+        }
+      } else if (call.toolName === 'rag_search_structural') {
+        try {
+          const data = JSON.parse(call.result || '{}');
+          lines.push(
+            `- 📚 **RAG Поиск (Structural):** Извлечено структурных чанков: **${data.count ?? (data.results?.length || 0)}** (запрос: "${data.query || ''}").`
+          );
+        } catch {
+          lines.push(`- 📚 **RAG Поиск (Structural):** ${call.result || 'Поиск выполнен'}`);
+        }
       }
     }
 
@@ -3437,6 +3455,11 @@ Do NOT use markdown code fences. Pure JSON only.`,
       throw new Error('Agent is already processing a request.');
     }
 
+    // Intercept /help project assistant command (using MCP Git Branch and Structural RAG)
+    if (trimmedInput.toLowerCase().startsWith('/help')) {
+      return this._executeHelpCommand(trimmedInput);
+    }
+
     // OpenRouter requires an API key; Ollama does not
     if (this.config.provider === 'openrouter' && !this.config.apiKey) {
       this.error = 'API key is not configured. Open Settings and enter your OpenRouter API key.';
@@ -3865,6 +3888,272 @@ Do NOT use markdown code fences. Pure JSON only.`,
         saveBranches(this.branches, this.chatId);
       }
       this.recalculateCurrentStats();
+      this.notify();
+      throw err;
+    } finally {
+      this.activeAbortController = null;
+      this.isStreaming = false;
+      this.isLoading = false;
+      assistantMessage.isStreaming = false;
+      assistantMessage.isThinking = false;
+    }
+  }
+
+  /**
+   * Dedicated handler for the /help project assistant command.
+   * Utilizes MCP Git Branch (port 3005) and MCP Structural RAG (port 3006).
+   */
+  public async _executeHelpCommand(rawInput: string): Promise<string> {
+    const trimmedInput = rawInput.trim();
+    this.error = null;
+    this.lastTrimInfo = null;
+
+    // 1. Create and persist user message
+    const userMessageTokens = estimateTokens(trimmedInput);
+    const userMessage: Message = {
+      id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      role: 'user',
+      content: trimmedInput,
+      timestamp: Date.now(),
+      tokens: userMessageTokens,
+    };
+
+    if (this.messages.length === 0) {
+      try {
+        this.onMessageSent?.(trimmedInput, 'user');
+      } catch (cbErr) {
+        console.warn('[Agent] onMessageSent callback error:', cbErr);
+      }
+    }
+
+    this.messages.push(userMessage);
+    saveMessages(this.messages, this.chatId);
+
+    const branchPreIdx = this.branches.findIndex((b) => b.id === this.activeBranchId);
+    if (branchPreIdx >= 0) {
+      this.branches[branchPreIdx].messages = [...this.messages];
+      saveBranches(this.branches, this.chatId);
+    }
+
+    this.isLoading = true;
+    this.isStreaming = true;
+    this.activeAbortController = new AbortController();
+    this.notify();
+
+    const assistantMessage: Message = {
+      id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      role: 'assistant',
+      content: '',
+      timestamp: Date.now(),
+      tokens: 0,
+      isStreaming: true,
+      mcpCalls: [],
+    };
+
+    // Ensure MCP tools are discovered
+    if (this.isMcpActive()) {
+      await this.ensureMcpDiscovery();
+    }
+
+    const executedCalls: McpCallMeta[] = [];
+    const question = trimmedInput.replace(/^\/help\b\s*/i, '').trim();
+
+    try {
+      // 2. Query Git Branch tool
+      let branchName = 'main';
+      let branchProjectPath = 'C:\\Users\\W\\Projects\\CryptoTrack';
+      let branchMessage = '';
+      try {
+        const branchCall = await this.executeMcpTool('get_current_git_branch', {});
+        executedCalls.push(branchCall);
+        assistantMessage.mcpCalls = [...executedCalls];
+        this.notify();
+
+        if (!branchCall.isError && branchCall.result) {
+          try {
+            const b = JSON.parse(branchCall.result);
+            branchName = b.branch || 'main';
+            branchProjectPath = b.projectPath || branchProjectPath;
+            branchMessage = b.message || `Активная ветка в CryptoTrack: "${branchName}"`;
+          } catch {
+            branchMessage = branchCall.result;
+          }
+        } else {
+          branchMessage = `Ветка: ${branchCall.result || 'MCP Git Branch сервер оффлайн'}`;
+        }
+      } catch (branchErr: any) {
+        console.warn('[/help] Git branch tool execution failed:', branchErr);
+        branchMessage = `Не удалось опросить git branch: ${branchErr.message || String(branchErr)}`;
+      }
+
+      // 3. Case A: /help without query -> interactive overview
+      if (!question) {
+        const helpOverview = [
+          `### 💡 Справка по проекту CryptoTrack (\`/help\`)`,
+          ``,
+          `Интеллектуальный ассистент по архитектуре, кодовой базе и документации Android-приложения **CryptoTrack** (\`${branchProjectPath}\`).`,
+          ``,
+          `#### 📊 Текущее окружение проекта:`,
+          `- 🌿 **Активная Git-ветка:** \`${branchName}\``,
+          `- 📚 **База знаний RAG:** Структурный индекс AST Kotlin & Markdown (\`rag_search_structural\`)`,
+          `- 🔌 **MCP-серверы:** Git Branch (\`:3005\`) | Structural RAG (\`:3006\`)`,
+          ``,
+          `---`,
+          ``,
+          `#### 🔍 Как задать вопрос:`,
+          `Напишите команду \`/help\` и интересующий вас вопрос по проекту:`,
+          `- \`/help Какая архитектура у приложения CryptoTrack?\``,
+          `- \`/help Как устроен data-слой и база данных Room?\``,
+          `- \`/help Какие DAO и сущности базы данных определены в проекте?\``,
+          `- \`/help Как реализовано оффлайн-кэширование котировок криптовалют?\``,
+          `- \`/help Как организован structural-чанкинг в RAG подпроекте?\``,
+          ``,
+          `---`,
+          `> 💡 *При каждом запросе \`/help <вопрос>\` агент обращается к активной ветке репозитория и находит точные сниппеты кода через структурный RAG с указанием файлов и номеров строк.*`,
+        ].join('\n');
+
+        assistantMessage.content = helpOverview;
+        assistantMessage.isStreaming = false;
+        assistantMessage.tokens = estimateTokens(helpOverview);
+        this.messages.push(assistantMessage);
+        saveMessages(this.messages, this.chatId);
+        this.recalculateCurrentStats();
+        this.isLoading = false;
+        this.isStreaming = false;
+        this.notify();
+        return helpOverview;
+      }
+
+      // 4. Case B: /help <question> -> Query Structural RAG
+      let ragContext = '';
+      let ragFoundCount = 0;
+      let ragChunks: Array<{ source: string; section?: string; start_line?: number; end_line?: number; content: string; score: number }> = [];
+
+      try {
+        const ragCall = await this.executeMcpTool('rag_search_structural', {
+          query: question,
+          top_k: 5,
+        });
+        executedCalls.push(ragCall);
+        assistantMessage.mcpCalls = [...executedCalls];
+        this.notify();
+
+        if (!ragCall.isError && ragCall.result) {
+          try {
+            const ragData = JSON.parse(ragCall.result);
+            ragChunks = ragData.results || [];
+            ragFoundCount = ragChunks.length;
+            ragContext = ragChunks
+              .map((item, idx) => {
+                const lines = item.start_line ? ` (L${item.start_line}-L${item.end_line || item.start_line})` : '';
+                return `[Сниппет #${idx + 1}: ${item.source}${lines} | Секция: ${item.section || 'N/A'} | Релевантность: ${item.score}]\n${item.content}`;
+              })
+              .join('\n\n---\n\n');
+          } catch {
+            ragContext = ragCall.result;
+          }
+        } else {
+          ragContext = `(Ошибка RAG: ${ragCall.result || 'RAG MCP сервер недоступен'})`;
+        }
+      } catch (ragErr: any) {
+        console.warn('[/help] RAG tool execution failed:', ragErr);
+        ragContext = `(Ошибка вызова RAG: ${ragErr.message || String(ragErr)})`;
+      }
+
+      // 5. Synthesize grounded answer with LLM
+      const synthesisPrompt = [
+        {
+          role: 'user',
+          content: [
+            `Ты — экспертный технический AI-архитектор и ведущий разработчик проекта CryptoTrack.`,
+            `Пользователь запросил помощь по кодовой базе через команду: /help ${question}`,
+            ``,
+            `ДАННЫЕ ИЗ РЕПОЗИТОРИЯ (MCP Git Branch):`,
+            `- ${branchMessage}`,
+            `- Проект: Android-приложение CryptoTrack (Kotlin, Jetpack Compose, Room, Coroutines, MVI/MVVM, Offline-First)`,
+            ``,
+            `ИЗВЛЕЧЕННЫЙ КОНТЕКСТ ИЗ СТРУКТУРНОЙ БАЗЫ ЗНАНИЙ (MCP RAG Structural):`,
+            ragContext || '(Ничего не найдено или сервер RAG оффлайн. Подскажи запустить npm.cmd run mcp:rag на порту 3006)',
+            ``,
+            `ИНСТРУКЦИЯ ПО ФОРМИРОВАНИЮ ОТВЕТА:`,
+            `1. Дай подробный, технически точный, структурированный ответ на русском языке.`,
+            `2. В начале ответа обязательно укажи плашку активной ветки: 🌿 **Ветка проекта:** \`${branchName}\`.`,
+            `3. Опирайся на найденные сниппеты кода, называй реальные классы, интерфейсы, DAO, таблицы Room, репозитории и методы.`,
+            `4. Обязательно ссылайся на файлы источников и номера строк из предоставленного контекста RAG (например, \`docs/data-layer.md\`, \`CryptoTrackDatabase.kt\`).`,
+            `5. Если предоставленные сниппеты полностью отвечают на вопрос, поясни логику и архитектурные решения.`,
+            `6. Не придумывай классы или зависимости, которых нет в проекте.`,
+          ].join('\n'),
+        },
+      ];
+
+      let finalContent = '';
+      let accumulated = '';
+      const onChunk = (chunk: string) => {
+        if (chunk) {
+          accumulated += chunk;
+          assistantMessage.content = accumulated;
+          if (!this.messages.some((m) => m.id === assistantMessage.id) && accumulated.trim().length > 0) {
+            this.messages.push(assistantMessage);
+          }
+          this.notify();
+        }
+      };
+
+      try {
+        const res = await this.callLLM(
+          synthesisPrompt,
+          undefined,
+          onChunk,
+          this.activeAbortController?.signal
+        );
+        finalContent = res.content || accumulated;
+        if (branchName && !finalContent.includes(branchName) && !finalContent.includes('Ветка')) {
+          finalContent = `🌿 **Ветка проекта:** \`${branchName}\`\n\n${finalContent}`;
+        }
+      } catch (llmErr: any) {
+        console.warn('[/help] LLM call failed or skipped, providing structured MCP context summary:', llmErr);
+        const fallbackLines = [
+          `🌿 **Ветка проекта:** \`${branchName}\``,
+          ``,
+          `### 📚 Результаты поиска по базе знаний CryptoTrack (RAG Structural):`,
+          `Найдено релевантных сниппетов: **${ragFoundCount}**`,
+          ``,
+        ];
+        for (let i = 0; i < ragChunks.length; i++) {
+          const chunk = ragChunks[i];
+          const lines = chunk.start_line ? ` (L${chunk.start_line}-L${chunk.end_line || chunk.start_line})` : '';
+          fallbackLines.push(`#### ${i + 1}. \`${chunk.source}\`${lines}`);
+          if (chunk.section) fallbackLines.push(`*Секция:* ${chunk.section}`);
+          fallbackLines.push('```kotlin');
+          fallbackLines.push(chunk.content);
+          fallbackLines.push('```');
+          fallbackLines.push('');
+        }
+        if (ragFoundCount === 0) {
+          fallbackLines.push(`*Не удалось извлечь сниппеты по запросу "${question}". Убедитесь, что запущен RAG-сервер (\`npm.cmd run mcp:rag\` на порту 3006).*`);
+        }
+        finalContent = fallbackLines.join('\n');
+      }
+
+      assistantMessage.content = finalContent;
+      assistantMessage.isStreaming = false;
+      assistantMessage.tokens = estimateTokens(finalContent);
+
+      if (!this.messages.some((m) => m.id === assistantMessage.id)) {
+        this.messages.push(assistantMessage);
+      }
+
+      saveMessages(this.messages, this.chatId);
+      this.recalculateCurrentStats();
+      this.isLoading = false;
+      this.isStreaming = false;
+      this.notify();
+      return finalContent;
+    } catch (err: any) {
+      this.isLoading = false;
+      this.isStreaming = false;
+      assistantMessage.isStreaming = false;
+      this.error = `Ошибка при выполнении /help: ${err.message || String(err)}`;
       this.notify();
       throw err;
     } finally {
