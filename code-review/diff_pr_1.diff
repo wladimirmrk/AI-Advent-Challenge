@@ -1,0 +1,25 @@
+diff --git a/.github/workflows/main.yml b/.github/workflows/main.yml
+new file mode 100644
+index 0000000..1372cd8
+--- /dev/null
++++ b/.github/workflows/main.yml
+@@ -0,0 +1,19 @@
++name: Self-hosted terminal test
++
++on:
++  workflow_dispatch:
++
++jobs:
++  test:
++    runs-on: self-hosted
++
++    steps:
++      - name: Run terminal commands
++        shell: bash
++        run: |
++          echo "Hello from self-hosted runner!"
++          pwd
++          whoami
++          hostname
++          date
++          ls -la

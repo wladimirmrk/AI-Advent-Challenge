@@ -1,0 +1,40 @@
+diff --git a/.github/workflows/main.yml b/.github/workflows/main.yml
+index 1372cd8..00f780e 100644
+--- a/.github/workflows/main.yml
++++ b/.github/workflows/main.yml
+@@ -1,19 +1,26 @@
+-name: Self-hosted terminal test
++name: Windows Self-hosted runner test
+ 
+ on:
+   workflow_dispatch:
+ 
+ jobs:
+   test:
+-    runs-on: self-hosted
++    runs-on: [self-hosted, windows]
+ 
+     steps:
+-      - name: Run terminal commands
+-        shell: bash
++      - name: Run PowerShell commands
++        shell: pwsh
+         run: |
+-          echo "Hello from self-hosted runner!"
+-          pwd
+-          whoami
++          Write-Host "Hello from self-hosted runner!"
++          Write-Host "Hostname:"
+           hostname
+-          date
+-          ls -la
++          Write-Host "User:"
++          whoami
++          Write-Host "Current directory:"
++          Get-Location
++          Write-Host "PowerShell version:"
++          $PSVersionTable.PSVersion
++          Write-Host "Current date:"
++          Get-Date
++          Write-Host "Directory contents:"
++          Get-ChildItem
